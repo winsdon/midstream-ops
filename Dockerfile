@@ -5,10 +5,10 @@
 # Stage 2: 构建 Go 后端，把前端产物 embed 进单二进制
 # Stage 3: 最小运行时镜像
 #
-# 本地构建：podman build --format docker -t sub2api-monitor:dev .
-#   ⚠️ podman 必须带 --format docker：默认的 OCI 格式不支持 HEALTHCHECK，
+# 本地构建：docker build -t midstream-ops:dev .
+#   或直接用 deploy/build.ps1（自动识别 docker / podman，已封装好参数）。
+#   ⚠️ 用 podman 构建须带 --format docker：默认的 OCI 格式不支持 HEALTHCHECK，
 #      会静默丢弃下面的健康检查配置。docker build 无此问题。
-#      推荐直接用 deploy/build.ps1，已封装好参数。
 
 # =============================================================================
 

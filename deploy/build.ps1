@@ -1,5 +1,5 @@
 # =============================================================================
-# Build / push image with podman
+# Build / push image
 # =============================================================================
 # Usage:
 #   .\deploy\build.ps1                                    # build dev image only
@@ -7,7 +7,9 @@
 #   .\deploy\build.ps1 -Version 0.1.0 -User winsdon8 -Push # build + push
 #
 # Login first (use an access token from hub.docker.com, not your password):
-#   podman login docker.io -u <username>
+#   docker login docker.io -u <username>
+#
+# Uses docker when available, otherwise falls back to podman.
 #
 # NOTE: keep this file ASCII-only. Windows PowerShell 5.1 reads scripts using
 # the system ANSI codepage (GBK on zh-CN), so UTF-8 comments without a BOM get
@@ -26,14 +28,20 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# podman installs under LOCALAPPDATA and is not on PATH by default
-$Podman = if (Get-Command podman -ErrorAction SilentlyContinue) {
-    'podman'
+# Prefer docker; fall back to podman (which installs under LOCALAPPDATA and is
+# not on PATH by default).
+$PodmanFallback = "$env:LOCALAPPDATA\Programs\Podman\podman.exe"
+if (Get-Command docker -ErrorAction SilentlyContinue) {
+    $Engine = 'docker'
+    $IsPodman = $false
+} elseif (Get-Command podman -ErrorAction SilentlyContinue) {
+    $Engine = 'podman'
+    $IsPodman = $true
+} elseif (Test-Path $PodmanFallback) {
+    $Engine = $PodmanFallback
+    $IsPodman = $true
 } else {
-    "$env:LOCALAPPDATA\Programs\Podman\podman.exe"
-}
-if ($Podman -ne 'podman' -and -not (Test-Path $Podman)) {
-    throw "podman not found at: $Podman"
+    throw "no container engine found: install docker, or podman at $PodmanFallback"
 }
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
@@ -50,23 +58,26 @@ if ($Version -and $User) {
 
 $tagArgs = $tags | ForEach-Object { '-t', $_ }
 
-Write-Host "==> Building image (linux/amd64)" -ForegroundColor Cyan
+Write-Host "==> Building image (linux/amd64) with $Engine" -ForegroundColor Cyan
 $tags | ForEach-Object { Write-Host "    $_" }
 
-# --format docker is required: podman defaults to OCI format, which has no
-# HEALTHCHECK field, so the Dockerfile's HEALTHCHECK is silently dropped
-# (build only prints a one-line warning). Docker format preserves it, and
-# both `docker ps` health status and compose depends_on:healthy rely on it.
-& $Podman build --format docker --platform linux/amd64 @tagArgs -f "$RepoRoot\Dockerfile" $RepoRoot
+# podman defaults to OCI format, which has no HEALTHCHECK field, so the
+# Dockerfile's HEALTHCHECK is silently dropped (build only prints a one-line
+# warning). --format docker preserves it, and both `podman ps` health status
+# and compose depends_on:healthy rely on it. docker always uses that format
+# and rejects the flag, so only pass it for podman.
+$formatArgs = if ($IsPodman) { @('--format', 'docker') } else { @() }
+
+& $Engine build @formatArgs --platform linux/amd64 @tagArgs -f "$RepoRoot\Dockerfile" $RepoRoot
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
 
 Write-Host "==> Build complete" -ForegroundColor Green
-& $Podman images --filter reference=*midstream-ops --format "table {{.Repository}}:{{.Tag}}`t{{.Size}}"
+& $Engine images --filter reference=*midstream-ops --format "table {{.Repository}}:{{.Tag}}`t{{.Size}}"
 
 if ($Push) {
     foreach ($t in $tags | Where-Object { $_ -like 'docker.io/*' }) {
         Write-Host "==> Pushing $t" -ForegroundColor Cyan
-        & $Podman push $t
+        & $Engine push $t
         if ($LASTEXITCODE -ne 0) { throw "push failed: $t" }
     }
     Write-Host "==> Push complete" -ForegroundColor Green
