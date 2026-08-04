@@ -1,0 +1,24 @@
+# 真实凭据，禁止入库
+config.yaml
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 前端构建产物
+node_modules/
+internal/web/dist/
+
+# 编译产物
+# 注意：必须用 /server 锚定本目录。裸 server 会匹配任意层级的同名目录，
+# 曾误伤 cmd/server/ 与 internal/server/ 导致源码从未入库。
+/server
+/server.exe
+*.exe
+
+# 临时
+tmp_pgtest/
+
+# 运行日志
+*.log

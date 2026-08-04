@@ -1,0 +1,59 @@
+# =============================================================================
+# 构建上下文排除项
+# =============================================================================
+# 安全红线：backend/data/ 含真实业务数据（monitor.db 约 5MB + 若干 .bak 备份），
+# backend/config.yaml 含线上 PG 凭据。二者绝不能进镜像。
+# =============================================================================
+
+# 真实凭据与业务数据
+backend/config.yaml
+config.yaml
+backend/data/
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 依赖与构建产物（镜像内会重新安装/构建）
+node_modules/
+frontend/node_modules/
+frontend/dist/
+# 本地 dist 必须排除：镜像里由 frontend-builder 阶段产出并复制
+backend/internal/web/dist/
+
+# 编译产物
+*.exe
+*.exe~
+backend/server
+backend/server.exe
+
+# 日志
+*.log
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# 文档（DOCKER.md 供 Docker Hub 使用，不需要进镜像）
+*.md
+PLAN.md
+prototype.html
+
+# 工具与 IDE
+.claude/
+.github/
+.idea/
+.vscode/
+*.swp
+
+# 临时文件
+tmp/
+tmp_pgtest/
+.tmp/
+
+# 部署文件（entrypoint 例外，Dockerfile 需要它）
+deploy/.env
+deploy/docker-compose.yml
+deploy/build.ps1

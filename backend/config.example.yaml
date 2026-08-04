@@ -1,0 +1,76 @@
+server:
+  host: 0.0.0.0
+  port: 9090
+
+timezone: Asia/Shanghai        # 须与 sub2api 的 timezone 一致（对账口径）
+
+auth:
+  username: admin
+  password: "change-me"        # 明文；填 $2a$/$2b$ 开头则按 bcrypt 校验
+  jwt_secret: ""               # 必填，32 字节以上随机串
+  token_ttl_hours: 24
+
+sub2api_db:                    # 线上库（只读；DSN 强制 default_transaction_read_only=on）
+  host: 127.0.0.1
+  port: 5432
+  user: sub2api_readonly
+  password: "<填入只读账号密码>"
+  dbname: sub2api
+  sslmode: disable
+
+sqlite:
+  path: data/monitor.db
+
+balance:
+  interval_minutes: 30
+  timeout_seconds: 15
+  concurrency: 3
+  retention_days: 90
+
+# 上游真实成本同步：定时拉取供应商 per-key 的 actual_cost（倍率折后实扣）落本地库，
+# 查询只读本地库。首次同步会回补 90 天历史，耗时较长。
+cost:
+  interval_minutes: 10         # 同步间隔
+  timeout_seconds: 30
+  concurrency: 2               # 并发同步的供应商数
+  retention_days: 180          # 成本明细保留天数
+
+probe:
+  interval_minutes: 15
+  timeout_seconds: 30
+  concurrency: 2
+  retention_days: 30
+  default_models:
+    anthropic: claude-3-5-haiku-20241022
+    openai: gpt-4o-mini
+    gemini: gemini-2.5-flash
+
+rates:
+  interval_minutes: 5
+  retention_days: 365
+
+# 模型广场：以 iframe 嵌入 sub2api 的只读页面（sub2api 后台配「自定义菜单页面」，
+# URL 填 https://本站域名/embed/plaza）。
+plaza:
+  enabled: false
+  # sub2api 站点 origin，用作 CSP frame-ancestors（只允许该站点嵌入本页）。
+  sub2api_base_url: ""         # 如 https://your-sub2api.com
+  # sub2api 的 jwt.secret，用于本地验签用户 token（须与对方完全一致）。
+  #
+  # 为何不回调 sub2api 的 /auth/me 校验身份：sub2api 开启会话绑定后，JWT 里的 bnd
+  # claim = sha256(客户端IP + UA)，服务端直连的 IP/UA 必然与浏览器不同 → 校验失败，
+  # 且 sub2api 会因指纹不符撤销该用户整个会话家族，把用户从浏览器踢下线。
+  #
+  # 代价：本地验签拿不到实时吊销状态（用户改密码后，旧 token 在自然过期前仍能看广场）。
+  # 广场是只读价格页、不含账号与密钥数据，该窗口可接受。
+  sub2api_jwt_secret: ""
+  session_ttl_minutes: 30      # 嵌入会话有效期（进程内存储，重启失效）
+  cache_seconds: 60            # 广场数据缓存，避免高频打线上库
+  metrics_hours: 24            # 延迟/吞吐指标的统计窗口
+  # 本地联调开关：开启后可访问 /embed/_dev 调试页，一键打开带身份的嵌入页，
+  # 无需 sub2api 站点配合。它会暴露 /api/v1/embed/_dev/token，能签出任意 user_id
+  # 的合法身份（等同于无密码登录成任何客户）——生产环境必须保持 false。
+  dev_mode: false
+
+log:
+  level: info

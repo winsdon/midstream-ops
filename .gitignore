@@ -1,0 +1,37 @@
+# 真实凭据，禁止入库
+backend/config.yaml
+config.yaml
+deploy/.env
+
+# 含真实服务器 IP / 域名 / 证书路径的私有部署资料，只存本地
+deploy/DEPLOY_ONLINE.md
+deploy/nginx/
+
+# 数据
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 前端
+node_modules/
+backend/internal/web/dist/
+frontend/dist/
+
+# 编译产物
+# 注意：必须用 /server 锚定根目录。裸 server 会匹配任意层级的同名目录，
+# 曾误伤 backend/cmd/server/ 与 backend/internal/server/ 导致源码从未入库。
+/server
+/server.exe
+/backend/server
+/backend/server.exe
+*.exe
+*.exe~
+
+# 临时
+tmp_pgtest/
+.tmp/
+
+# 本地 AI 工具的工作区（含调研输出，可能带凭据）
+.claude/
