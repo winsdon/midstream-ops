@@ -101,16 +101,20 @@ curl http://127.0.0.1:9090/health
 
 配置全部走 `MONITOR_` 前缀的环境变量，命名规则是配置键的 `.` 换 `_` 再大写（`sub2api_db.host` → `MONITOR_SUB2API_DB_HOST`），无需挂载 `config.yaml`。
 
-与 sub2api 同宿主的完整上线流程（含 Nginx 反代 + Cloudflare）见 [deploy/DEPLOY_ONLINE.md](deploy/DEPLOY_ONLINE.md)。
+端口默认只绑 `127.0.0.1`。本站含成本、利润、客户授信与 KYC 数据，对外访问请在宿主机用 Nginx / Caddy 反代并配置 TLS 与访问控制，**不要直接裸露公网**。
 
 #### 自行构建镜像
+
+```bash
+docker build -t midstream-ops:dev .
+```
+
+或用封装脚本（自动识别本机的 docker / podman）：
 
 ```powershell
 .\deploy\build.ps1                                    # 本地 dev 镜像
 .\deploy\build.ps1 -Version 0.1.0 -User <用户名> -Push  # 构建并推送
 ```
-
-用 podman 手工构建时**必须带 `--format docker`** —— 默认的 OCI 格式不支持 `HEALTHCHECK`，会静默丢弃健康检查配置。`build.ps1` 已封装该参数。
 
 ---
 
@@ -247,9 +251,7 @@ midstream-ops/
 │   ├── docker-compose.yml  容器编排
 │   ├── .env.example        环境变量模板
 │   ├── build.ps1           镜像构建脚本
-│   ├── DOCKER.md           Docker 部署说明
-│   ├── DEPLOY_ONLINE.md    线上部署手册（含 Nginx + Cloudflare）
-│   └── nginx/              反代配置示例
+│   └── DOCKER.md           Docker 部署说明
 │
 └── docs/
     └── DESIGN_NOTES.md     口径与设计说明
@@ -345,7 +347,6 @@ midstream-ops/
 |------|------|
 | [docs/DESIGN_NOTES.md](docs/DESIGN_NOTES.md) | 口径与设计说明 —— 收益成本利润口径、稳定性可视化取舍、授信台账约束 |
 | [deploy/DOCKER.md](deploy/DOCKER.md) | Docker 部署详解（网络、只读账号、密钥、持久化） |
-| [deploy/DEPLOY_ONLINE.md](deploy/DEPLOY_ONLINE.md) | 与 sub2api 同宿主的完整上线手册（含 Nginx + Cloudflare） |
 | [PLAN.md](PLAN.md) | 实施计划与架构决策记录 |
 
 ---
