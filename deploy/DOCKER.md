@@ -94,6 +94,23 @@ volumes:
 ⚠️ `docker compose down -v` 会删除 volume，监控数据全丢。日常停服务请用不带
 `-v` 的 `docker compose down`。
 
+## 升级
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+⚠️ 请用 `docker compose`（有空格）而非 `docker-compose`（有连字符）。后者是已停止
+维护的 v1，升级时会在 `Recreating` 阶段抛 `KeyError: 'ContainerConfig'` —— 它读旧
+容器的镜像配置时硬索引了一个新版 Docker Engine 已不再返回的字段。若手上只有 v1，
+升级前先删容器绕开该分支（数据在 volume 里，不受影响）：
+
+```bash
+docker-compose pull
+docker rm -f sub2api-monitor
+docker-compose up -d
+```
+
 ## 安全建议
 
 端口默认只绑 `127.0.0.1`。本站含成本、利润、客户授信与 KYC 等敏感数据，

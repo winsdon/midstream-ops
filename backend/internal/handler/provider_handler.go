@@ -52,6 +52,9 @@ type providerDTO struct {
 	UpstreamUserID      string   `json:"upstream_user_id"`
 	LowBalanceThreshold float64  `json:"low_balance_threshold"`
 	RechargeRate        float64  `json:"recharge_rate"`
+	// CredentialsReady 凭据是否齐备。false 时该站点不进采集队列（见 ListCollectable），
+	// 前端据此把「待配置凭据」与「采集失败」画成两种健康态。
+	CredentialsReady    bool     `json:"credentials_ready"`
 	ProbeEnabled        bool     `json:"probe_enabled"`
 	ProbeModel          *string  `json:"probe_model"`
 	IgnoreBalanceAlert  bool     `json:"ignore_balance_alert"`
@@ -128,6 +131,7 @@ func toDTO(p *repository.Provider, accountCount int, loc *time.Location) provide
 		UpstreamUserID:      p.UpstreamUserID,
 		LowBalanceThreshold: p.LowBalanceThreshold,
 		RechargeRate:        p.RechargeRate,
+		CredentialsReady:    p.CredentialsReady(),
 		ProbeEnabled:        p.ProbeEnabled,
 		ProbeModel:          p.ProbeModel,
 		IgnoreBalanceAlert:  p.IgnoreBalanceAlert,
@@ -381,10 +385,20 @@ func (h *ProviderHandler) Import(c *gin.Context) {
 		response.BadRequest(c, "items 必填且非空")
 		return
 	}
+	for _, it := range req.Items {
+		if it.BalanceType != "" && !validBalanceTypes[it.BalanceType] {
+			response.BadRequest(c, "balance_type 须为 sub2api|manual|none")
+			return
+		}
+	}
 	result, err := h.svc.Import(c.Request.Context(), req.Items)
 	if err != nil {
 		response.InternalError(c, "导入失败: "+err.Error())
 		return
+	}
+	// 新建站点纳入调度（缺凭据的由 ListCollectable 过滤，排了也不会真去采）
+	for _, id := range result.CreatedIDs {
+		h.syncSched.OnProviderChanged(id)
 	}
 	response.Success(c, result)
 }

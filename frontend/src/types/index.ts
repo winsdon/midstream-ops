@@ -35,6 +35,8 @@ export interface Provider {
   upstream_user_id: string
   low_balance_threshold: number
   recharge_rate: number
+  /** 凭据是否齐备。false 时不进采集队列，健康点显示「待配置凭据」而非采集异常 */
+  credentials_ready: boolean
   probe_enabled: boolean
   probe_model?: string | null
   /** 站点级静音：不推余额告警（余额采集照常） */
@@ -202,6 +204,10 @@ export interface ScanItem {
   exists: boolean
   /** 该前缀下的账号 id，导入时一并写入关联表 */
   account_ids: number[]
+  /** 该前缀下账号连的站点地址（组内地址不唯一时任取其一），作为导入表单预填值 */
+  base_url: string
+  /** 该前缀下出现过的不同站点地址数；> 1 时须提示用户核对预填地址 */
+  url_count: number
 }
 
 /** 按 base_url 归组里的单个账号。 */
@@ -240,6 +246,8 @@ export interface ProviderLink {
 export interface ImportItem {
   name: string
   base_url?: string
+  /** 余额获取方式；仅对新建站点生效，已存在的站点不改其采集方式 */
+  balance_type?: string
   account_ids?: number[]
 }
 
