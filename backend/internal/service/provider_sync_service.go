@@ -182,6 +182,12 @@ func (s *ProviderSyncService) SyncOne(ctx context.Context, providerID int64, man
 	if p.BalanceType != "sub2api" {
 		return nil, fmt.Errorf("供应商 %s 余额获取方式为 %s，不支持自动采集", p.Name, p.BalanceType)
 	}
+	// 缺凭据的站点直接拒绝，且不记失败：调度器已按 credentialsReadySQL 过滤，
+	// 这里挡的是手动刷新与全量刷新——若照常走采集，只会在登录处失败一次并把
+	// 「待配置凭据」染成「采集异常」，用户看红点却找不到该修什么。
+	if !p.CredentialsReady() {
+		return nil, fmt.Errorf("供应商 %s 尚未配置完整凭据，请先补全站点地址与登录信息", p.Name)
+	}
 	if manual {
 		// 手动触发绕过登录冷却并清零计数
 		_ = s.providerRepo.ClearLoginCooldown(ctx, p.ID)

@@ -502,9 +502,60 @@ func (r *ProviderRepo) UpdateBalanceCache(ctx context.Context, id int64, balance
 	return err
 }
 
-// ListCollectable 返回需要自动采集的供应商（balance_type='sub2api'，仅上游站）。
+// credentialsReadySQL 凭据齐备判据：缺凭据的站点连一次请求都发不出去。
+//
+// balance_type='sub2api' 表达的是「想自动采集」的意图，凭据齐备与否才决定「采不采得动」——
+// 快捷导入建出来的站天然只有地址没有账密，若仅凭意图就排班，每轮都会在
+// provider_token.go 的凭据校验处失败，连续失败计数累积、退避拉长、健康点全红，
+// 真正坏掉的站反而被这批噪音淹没。判据与各认证模式的实际必需字段一一对应：
+//
+//	sub2api + password → email + password（loginSub2api）
+//	sub2api + token    → refresh_token 或 access_token（refreshSub2apiToken）
+//	new-api + password → email + password（loginNewAPI）
+//	new-api + user_key → access_token + upstream_user_id（ensureNewAPI）
+//
+// 凭据空值落库恒为空串（secretbox.Seal("") == ""），故 <> '' 判空成立。
+const credentialsReadySQL = `base_url <> '' AND (
+		(auth_mode = 'password' AND login_email <> '' AND login_password <> '')
+	 OR (auth_mode = 'token'    AND (refresh_token <> '' OR access_token <> ''))
+	 OR (auth_mode = 'user_key' AND access_token <> '' AND upstream_user_id <> '')
+	)`
+
+// UpdateBaseURL 补写站点地址（快捷导入回填历史空地址站点用）。
+//
+// 刻意不清凭据/冷却：这是补齐而非变更，与 Update 的凭据变更语义不同。
+func (r *ProviderRepo) UpdateBaseURL(ctx context.Context, id int64, baseURL string) (*Provider, error) {
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE providers SET base_url=?, updated_at=? WHERE id=?`,
+		baseURL, nowUTC(), id); err != nil {
+		return nil, err
+	}
+	return r.GetByID(ctx, id)
+}
+
+// CredentialsReady 与 credentialsReadySQL 等价的内存判据（两者须同步修改）。
+//
+// 供 DTO 输出用：前端据此把「缺凭据」与「采集失败」画成两种健康态，
+// 而不是让用户对着一个红点猜是没配还是配错了。
+func (p *Provider) CredentialsReady() bool {
+	if p.BaseURL == "" {
+		return false
+	}
+	switch p.AuthMode {
+	case "password":
+		return p.LoginEmail != "" && p.LoginPassword != ""
+	case "token":
+		return p.RefreshToken != "" || p.AccessToken != ""
+	case "user_key":
+		return p.AccessToken != "" && p.UpstreamUserID != ""
+	}
+	return false
+}
+
+// ListCollectable 返回需要自动采集的供应商（balance_type='sub2api'、凭据齐备、仅上游站）。
 func (r *ProviderRepo) ListCollectable(ctx context.Context) ([]*Provider, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT `+providerCols+` FROM providers WHERE balance_type = 'sub2api' AND role = 'upstream'`)
+	rows, err := r.db.QueryContext(ctx, `SELECT `+providerCols+` FROM providers
+		WHERE balance_type = 'sub2api' AND role = 'upstream' AND `+credentialsReadySQL)
 	if err != nil {
 		return nil, err
 	}
