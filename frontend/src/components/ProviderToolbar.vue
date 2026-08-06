@@ -60,6 +60,7 @@ const { t } = useI18n()
 const STATUS_LABELS: Record<ProviderStatus, string> = {
   connected: 'provider.statusConnected',
   error: 'provider.statusError',
+  credentialsPending: 'provider.statusCredentialsPending',
   pending: 'provider.statusPending',
   unmonitored: 'provider.notMonitored'
 }

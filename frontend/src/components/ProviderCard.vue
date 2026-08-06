@@ -149,9 +149,11 @@ const lowBalance = computed(() => isLowBalance(props.provider, props.defaultBala
 // 状态推导：登录冷却/连续失败 → 异常；从未采集 → 未同步；否则已连接
 // 规则本体在 providerModel.providerStatus，这里只做 status → 样式/文案的映射，
 // 避免与列表页的状态筛选各写一套而漂移。
-const STATUS_VARIANTS: Record<ProviderStatus, 'gray' | 'danger' | 'success'> = {
+const STATUS_VARIANTS: Record<ProviderStatus, 'gray' | 'danger' | 'success' | 'warning'> = {
   connected: 'success',
   error: 'danger',
+  // 待配置凭据是「还没干完的活」而非故障，用 warning 与真实异常区分
+  credentialsPending: 'warning',
   pending: 'gray',
   unmonitored: 'gray'
 }
@@ -159,6 +161,7 @@ const STATUS_VARIANTS: Record<ProviderStatus, 'gray' | 'danger' | 'success'> = {
 const STATUS_LABELS: Record<ProviderStatus, string> = {
   connected: 'provider.statusConnected',
   error: 'provider.statusError',
+  credentialsPending: 'provider.statusCredentialsPending',
   pending: 'provider.statusPending',
   unmonitored: 'provider.notMonitored'
 }

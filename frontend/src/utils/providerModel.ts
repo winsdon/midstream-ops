@@ -10,8 +10,8 @@ import { compareValuesWithOrder, type SortOrder } from '@/utils/tableSort'
 
 export type ProviderSortKey = 'todayCostDesc' | 'balanceDesc' | 'balanceAsc' | 'name'
 
-/** 站点状态：已连接 / 异常 / 待首次采集 / 未纳入监控。 */
-export type ProviderStatus = 'connected' | 'error' | 'pending' | 'unmonitored'
+/** 站点状态：已连接 / 异常 / 待配置凭据 / 待首次采集 / 未纳入监控。 */
+export type ProviderStatus = 'connected' | 'error' | 'credentialsPending' | 'pending' | 'unmonitored'
 
 /**
  * 余额阈值与后端预警共用 CNY 口径：站点覆盖优先，否则使用系统默认阈值。
@@ -37,9 +37,14 @@ export function isLowBalance(p: Provider, defaultBalanceThreshold = 0): boolean 
  * 状态派生：本文件是全站唯一的状态定义来源。
  * ProviderCard 的徽标、列表视图的健康点、状态筛选三者都基于它，
  * 避免同一份规则在三处各写一遍而漂移。
+ *
+ * credentialsPending 排在 error 之前：缺凭据的站点后端压根不排班
+ * （见 ListCollectable 的凭据门禁），它带的历史失败计数是配置前的陈迹，
+ * 判成 error 会让「去补凭据」这个真实动作被淹没在故障堆里。
  */
 export function providerStatus(p: Provider): ProviderStatus {
   if (p.balance_type !== 'sub2api') return 'unmonitored'
+  if (!p.credentials_ready) return 'credentialsPending'
   if (p.login_cooldown_until || (p.sync_state?.consecutive_failures ?? 0) > 0) return 'error'
   if (!p.sync_state?.last_success_at) return 'pending'
   return 'connected'

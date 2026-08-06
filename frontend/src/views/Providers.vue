@@ -374,41 +374,78 @@
           </button>
         </div>
 
-        <!-- 按【】前缀：批量建站，顺带把该前缀下的账号一并关联 -->
+        <!-- 快捷导入：按【】前缀批量建站，逐行可改地址，顺带关联该前缀下的账号 -->
         <template v-if="scanTab === 'prefix'">
           <p class="text-xs text-gray-400">{{ t('provider.scanPrefixHint') }}</p>
-          <div class="flex items-center justify-between">
+          <div class="flex flex-wrap items-center justify-between gap-2">
             <label class="flex items-center gap-2 text-sm">
               <input type="checkbox" class="checkbox" :checked="allSelected" @change="toggleAll" />
               {{ t('provider.selectAll') }}
             </label>
-            <button class="btn btn-primary text-sm" :disabled="!selectedNames.length || importing" @click="doImport">
-              {{ importing ? t('common.loading') : t('provider.importSelected') + ' (' + selectedNames.length + ')' }}
-            </button>
+            <div class="flex items-center gap-2">
+              <!-- 采集方式：默认 API 采集。缺凭据的站点不会真去采（后端凭据门禁），
+                   建完站再去编辑页补账密即可开始采集 -->
+              <Select
+                v-model="importBalanceType"
+                :options="formBalanceTypeOptions"
+                :searchable="false"
+                class="!w-36"
+              />
+              <button class="btn btn-primary text-sm" :disabled="!selectedNames.length || importing" @click="doImport">
+                {{ importing ? t('common.loading') : t('provider.importSelected') + ' (' + selectedNames.length + ')' }}
+              </button>
+            </div>
           </div>
+          <p v-if="importBalanceType === 'sub2api'" class="text-xs text-amber-600 dark:text-amber-400">
+            {{ t('provider.importCredHint') }}
+          </p>
           <LoadingState v-if="scanning" />
           <EmptyState v-else-if="!scanItems.length" icon="search" />
           <div v-else class="max-h-96 space-y-1 overflow-y-auto">
-            <label
+            <div
               v-for="item in scanItems" :key="item.prefix"
-              class="flex cursor-pointer items-center justify-between rounded-lg border px-3 py-2 text-sm transition-colors"
-              :class="item.exists ? 'border-gray-200 bg-gray-50 opacity-60 dark:border-dark-700 dark:bg-dark-800/50' : 'border-gray-200 hover:border-primary-400 dark:border-dark-700'"
+              class="rounded-lg border px-3 py-2 text-sm transition-colors"
+              :class="item.exists ? 'border-gray-200 bg-gray-50 dark:border-dark-700 dark:bg-dark-800/50' : 'border-gray-200 dark:border-dark-700'"
             >
-              <span class="flex items-center gap-2">
-                <input type="checkbox" :value="item.prefix" v-model="selectedNames" :disabled="item.exists" class="checkbox" />
-                <span class="font-medium">{{ item.prefix }}</span>
-              </span>
-              <span class="flex items-center gap-2 text-xs text-gray-500">
-                {{ item.account_count }} {{ t('provider.accountCount') }}
-                <span v-if="item.exists" class="badge badge-success">✓</span>
-              </span>
-            </label>
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <label class="flex min-w-0 cursor-pointer items-center gap-2">
+                  <!-- 已建站的仍可勾选：老站点后来新增的账号也要能从这里补关联 -->
+                  <input type="checkbox" :value="item.prefix" v-model="selectedNames" class="checkbox" />
+                  <span class="truncate font-medium">{{ item.prefix }}</span>
+                  <span v-if="item.exists" class="badge badge-success shrink-0 !text-[10px]">
+                    {{ t('provider.alreadyCreatedShort') }}
+                  </span>
+                </label>
+                <div class="flex items-center gap-2">
+                  <input
+                    v-model.trim="scanUrls[item.prefix]"
+                    class="input !w-56 !py-1.5 text-xs"
+                    :placeholder="t('provider.baseUrl')"
+                  />
+                  <span class="shrink-0 text-xs text-gray-500">
+                    {{ item.account_count }} {{ t('provider.accountCount') }}
+                  </span>
+                </div>
+              </div>
+              <!-- 同一前缀下的账号连着多个地址：预填值是任取的，必须让人核对 -->
+              <p v-if="item.url_count > 1" class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                {{ t('provider.multiUrlHint', { n: item.url_count }) }}
+              </p>
+            </div>
           </div>
         </template>
 
         <!-- 按站点地址：不依赖命名习惯，看账号实际连的是哪个上游 -->
         <template v-else>
-          <p class="text-xs text-gray-400">{{ t('provider.scanUrlHint') }}</p>
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <p class="text-xs text-gray-400">{{ t('provider.scanUrlHint') }}</p>
+            <Select
+              v-model="importBalanceType"
+              :options="formBalanceTypeOptions"
+              :searchable="false"
+              class="!w-36"
+            />
+          </div>
           <LoadingState v-if="urlScanning" />
           <EmptyState v-else-if="!urlGroups.length" icon="search" />
           <div v-else class="max-h-96 space-y-3 overflow-y-auto">
@@ -916,6 +953,13 @@ const scanning = ref(false)
 const scanItems = ref<ScanItem[]>([])
 const selectedNames = ref<string[]>([])
 const importing = ref(false)
+/** prefix → 站点地址输入框（预填后端扫出的地址，用户可改） */
+const scanUrls = ref<Record<string, string>>({})
+/**
+ * 导入时给新建站点设的采集方式，默认 API 自动采集。
+ * 缺凭据的站点不会真进采集队列（后端凭据门禁），建完站补账密即可开始采集。
+ */
+const importBalanceType = ref('sub2api')
 
 // 按站点地址归组（不依赖【】命名习惯的发现方式）
 const urlScanning = ref(false)
@@ -964,8 +1008,8 @@ const costEnd = ref(todayStr())
 const costItems = computed(() => costs.value?.items || [])
 
 const allSelected = computed(() => {
-  const sel = scanItems.value.filter((i) => !i.exists)
-  return sel.length > 0 && sel.every((i) => selectedNames.value.includes(i.prefix))
+  const items = scanItems.value
+  return items.length > 0 && items.every((i) => selectedNames.value.includes(i.prefix))
 })
 
 function balanceTypeLabel(bt: string) {
@@ -978,16 +1022,25 @@ function balanceTypeVariant(bt: string) {
   if (bt === 'manual') return 'warning' as const
   return 'gray' as const
 }
-// 采集健康点：绿=正常 黄=1-2 次失败 红=3+ 或登录冷却 灰=未采集
+// 采集健康点：绿=正常 黄=1-2 次失败 红=3+ 或登录冷却 灰=待配置凭据/未采集。
+//
+// 状态判据不在本地重写：providerModel.providerStatus 是全站唯一定义源，
+// 这里只做 status → 颜色的映射。失败次数的黄/红分档是健康点独有的粒度
+// （筛选维度不需要这么细），故在 error 分支内部再分。
+const HEALTH_DOT_GRAY = 'bg-gray-300 dark:bg-dark-600'
 function healthDotClass(p: Provider): string {
-  if (p.login_cooldown_until) return 'bg-red-500'
-  const st = p.sync_state
-  if (!st || (!st.last_run_at && !st.last_success_at)) return 'bg-gray-300 dark:bg-dark-600'
-  if (st.consecutive_failures === 0) return 'bg-emerald-500'
-  if (st.consecutive_failures < 3) return 'bg-amber-500'
-  return 'bg-red-500'
+  switch (providerStatus(p)) {
+    case 'connected':
+      return 'bg-emerald-500'
+    case 'error':
+      if (p.login_cooldown_until) return 'bg-red-500'
+      return (p.sync_state?.consecutive_failures ?? 0) < 3 ? 'bg-amber-500' : 'bg-red-500'
+    default: // credentialsPending / pending / unmonitored
+      return HEALTH_DOT_GRAY
+  }
 }
 function healthTitle(p: Provider): string {
+  if (providerStatus(p) === 'credentialsPending') return t('provider.credentialsMissing')
   const st = p.sync_state
   if (!st || (!st.last_run_at && !st.last_success_at)) return t('provider.syncNever')
   if (st.consecutive_failures > 0) {
@@ -1140,7 +1193,11 @@ async function loadPrefixScan() {
   try {
     const res = await providerApi.scan()
     scanItems.value = res.items || []
+    // 默认只勾未建站的：已建站的行保留可勾选（补关联用），但不替用户做决定
     selectedNames.value = scanItems.value.filter((i) => !i.exists).map((i) => i.prefix)
+    const urls: Record<string, string> = {}
+    for (const i of scanItems.value) urls[i.prefix] = i.base_url
+    scanUrls.value = urls
   } catch (e) {
     app.showError(errorMessage(e))
   } finally {
@@ -1187,7 +1244,7 @@ async function importUrlGroup(g: URLGroupItem) {
   importing.value = true
   try {
     const res = await providerApi.import([
-      { name, base_url: g.base_url, account_ids: ids }
+      { name, base_url: g.base_url, balance_type: importBalanceType.value, account_ids: ids }
     ])
     app.showSuccess(t('provider.linkedResult', { name, n: res.linked }))
     await Promise.all([load(), loadUrlScan()])
@@ -1199,8 +1256,7 @@ async function importUrlGroup(g: URLGroupItem) {
 }
 
 function toggleAll() {
-  const sel = scanItems.value.filter((i) => !i.exists).map((i) => i.prefix)
-  selectedNames.value = allSelected.value ? [] : sel
+  selectedNames.value = allSelected.value ? [] : scanItems.value.map((i) => i.prefix)
 }
 
 async function doImport() {
@@ -1209,11 +1265,20 @@ async function doImport() {
     // 顺带把该前缀下的账号一并关联 —— 前缀只用来发现，归属靠关联表落库
     const items = selectedNames.value.map((name) => {
       const hit = scanItems.value.find((i) => i.prefix === name)
-      return { name, account_ids: hit?.account_ids || [] }
+      return {
+        name,
+        base_url: scanUrls.value[name] || '',
+        balance_type: importBalanceType.value,
+        account_ids: hit?.account_ids || []
+      }
     })
     const res = await providerApi.import(items)
     app.showSuccess(
-      t('provider.imported', { created: res.created.length, skipped: res.skipped.length })
+      t('provider.importedLinked', {
+        created: res.created.length,
+        skipped: res.skipped.length,
+        linked: res.linked
+      })
     )
     showScan.value = false
     await load()

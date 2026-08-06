@@ -107,6 +107,12 @@ type ScanPrefix struct {
 	AccountCount int     `json:"account_count"`
 	Exists       bool    `json:"exists"`      // 是否已录入
 	AccountIDs   []int64 `json:"account_ids"` // 该前缀下的账号，导入时一并写关联
+	// BaseURL 该前缀下账号连接的站点地址，作为导入表单的预填值。
+	// 组内地址不唯一时按用户选择取任意一个（Go map 遍历顺序随机），
+	// 故同一份数据两次扫描可能给出不同地址 —— URLCount > 1 时前端须提示用户核对。
+	BaseURL string `json:"base_url"`
+	// URLCount 该前缀下出现过的不同站点地址数（0 = 账号都没填地址）。
+	URLCount int `json:"url_count"`
 }
 
 // ScanPrefixes 扫描 accounts.name 的【】前缀并去重。
@@ -127,6 +133,7 @@ func (s *ProviderService) ScanPrefixes(ctx context.Context) ([]ScanPrefix, error
 	countMap := make(map[string]int)      // lower prefix -> count
 	displayMap := make(map[string]string) // lower prefix -> 首次出现的原始大小写
 	idMap := make(map[string][]int64)     // lower prefix -> 账号 id
+	urlMap := make(map[string]map[string]bool) // lower prefix -> 归一化地址集合
 	for _, a := range accs {
 		if name, ok := ParseProviderName(a.Name); ok {
 			lower := strings.ToLower(name)
@@ -135,16 +142,30 @@ func (s *ProviderService) ScanPrefixes(ctx context.Context) ([]ScanPrefix, error
 			if _, seen := displayMap[lower]; !seen {
 				displayMap[lower] = name
 			}
+			// 与「按站点地址」页签同一套归一化，两个入口给出的地址才对得上
+			if u := NormalizeBaseURL(a.BaseURL); u != "" {
+				if urlMap[lower] == nil {
+					urlMap[lower] = map[string]bool{}
+				}
+				urlMap[lower][u] = true
+			}
 		}
 	}
 
 	out := make([]ScanPrefix, 0, len(countMap))
 	for lower, cnt := range countMap {
+		var pick string
+		for u := range urlMap[lower] { // 任意取一个：调用方已知地址可能不唯一
+			pick = u
+			break
+		}
 		out = append(out, ScanPrefix{
 			Prefix:       displayMap[lower],
 			AccountCount: cnt,
 			Exists:       existingLower[lower],
 			AccountIDs:   idMap[lower],
+			BaseURL:      pick,
+			URLCount:     len(urlMap[lower]),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -197,9 +218,12 @@ func (s *ProviderService) ScanURLGroups(ctx context.Context) ([]URLGroup, error)
 
 // ImportItem 一条导入项：站点名 + 要一并关联的账号。
 type ImportItem struct {
-	Name       string  `json:"name"`
-	BaseURL    string  `json:"base_url"`
-	AccountIDs []int64 `json:"account_ids"`
+	Name    string `json:"name"`
+	BaseURL string `json:"base_url"`
+	// BalanceType 余额获取方式（sub2api | manual | none）。空串回退 none。
+	// 仅对新建站点生效：已存在的站点不改其采集方式，那是用户在编辑页的决定。
+	BalanceType string  `json:"balance_type"`
+	AccountIDs  []int64 `json:"account_ids"`
 }
 
 // ImportResult 导入结果。
@@ -207,12 +231,16 @@ type ImportResult struct {
 	Created []string `json:"created"`
 	Skipped []string `json:"skipped"`
 	Linked  int      `json:"linked"` // 写入的关联条数
+	// CreatedIDs 新建站点的 id，供调用方排班（缺凭据的站点由 ListCollectable 兜底过滤）。
+	CreatedIDs []int64 `json:"-"`
 }
 
-// Import 批量建站并顺带写入账号关联（默认 balance_type=none）。
+// Import 批量建站并顺带写入账号关联。
 //
 // 站点已存在时只跳过建站，关联照写：用户勾选的意图是「让这些账号归这个站」，
-// 站点早就建过不该让关联一起被跳过。
+// 站点早就建过不该让关联一起被跳过。已存在但地址为空的站点会补上本次带来的
+// 地址 —— 早期按前缀导入的站点全是空地址，让它们在补关联时顺带补齐，
+// 而不是逼用户再去编辑页填一遍。
 func (s *ProviderService) Import(ctx context.Context, items []ImportItem) (*ImportResult, error) {
 	result := &ImportResult{Created: []string{}, Skipped: []string{}}
 
@@ -230,15 +258,26 @@ func (s *ProviderService) Import(ctx context.Context, items []ImportItem) (*Impo
 		if name == "" {
 			continue
 		}
+		baseURL := strings.TrimRight(strings.TrimSpace(it.BaseURL), "/")
+		balanceType := it.BalanceType
+		if !importBalanceTypes[balanceType] {
+			balanceType = "none"
+		}
 		p, err := s.repo.GetByName(ctx, name)
 		switch {
 		case err == nil:
 			result.Skipped = append(result.Skipped, name)
+			// 只补空地址，不覆盖已有值：用户可能特意填了带路径的地址
+			if p.BaseURL == "" && baseURL != "" {
+				if updated, uErr := s.repo.UpdateBaseURL(ctx, p.ID, baseURL); uErr == nil {
+					p = updated
+				}
+			}
 		case errors.Is(err, repository.ErrNotFound):
 			p, err = s.repo.Create(ctx, repository.CreateParams{
 				Name:        name,
-				BalanceType: "none",
-				BaseURL:     strings.TrimRight(strings.TrimSpace(it.BaseURL), "/"),
+				BalanceType: balanceType,
+				BaseURL:     baseURL,
 			})
 			if err != nil {
 				// 并发/大小写冲突时跳过
@@ -246,6 +285,7 @@ func (s *ProviderService) Import(ctx context.Context, items []ImportItem) (*Impo
 				continue
 			}
 			result.Created = append(result.Created, name)
+			result.CreatedIDs = append(result.CreatedIDs, p.ID)
 		default:
 			return nil, err
 		}
@@ -265,3 +305,6 @@ func (s *ProviderService) Import(ctx context.Context, items []ImportItem) (*Impo
 	}
 	return result, nil
 }
+
+// importBalanceTypes 导入允许的余额获取方式（与 handler 的 validBalanceTypes 同集合）。
+var importBalanceTypes = map[string]bool{"sub2api": true, "manual": true, "none": true}
