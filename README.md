@@ -330,6 +330,56 @@ midstream-ops/
 
 </details>
 
+## 嵌入 sub2api（模型广场 / KYC 自助）
+
+两个页面通过 sub2api 的「自定义菜单页面」以 iframe 嵌入，用户身份来自 sub2api 透传的 token。
+
+**配置三项必须同时齐备**，缺一页面就打不开。环境变量部署（Docker）：
+
+```bash
+MONITOR_PLAZA_ENABLED=true
+MONITOR_PLAZA_SUB2API_BASE_URL=https://your-sub2api.com   # 用作 CSP frame-ancestors，只允许该站点嵌入
+MONITOR_PLAZA_SUB2API_JWT_SECRET=<与 sub2api 的 jwt.secret 完全一致>
+```
+
+等价的配置文件写法：
+
+```yaml
+plaza:
+  enabled: true
+  sub2api_base_url: "https://your-sub2api.com"
+  sub2api_jwt_secret: "<与 sub2api 的 jwt.secret 完全一致>"
+```
+
+`enabled=true` 而后两项为空时进程会启动失败并报明确原因，不会带着半截配置跑起来。
+
+sub2api 后台的自定义菜单 URL 填**嵌入页路径**而非站点根路径：
+
+```
+https://your-monitor.com/embed/plaza
+https://your-monitor.com/embed/kyc
+```
+
+sub2api 侧的 CSP `frame-src` 会自动放行该 origin（读自定义菜单配置动态注入），保存设置即生效，无需重启对方。
+
+### 排查 `Refused to frame ... frame-ancestors 'none'`
+
+浏览器控制台报这个错时，按顺序核对：
+
+1. **`MONITOR_PLAZA_SUB2API_BASE_URL` 是否填了。** 为空时中间件下发 `frame-ancestors 'none'`（fail-closed），任何站点都嵌不了。这是最常见的原因。
+2. **值是否为 origin 形式。** 必须 `https://host`，不带路径、不带尾斜杠，且与浏览器地址栏的 sub2api 域名完全一致。
+3. **`MONITOR_PLAZA_ENABLED` 是否为 true。** 嵌入页全关时不再挂载该中间件，`/embed/*` 不会下发任何 CSP —— 若此时仍报错，说明跑的是旧版本二进制。
+
+验证命令（**必须用 `-X GET`**）：
+
+```bash
+curl -s -D - -o /dev/null -X GET https://your-monitor.com/embed/plaza | grep -i content-security-policy
+```
+
+期望输出 `frame-ancestors https://your-sub2api.com`。
+
+> `curl -I` 发的是 HEAD 请求，中间件只处理 GET，用 HEAD 探测**永远看不到这个头**，会误判成「头没下发」。
+
 ## 安全说明
 
 - 线上 PG 只读双保险：只读账号 + DSN 强制 `default_transaction_read_only=on`
