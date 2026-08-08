@@ -108,4 +108,37 @@ func TestEmbedFrameHeaders(t *testing.T) {
 			t.Errorf("non-embed path should not get CSP, got %q", got)
 		}
 	})
+
+	// 嵌入页全部关闭时不得下发任何 CSP：否则 /embed/* 会带上 frame-ancestors 'none'，
+	// 把「功能没开」伪装成「白名单没配」，排查时会一路怀疑到嵌入方的 frame-src 配置。
+	t.Run("no embed page enabled emits no CSP", func(t *testing.T) {
+		h := &Handlers{
+			Auth:        handler.NewAuthHandler(nil),
+			PGAvailable: func() bool { return false },
+		}
+		r := NewRouter(&config.Config{}, nil, h)
+
+		for _, path := range []string{"/embed/plaza", "/embed/kyc"} {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if got := w.Header().Get("Content-Security-Policy"); got != "" {
+				t.Errorf("%s: CSP = %q, want empty when no embed page is enabled", path, got)
+			}
+		}
+	})
+
+	// HEAD 请求拿不到这两个头（中间件只处理 GET）。这是排查时的常见陷阱：
+	// `curl -I` 发的正是 HEAD，会让人误以为头没下发。
+	t.Run("head request bypasses embed headers", func(t *testing.T) {
+		r := newTestRouter(t, "https://sub.example.com")
+		req := httptest.NewRequest(http.MethodHead, "/embed/plaza", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if got := w.Header().Get("Content-Security-Policy"); got != "" {
+			t.Errorf("HEAD should bypass embed headers, got CSP = %q", got)
+		}
+	})
 }

@@ -45,7 +45,12 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 	r := gin.New()
 	r.Use(gin.Recovery())
 	// 嵌入页的 CSP frame-ancestors（仅作用于 middleware.embedPagePaths 白名单内的路径）。
-	r.Use(middleware.EmbedFrameHeaders(h.EmbedFrameOrigin))
+	//
+	// 判据与下方嵌入路由的注册条件保持一致：嵌入页全部关闭时不挂载，否则会对未注册的
+	// /embed/* 路径下发 frame-ancestors 'none'，让「功能没开」看起来像「白名单没配」。
+	if h.Plaza != nil || h.EmbedKyc != nil {
+		r.Use(middleware.EmbedFrameHeaders(h.EmbedFrameOrigin))
+	}
 
 	// 健康检查（免鉴权）
 	r.GET("/health", func(c *gin.Context) {
