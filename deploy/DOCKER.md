@@ -122,6 +122,23 @@ docker-compose up -d
 全部配置项走 `MONITOR_` 前缀的环境变量，命名规则是配置键的 `.` 换成 `_` 再大写，
 例如 `sub2api_db.host` → `MONITOR_SUB2API_DB_HOST`。完整清单见 `.env.example`。
 
+`docker-compose.yml` 用 `env_file` 把 `.env` **整体透传**给容器，因此新增配置项
+**只需改 `.env`，不用动 compose**。compose 的 `environment` 段只保留三类必须硬管的项：
+
+| 类别 | 例子 | 为什么不能走 .env |
+|------|------|------------------|
+| 容器内固定值 | `MONITOR_SERVER_PORT=9090`、`MONITOR_SQLITE_PATH` | 对外端口由 `ports` 映射、数据目录由 volume 挂载，改了只会让健康检查失联或数据丢失 |
+| 安全兜底 | `MONITOR_PLAZA_DEV_MODE=false` | 该开关能签发任意用户身份的 token，硬编码不给误开的机会 |
+| 必填校验 | `MONITOR_AUTH_JWT_SECRET` 等 5 项 | 用 `${VAR:?...}` 让缺失时直接拒绝启动，而不是带着半截配置跑起来 |
+
+`environment` 优先级高于 `env_file`，所以上面三类在 `.env` 里改也覆盖不掉。
+
+> **早期版本曾逐条列举全部变量**，代价是「后端每加一个配置项就得同步改 compose，
+> 漏一条则用户配了不生效且无任何报错」。这已经踩过两次：`MONITOR_MEDIA_*` 三项
+> 静默失效，另有 12 个采集参数（如 `MONITOR_PROBE_TIMEOUT_SECONDS`）长期处于
+> 同样状态。改用 `env_file` 后，配置项清单只存在于 `.env.example` 与后端
+> `config.go` 的 `bindEnvs` 两处。
+
 常用可选项：
 
 | 变量 | 默认 | 说明 |
