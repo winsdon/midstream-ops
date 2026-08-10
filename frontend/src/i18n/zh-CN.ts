@@ -713,5 +713,86 @@ export default {
       network: '网络请求失败',
       copyFailed: '复制失败'
     }
+  },
+
+  // 生图 / 生视频嵌入页。会话与网络层错误复用 plaza.errors.*，这里只放业务态。
+  media: {
+    title: '生图 / 生视频',
+    intro: '用你自己的 API Key 生成图片与视频，费用按上游标准价从对应 Key 扣除。',
+    submitted: '已提交',
+    kind: {
+      t2i: '文生图',
+      i2i: '图生图',
+      t2v: '文生视频',
+      i2v: '图生视频'
+    },
+    status: {
+      pending: '生成中',
+      succeeded: '已完成',
+      failed: '失败'
+    },
+    form: {
+      key: 'API Key',
+      model: '模型',
+      prompt: '提示词',
+      promptPlaceholder: '描述你想要的画面，越具体效果越好',
+      count: '生成张数',
+      size: '尺寸',
+      sizeDefault: '使用默认',
+      sizeTierHint: '计费按最长边判定档位：≤1024 为 1K，≤2048 为 2K，更大为 4K。',
+      fixedSizeHint: '该模型固定输出 1024×1024，尺寸参数无效。',
+      quality: '质量',
+      resolution: '分辨率',
+      duration: '时长（秒）',
+      refImage: '参考图',
+      refImagePick: '点击选择参考图',
+      refImageSelected: '已选 {n} 张',
+      refImageHint: '支持多张，单张不超过 20MB。',
+      refImageURL: '参考图地址',
+      refImageURLHint: '需为公网可访问的图片地址，上游服务器会自行拉取（本站生成的图片不落库，无法作为参考图）。',
+      estCost: '预估费用',
+      estUnknown: '按分组定价，以账单为准',
+      videoBillingWarning: '视频任务提交成功即扣费，即便生成结果被内容审核拒绝也不退还。',
+      submit: '开始生成'
+    },
+    confirm: {
+      title: '确认提交视频任务',
+      message: '本次预估扣费 ${cost}。视频费用在提交成功那一刻即计入，被内容审核拒绝也不退还。确定继续？',
+      ok: '确认提交'
+    },
+    tasks: {
+      title: '生成记录',
+      empty: '还没有生成记录',
+      emptyHint: '在左侧填写提示词并提交，结果会显示在这里。',
+      imageNotRetained: '图片仅在生成时返回一次，未留存；刷新页面后不可见。',
+      videoExpired: '视频产物已从上游过期，无法再获取。'
+    },
+    errors: {
+      notConfigured: '生图功能未启用',
+      noKeys: '没有可用的 Key',
+      noKeysHint: '你的 Key 所属分组尚未开通图片或视频生成能力，请联系管理员。',
+      noModelForKind: '当前 Key 不支持该生成方式',
+      selectKey: '请选择一个 Key',
+      selectModel: '请选择模型',
+      emptyPrompt: '请填写提示词',
+      promptTooLong: '提示词过长',
+      badCount: '生成张数超出范围',
+      badResolution: '分辨率仅支持 480p 与 720p',
+      badDuration: '时长须在 1-15 秒之间',
+      badImageURL: '参考图须为公网可访问的 http(s) 地址',
+      missingImage: '请选择参考图',
+      imageTooLarge: '参考图超过 20MB',
+      invalidParams: '参数不合法',
+      useUploadEndpoint: '图生图请使用上传接口',
+      keyNotFound: 'Key 不存在或已停用',
+      tooManyActive: '进行中的视频任务过多，请等待完成后再试',
+      tooFrequent: '操作过于频繁，请稍后再试',
+      taskNotFound: '任务不存在',
+      contentNotReady: '产物尚未就绪',
+      contentFailed: '获取产物失败',
+      contentExpired: '产物已从上游过期，无法再获取',
+      loadKeysFailed: '加载 Key 列表失败',
+      loadTasksFailed: '加载任务列表失败'
+    }
   }
 }

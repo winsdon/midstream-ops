@@ -149,6 +149,8 @@ func main() {
 	// 因此 plaza.enabled 实际是「嵌入功能总开关」，名字是历史遗留。
 	var plazaHandler *handler.PlazaHandler
 	var embedKycHandler *handler.EmbedKycHandler
+	var embedMediaHandler *handler.EmbedMediaHandler
+	var mediaSvc *service.MediaService
 	var embedSessions *service.EmbedSessionStore
 	var embedDevHandler *handler.EmbedDevHandler
 	if cfg.Plaza.Enabled {
@@ -163,6 +165,18 @@ func main() {
 		plazaHandler = handler.NewPlazaHandler(plazaSvc, verifier, embedSessions, pg)
 		embedKycHandler = handler.NewEmbedKycHandler(creditSvc, verifier, embedSessions)
 
+		// 生图 / 生视频页有独立开关：它会真实花用户的钱（视频提交即扣费且不退款），
+		// 运营方可能想在开着广场的同时关掉它。
+		if cfg.Media.Enabled {
+			mediaSvc = service.NewMediaService(
+				pg,
+				repository.NewMediaTaskRepo(sqliteDB),
+				service.NewMediaGateway(cfg.Media.GatewayBaseURL),
+				cfg.Media.MaxPendingVideos,
+			)
+			embedMediaHandler = handler.NewEmbedMediaHandler(mediaSvc, verifier, embedSessions, pg)
+		}
+
 		// 本地联调开关：暴露 token 自签端点，等同于「可登录成任意客户」。
 		// 每次启动都告警，避免误开后无声无息地带到线上。
 		if cfg.Plaza.DevMode {
@@ -170,6 +184,9 @@ func main() {
 			embedDevHandler = handler.NewEmbedDevHandler(cfg.Plaza.Sub2apiJWTSecret)
 		}
 	}
+
+	// 生图任务记录纳入每日清理（未启用时 mediaSvc 为 nil，清理项自动跳过）
+	scheduler.SetMediaService(mediaSvc)
 
 	// 装配处理器
 	handlers := &server.Handlers{
@@ -186,6 +203,7 @@ func main() {
 		Plaza:            plazaHandler,
 		Credit:           handler.NewCreditHandler(creditSvc, pg),
 		EmbedKyc:         embedKycHandler,
+		EmbedMedia:       embedMediaHandler,
 		EmbedDev:         embedDevHandler,
 		EmbedSessions:    embedSessions,
 		EmbedFrameOrigin: cfg.Plaza.Sub2apiBaseURL,

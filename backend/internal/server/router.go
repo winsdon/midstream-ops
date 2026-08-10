@@ -14,19 +14,20 @@ import (
 
 // Handlers 聚合所有处理器（随功能扩展逐步填充）。
 type Handlers struct {
-	Auth      *handler.AuthHandler
-	Dashboard *handler.DashboardHandler
-	Provider  *handler.ProviderHandler
-	OpCost    *handler.OperatingCostHandler
-	Stats     *handler.StatsHandler
-	Rate      *handler.RateHandler
-	Stability *handler.StabilityHandler
-	Settings  *handler.SettingsHandler
-	Pricing   *handler.PricingHandler
-	Provision *handler.ProvisionHandler
-	Plaza     *handler.PlazaHandler
-	Credit    *handler.CreditHandler
-	EmbedKyc  *handler.EmbedKycHandler
+	Auth       *handler.AuthHandler
+	Dashboard  *handler.DashboardHandler
+	Provider   *handler.ProviderHandler
+	OpCost     *handler.OperatingCostHandler
+	Stats      *handler.StatsHandler
+	Rate       *handler.RateHandler
+	Stability  *handler.StabilityHandler
+	Settings   *handler.SettingsHandler
+	Pricing    *handler.PricingHandler
+	Provision  *handler.ProvisionHandler
+	Plaza      *handler.PlazaHandler
+	Credit     *handler.CreditHandler
+	EmbedKyc   *handler.EmbedKycHandler
+	EmbedMedia *handler.EmbedMediaHandler
 	// EmbedDev 是本地联调用的 token 签发器，仅在 plaza.dev_mode 开启时非 nil。
 	EmbedDev *handler.EmbedDevHandler
 
@@ -45,7 +46,12 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 	r := gin.New()
 	r.Use(gin.Recovery())
 	// 嵌入页的 CSP frame-ancestors（仅作用于 middleware.embedPagePaths 白名单内的路径）。
-	r.Use(middleware.EmbedFrameHeaders(h.EmbedFrameOrigin))
+	//
+	// 判据与下方嵌入路由的注册条件保持一致：嵌入页全部关闭时不挂载，否则会对未注册的
+	// /embed/* 路径下发 frame-ancestors 'none'，让「功能没开」看起来像「白名单没配」。
+	if h.Plaza != nil || h.EmbedKyc != nil || h.EmbedMedia != nil {
+		r.Use(middleware.EmbedFrameHeaders(h.EmbedFrameOrigin))
+	}
 
 	// 健康检查（免鉴权）
 	r.GET("/health", func(c *gin.Context) {
@@ -90,6 +96,28 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 				authed.Use(middleware.EmbedSession(h.EmbedSessions))
 				authed.GET("/profile", h.EmbedKyc.GetProfile)
 				authed.PUT("/profile", h.EmbedKyc.SaveProfile)
+			}
+		}
+
+		// 生图 / 生视频（同上的嵌入身份体系）。
+		//
+		// 提交端点会真实花钱：视频任务在提交成功那一刻即计费，且内容审核拒绝
+		// 不退还。因此提交必须带幂等键，重复提交由 service 层直接复用既有任务。
+		//
+		// 产物走本站代理而非直链：视频端点强制要求 Authorization 头，
+		// 浏览器的 <video src> 带不了自定义头，前端也拿不到明文 key。
+		if h.EmbedMedia != nil {
+			media := v1.Group("/embed/media")
+			{
+				media.POST("/session", h.EmbedMedia.CreateSession)
+
+				authed := media.Group("")
+				authed.Use(middleware.EmbedSession(h.EmbedSessions))
+				authed.GET("/keys", h.EmbedMedia.Keys)
+				authed.POST("/generate", h.EmbedMedia.Generate)
+				authed.POST("/edits", h.EmbedMedia.Edit)
+				authed.GET("/tasks", h.EmbedMedia.Tasks)
+				authed.GET("/tasks/:id/content", h.EmbedMedia.Content)
 			}
 		}
 
