@@ -309,11 +309,17 @@ func (h *EmbedMediaHandler) Content(c *gin.Context) {
 	// 归属校验在 repo 层的 SQL 里，越权访问返回 ErrNotFound
 	content, err := h.svc.OpenContent(c.Request.Context(), userID, id)
 	if err != nil {
+		var ge *service.MediaGatewayError
 		switch {
 		case errors.Is(err, repository.ErrNotFound):
 			response.NotFound(c, "media.errors.taskNotFound")
 		case errors.Is(err, service.ErrMediaNotReady):
 			response.BadRequest(c, "media.errors.contentNotReady")
+		// 上游 4xx 说明产物已在上游侧消失（视频产物有保留期，实测约半天后
+		// request_id 返回 404）。这不是本站故障，报 500 会让用户以为是本站
+		// 出错、也会在控制台留下红色报错——如实回 404 并给出「已过期」提示。
+		case errors.As(err, &ge) && ge.StatusCode >= 400 && ge.StatusCode < 500:
+			response.NotFound(c, "media.errors.contentExpired")
 		default:
 			response.InternalError(c, "media.errors.contentFailed")
 		}
