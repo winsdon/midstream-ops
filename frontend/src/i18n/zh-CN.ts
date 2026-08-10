@@ -764,7 +764,8 @@ export default {
       title: '生成记录',
       empty: '还没有生成记录',
       emptyHint: '在左侧填写提示词并提交，结果会显示在这里。',
-      imageNotRetained: '图片仅在生成时返回一次，未留存；刷新页面后不可见。'
+      imageNotRetained: '图片仅在生成时返回一次，未留存；刷新页面后不可见。',
+      videoExpired: '视频产物已从上游过期，无法再获取。'
     },
     errors: {
       notConfigured: '生图功能未启用',
@@ -789,6 +790,7 @@ export default {
       taskNotFound: '任务不存在',
       contentNotReady: '产物尚未就绪',
       contentFailed: '获取产物失败',
+      contentExpired: '产物已从上游过期，无法再获取',
       loadKeysFailed: '加载 Key 列表失败',
       loadTasksFailed: '加载任务列表失败'
     }

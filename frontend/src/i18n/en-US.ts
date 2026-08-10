@@ -766,7 +766,8 @@ export default {
       title: 'History',
       empty: 'No generations yet',
       emptyHint: 'Fill in a prompt on the left and submit — results will appear here.',
-      imageNotRetained: 'Images are returned once at generation time and not retained; they disappear on refresh.'
+      imageNotRetained: 'Images are returned once at generation time and not retained; they disappear on refresh.',
+      videoExpired: 'The video has expired upstream and can no longer be fetched.'
     },
     errors: {
       notConfigured: 'Generation is not enabled',
@@ -791,6 +792,7 @@ export default {
       taskNotFound: 'Task not found',
       contentNotReady: 'Result is not ready yet',
       contentFailed: 'Failed to fetch the result',
+      contentExpired: 'The result has expired upstream',
       loadKeysFailed: 'Failed to load keys',
       loadTasksFailed: 'Failed to load tasks'
     }

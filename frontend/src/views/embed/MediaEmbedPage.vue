@@ -429,6 +429,14 @@
               >
                 {{ t('media.tasks.imageNotRetained') }}
               </p>
+              <!-- 视频产物取不到：上游有保留期，过期后 request_id 会 404。
+                   显式说明而不是留一个加载不出来的空白播放器。 -->
+              <p
+                v-else-if="task.status === 'succeeded' && isVideoKind(task.kind) && contentFailed.has(task.id)"
+                class="rounded-lg bg-gray-50 px-3 py-2 text-xs leading-relaxed text-gray-400 dark:bg-dark-900/50 dark:text-dark-500"
+              >
+                {{ t('media.tasks.videoExpired') }}
+              </p>
             </div>
           </article>
         </section>
@@ -523,6 +531,9 @@ const contentURLs = ref<Record<number, string>>({})
  */
 const inlineImages = ref<Record<number, string[]>>({})
 
+/** 产物取回失败过的任务 ID —— 记住以避免每轮轮询重复发必然失败的请求。 */
+const contentFailed = ref<Set<number>>(new Set())
+
 const selectedKey = computed(() => keys.value.find((k) => k.id === form.value.keyId) ?? null)
 const currentModels = computed(() => modelsForKind(selectedKey.value, form.value.kind))
 const selectedModel = computed(() => currentModels.value.find((m) => m.name === form.value.model) ?? null)
@@ -562,11 +573,14 @@ function onFileChange(e: Event) {
 
 /** 惰性加载视频产物：带会话凭据 fetch 成 blob URL。 */
 async function ensureContent(task: MediaTask) {
-  if (!task.has_content || contentURLs.value[task.id]) return
+  if (!task.has_content || contentURLs.value[task.id] || contentFailed.value.has(task.id)) return
   try {
     contentURLs.value = { ...contentURLs.value, [task.id]: await fetchContent(task.id) }
   } catch {
-    // 产物取不到不该打断整页，静默降级为空白预览
+    // 【记住失败，不再重试】视频产物在上游有保留期，过期后 request_id 返回 404。
+    // 不记的话每轮 5 秒轮询都会再发一次必然失败的请求，控制台被 404 刷屏，
+    // 真正的错误反而被淹没。任务状态在本次会话内不会再变，记一次就够。
+    contentFailed.value = new Set(contentFailed.value).add(task.id)
   }
 }
 
