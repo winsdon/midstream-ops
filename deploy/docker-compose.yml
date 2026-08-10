@@ -27,62 +27,47 @@ services:
       # 运行时会在同目录产生 monitor.db-wal / monitor.db-shm。
       - monitor_data:/app/data
 
+    # 全部 MONITOR_* 配置项从 .env 直接透传。
+    #
+    # 【为什么用 env_file 而不是逐条列在 environment 里】逐条列举要求「后端每加
+    # 一个配置项，就得同步改 compose」，漏一条的表现是：用户在 .env 里配了、
+    # 程序却读不到，且没有任何报错——功能静默不生效，排查时会一路怀疑代码。
+    # 这不是假设，本项目已经这样漏过：MONITOR_MEDIA_* 三项配了不生效，
+    # 且改造前另有 12 个采集参数（PROBE_TIMEOUT_SECONDS 等）同样处于失效状态。
+    #
+    # env_file 让「配置项清单」只存在于 .env.example 与后端 config.go 两处，
+    # 新增配置项零 compose 改动。
+    env_file:
+      - .env
+
     environment:
-      # ---------------------------------------------------------------------
-      # 服务端
-      # ---------------------------------------------------------------------
+      # 下面只保留三类必须由 compose 硬管的项，其余一律走 .env：
+      #   1. 容器内固定值——改了会与端口映射/数据卷冲突
+      #   2. 安全兜底——必须锁死，不允许 .env 覆盖
+      #   3. 必填校验——缺失时拒绝启动，而不是带着半截配置跑起来
+      # environment 的优先级高于 env_file，因此这里写的值锁得住。
+
+      # [1] 容器内固定值：对外端口由 ports 段映射，此处改动只会让健康检查失联
       - MONITOR_SERVER_HOST=0.0.0.0
       - MONITOR_SERVER_PORT=9090
+      # 绝对路径：数据卷挂在 /app/data，改这里会让数据写到容器可写层而丢失
+      - MONITOR_SQLITE_PATH=/app/data/monitor.db
       # 须与 sub2api 主站一致，影响「今日」口径与对账
       - MONITOR_TIMEZONE=${TZ:-Asia/Shanghai}
       - TZ=${TZ:-Asia/Shanghai}
 
-      # ---------------------------------------------------------------------
-      # 登录与密钥
-      # ---------------------------------------------------------------------
-      - MONITOR_AUTH_USERNAME=${MONITOR_AUTH_USERNAME:-admin}
-      - MONITOR_AUTH_PASSWORD=${MONITOR_AUTH_PASSWORD:?MONITOR_AUTH_PASSWORD 必填}
-      - MONITOR_AUTH_JWT_SECRET=${MONITOR_AUTH_JWT_SECRET:?MONITOR_AUTH_JWT_SECRET 必填，须 ≥32 字节}
-      - MONITOR_AUTH_TOKEN_TTL_HOURS=${MONITOR_AUTH_TOKEN_TTL_HOURS:-24}
-      # 凭据与 KYC 的 PII 加密密钥。不配则明文落库，详见 .env.example 的警告。
-      - MONITOR_CREDENTIALS_KEY=${MONITOR_CREDENTIALS_KEY:?MONITOR_CREDENTIALS_KEY 必填}
-
-      # ---------------------------------------------------------------------
-      # 上游 sub2api Postgres（只读）
-      # ---------------------------------------------------------------------
-      # 同宿主接入 sub2api 网络时，host 直接写它的 postgres 容器名。
-      - MONITOR_SUB2API_DB_HOST=${MONITOR_SUB2API_DB_HOST:-sub2api-postgres}
-      - MONITOR_SUB2API_DB_PORT=${MONITOR_SUB2API_DB_PORT:-5432}
-      - MONITOR_SUB2API_DB_USER=${MONITOR_SUB2API_DB_USER:?只读账号必填}
-      - MONITOR_SUB2API_DB_PASSWORD=${MONITOR_SUB2API_DB_PASSWORD:?只读账号密码必填}
-      - MONITOR_SUB2API_DB_DBNAME=${MONITOR_SUB2API_DB_DBNAME:-sub2api}
-      - MONITOR_SUB2API_DB_SSLMODE=${MONITOR_SUB2API_DB_SSLMODE:-disable}
-
-      # ---------------------------------------------------------------------
-      # 本地存储
-      # ---------------------------------------------------------------------
-      # 绝对路径：不依赖进程工作目录
-      - MONITOR_SQLITE_PATH=/app/data/monitor.db
-
-      # ---------------------------------------------------------------------
-      # 采集周期（分钟）
-      # ---------------------------------------------------------------------
-      - MONITOR_BALANCE_INTERVAL_MINUTES=${MONITOR_BALANCE_INTERVAL_MINUTES:-30}
-      - MONITOR_COST_INTERVAL_MINUTES=${MONITOR_COST_INTERVAL_MINUTES:-10}
-      - MONITOR_COST_RETENTION_DAYS=${MONITOR_COST_RETENTION_DAYS:-180}
-      - MONITOR_PROBE_INTERVAL_MINUTES=${MONITOR_PROBE_INTERVAL_MINUTES:-15}
-      - MONITOR_RATES_INTERVAL_MINUTES=${MONITOR_RATES_INTERVAL_MINUTES:-5}
-
-      # ---------------------------------------------------------------------
-      # 模型广场 / KYC 嵌入页（可选，默认关闭）
-      # ---------------------------------------------------------------------
-      - MONITOR_PLAZA_ENABLED=${MONITOR_PLAZA_ENABLED:-false}
-      - MONITOR_PLAZA_SUB2API_BASE_URL=${MONITOR_PLAZA_SUB2API_BASE_URL:-}
-      - MONITOR_PLAZA_SUB2API_JWT_SECRET=${MONITOR_PLAZA_SUB2API_JWT_SECRET:-}
-      # 生产必须为 false：开启后可签发任意用户身份的 token
+      # [2] 安全兜底：该开关能签发任意用户身份的 token，等同「无密码登录成任何人」。
+      # 硬编码 false 而非读 .env——生产环境不给误开的机会。
       - MONITOR_PLAZA_DEV_MODE=false
 
-      - MONITOR_LOG_LEVEL=${MONITOR_LOG_LEVEL:-info}
+      # [3] 必填校验：缺失直接拒绝启动。
+      # 密码与 JWT 密钥关系到登录安全；CREDENTIALS_KEY 缺失会让供应商密码与
+      # KYC 身份证号明文落库（程序只告警不阻止），故在此提前拦下。
+      - MONITOR_AUTH_PASSWORD=${MONITOR_AUTH_PASSWORD:?MONITOR_AUTH_PASSWORD 必填}
+      - MONITOR_AUTH_JWT_SECRET=${MONITOR_AUTH_JWT_SECRET:?MONITOR_AUTH_JWT_SECRET 必填，须 ≥32 字节}
+      - MONITOR_CREDENTIALS_KEY=${MONITOR_CREDENTIALS_KEY:?MONITOR_CREDENTIALS_KEY 必填}
+      - MONITOR_SUB2API_DB_USER=${MONITOR_SUB2API_DB_USER:?只读账号必填}
+      - MONITOR_SUB2API_DB_PASSWORD=${MONITOR_SUB2API_DB_PASSWORD:?只读账号密码必填}
 
     networks:
       - sub2api-network
