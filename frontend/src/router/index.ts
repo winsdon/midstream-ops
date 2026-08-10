@@ -28,6 +28,14 @@ const router = createRouter({
       meta: { public: true }
     },
     {
+      // 生图 / 生视频：同上的嵌入身份体系。
+      // 本页会真实花用户的钱（视频提交即扣费不退款），提交路径带幂等键。
+      path: '/embed/media',
+      name: 'embed-media',
+      component: () => import('@/views/embed/MediaEmbedPage.vue'),
+      meta: { public: true }
+    },
+    {
       path: '/',
       component: () => import('@/views/Layout.vue'),
       children: [

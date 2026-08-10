@@ -13,17 +13,18 @@ import (
 
 // Config 应用配置根结构。
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	Timezone string         `mapstructure:"timezone"`
-	Auth     AuthConfig     `mapstructure:"auth"`
-	Sub2api  Sub2apiDB      `mapstructure:"sub2api_db"`
-	SQLite   SQLiteConfig   `mapstructure:"sqlite"`
-	Balance  BalanceConfig  `mapstructure:"balance"`
-	Cost     CostConfig     `mapstructure:"cost"`
-	Probe    ProbeConfig    `mapstructure:"probe"`
-	Rates    RatesConfig    `mapstructure:"rates"`
-	Plaza    PlazaConfig    `mapstructure:"plaza"`
-	Log      LogConfig      `mapstructure:"log"`
+	Server   ServerConfig  `mapstructure:"server"`
+	Timezone string        `mapstructure:"timezone"`
+	Auth     AuthConfig    `mapstructure:"auth"`
+	Sub2api  Sub2apiDB     `mapstructure:"sub2api_db"`
+	SQLite   SQLiteConfig  `mapstructure:"sqlite"`
+	Balance  BalanceConfig `mapstructure:"balance"`
+	Cost     CostConfig    `mapstructure:"cost"`
+	Probe    ProbeConfig   `mapstructure:"probe"`
+	Rates    RatesConfig   `mapstructure:"rates"`
+	Plaza    PlazaConfig   `mapstructure:"plaza"`
+	Media    MediaConfig   `mapstructure:"media"`
+	Log      LogConfig     `mapstructure:"log"`
 
 	// Location 由 Timezone 解析得到，用于「今日」边界计算。
 	Location *time.Location `mapstructure:"-"`
@@ -127,6 +128,42 @@ type LogConfig struct {
 	Level string `mapstructure:"level"`
 }
 
+// MediaConfig 生图 / 生视频嵌入页配置。
+//
+// 复用 plaza 的嵌入身份体系（同一份 sub2api_jwt_secret 与会话存储），
+// 但功能开关独立：生图会真实花用户的钱，运营方可能想在开着广场的同时关掉它。
+//
+// 【GatewayBaseURL 为何不复用 plaza.sub2api_base_url】后者被归一化成纯 origin
+// 专供 CSP frame-ancestors 使用，语义是「谁能嵌入本站」；这里是「本站去调谁的
+// API」。线上二者可能同域，但网关独立部署时就会分叉——混用会踩坑。
+type MediaConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// GatewayBaseURL 生图 / 生视频 API 的基址，如 https://api.example.com。
+	GatewayBaseURL string `mapstructure:"gateway_base_url"`
+	// MaxPendingVideos 单用户同时进行中的视频任务上限。
+	// 视频提交即扣费，上限是防「狂点按钮把余额刷空」的最后一道闸。
+	MaxPendingVideos int `mapstructure:"max_pending_videos"`
+	// TaskRetentionDays 任务记录保留天数，由每日清理任务消费。
+	TaskRetentionDays int `mapstructure:"task_retention_days"`
+}
+
+// validate 校验生图配置。启用时网关基址必填且须为绝对 http(s) 地址。
+func (m *MediaConfig) validate() error {
+	if !m.Enabled {
+		return nil
+	}
+	raw := strings.TrimSpace(m.GatewayBaseURL)
+	if raw == "" {
+		return errors.New("media.enabled 为 true 时 media.gateway_base_url 必填")
+	}
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errors.New("media.gateway_base_url 须为绝对 http(s) 地址，如 https://api.your-sub2api.com")
+	}
+	m.GatewayBaseURL = strings.TrimRight(raw, "/")
+	return nil
+}
+
 // Load 从 path（目录或文件）加载配置，并填充默认值、执行校验。
 func Load(path string) (*Config, error) {
 	v := viper.New()
@@ -211,6 +248,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("plaza.cache_seconds", 60)
 	v.SetDefault("plaza.metrics_hours", 24)
 
+	v.SetDefault("media.enabled", false)
+	v.SetDefault("media.max_pending_videos", 3)
+	v.SetDefault("media.task_retention_days", 30)
+
 	v.SetDefault("log.level", "info")
 }
 
@@ -251,6 +292,9 @@ func bindEnvs(v *viper.Viper) {
 		"plaza.session_ttl_minutes", "plaza.cache_seconds", "plaza.metrics_hours",
 		"plaza.dev_mode",
 
+		"media.enabled", "media.gateway_base_url",
+		"media.max_pending_videos", "media.task_retention_days",
+
 		"log.level",
 	}
 	for _, k := range keys {
@@ -277,6 +321,9 @@ func (c *Config) Validate() error {
 	}
 	c.Location = loc
 	if err := c.Plaza.validate(); err != nil {
+		return err
+	}
+	if err := c.Media.validate(); err != nil {
 		return err
 	}
 	return nil

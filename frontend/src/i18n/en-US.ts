@@ -713,5 +713,86 @@ export default {
       network: 'Network request failed',
       copyFailed: 'Copy failed'
     }
+  },
+
+  // Image / video generation embed page. Session and network errors reuse plaza.errors.*.
+  media: {
+    title: 'Image / Video Generation',
+    intro: 'Generate images and videos with your own API key. Charges apply to the selected key.',
+    submitted: 'Submitted',
+    kind: {
+      t2i: 'Text to Image',
+      i2i: 'Image to Image',
+      t2v: 'Text to Video',
+      i2v: 'Image to Video'
+    },
+    status: {
+      pending: 'Generating',
+      succeeded: 'Done',
+      failed: 'Failed'
+    },
+    form: {
+      key: 'API Key',
+      model: 'Model',
+      prompt: 'Prompt',
+      promptPlaceholder: 'Describe the scene you want — the more specific, the better',
+      count: 'Count',
+      size: 'Size',
+      sizeDefault: 'Use default',
+      sizeTierHint: 'Billing tier is decided by the longest edge: ≤1024 is 1K, ≤2048 is 2K, larger is 4K.',
+      fixedSizeHint: 'This model always outputs 1024×1024; the size parameter is ignored.',
+      quality: 'Quality',
+      resolution: 'Resolution',
+      duration: 'Duration (s)',
+      refImage: 'Reference image',
+      refImagePick: 'Click to choose images',
+      refImageSelected: '{n} selected',
+      refImageHint: 'Multiple files supported, 20MB each at most.',
+      refImageURL: 'Reference image URL',
+      refImageURLHint: 'Must be publicly reachable — the upstream fetches it directly. Images generated here are not retained and cannot be used.',
+      estCost: 'Estimated cost',
+      estUnknown: 'Priced by group, see your bill',
+      videoBillingWarning:
+        'Video jobs are charged the moment they are accepted, and are not refunded even if the result is rejected by content moderation.',
+      submit: 'Generate'
+    },
+    confirm: {
+      title: 'Confirm video job',
+      message:
+        'Estimated charge: ${cost}. Video cost is committed at submission and is not refunded if content moderation rejects the result. Continue?',
+      ok: 'Submit'
+    },
+    tasks: {
+      title: 'History',
+      empty: 'No generations yet',
+      emptyHint: 'Fill in a prompt on the left and submit — results will appear here.',
+      imageNotRetained: 'Images are returned once at generation time and not retained; they disappear on refresh.'
+    },
+    errors: {
+      notConfigured: 'Generation is not enabled',
+      noKeys: 'No usable key',
+      noKeysHint: 'None of your keys belong to a group with image or video generation enabled.',
+      noModelForKind: 'This key does not support the selected mode',
+      selectKey: 'Please select a key',
+      selectModel: 'Please select a model',
+      emptyPrompt: 'Prompt is required',
+      promptTooLong: 'Prompt is too long',
+      badCount: 'Count is out of range',
+      badResolution: 'Only 480p and 720p are supported',
+      badDuration: 'Duration must be between 1 and 15 seconds',
+      badImageURL: 'Reference image must be a public http(s) URL',
+      missingImage: 'Please choose a reference image',
+      imageTooLarge: 'Reference image exceeds 20MB',
+      invalidParams: 'Invalid parameters',
+      useUploadEndpoint: 'Use the upload endpoint for image-to-image',
+      keyNotFound: 'Key not found or disabled',
+      tooManyActive: 'Too many video jobs in flight, please wait',
+      tooFrequent: 'Too many requests, please slow down',
+      taskNotFound: 'Task not found',
+      contentNotReady: 'Result is not ready yet',
+      contentFailed: 'Failed to fetch the result',
+      loadKeysFailed: 'Failed to load keys',
+      loadTasksFailed: 'Failed to load tasks'
+    }
   }
 }
