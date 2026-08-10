@@ -42,6 +42,7 @@ midstream-ops（代码内部标识 `sub2api-account-monitor`）是面向 AI API 
 - **调价映射** — 上游倍率 → 本站倍率联动（`目标 = 上游 × 系数 + 偏移`），支持自动调价、人工修改冲突检测、审计留痕
 - **稳定性盯盘** — 被动统计（真实流量分位数）+ 主动探测（TTFT / 成功率）双口径，实时窗口下探到 5 分钟，六状态健康机
 - **授信台账** — 客户垫付应收的人工台账，只追加分录、记错走冲正，敞口分级告警；KYC 实名资料加密落库，支持客户自助填报 + 审核流
+- **生图 / 生视频** — 嵌入 sub2api 的自助生成页：文生图 / 图生图 / 文生视频 / 图生视频，用用户自己的 Key 调网关，提交前展示预估费用，视频强制二次确认（提交即扣费不退款）
 - **系统设置** — per-provider 错峰调度（热更新免重启）、余额与倍率预警、钉钉 / 飞书 / Telegram 通知渠道
 
 <details>
@@ -327,12 +328,18 @@ midstream-ops/
 | GET | `/api/v1/embed/plaza/models` | 模型广场数据 |
 | POST | `/api/v1/embed/kyc/session` | 换会话（免鉴权） |
 | GET/PUT | `/api/v1/embed/kyc/profile` | 客户自助读取 / 提交 KYC（身份取自会话，请求体无 `user_id`） |
+| POST | `/api/v1/embed/media/session` | 换会话（免鉴权） |
+| GET | `/api/v1/embed/media/keys` | 用户可用 Key（**掩码**）及每把 Key 的生成模型 |
+| POST | `/api/v1/embed/media/generate` | 文生图 / 文生视频 / 图生视频（JSON，须带 `client_request_id` 幂等键） |
+| POST | `/api/v1/embed/media/edits` | 图生图（multipart，参考图流式转发上游） |
+| GET | `/api/v1/embed/media/tasks` | 任务列表，顺带刷新在途视频任务状态 |
+| GET | `/api/v1/embed/media/tasks/:id/content` | 产物代理（归属校验在 SQL 里，越权返回 404） |
 
 </details>
 
-## 嵌入 sub2api（模型广场 / KYC 自助）
+## 嵌入 sub2api（模型广场 / KYC 自助 / 生图生视频）
 
-两个页面通过 sub2api 的「自定义菜单页面」以 iframe 嵌入，用户身份来自 sub2api 透传的 token。
+三个页面通过 sub2api 的「自定义菜单页面」以 iframe 嵌入，用户身份来自 sub2api 透传的 token。
 
 **配置三项必须同时齐备**，缺一页面就打不开。环境变量部署（Docker）：
 
@@ -358,9 +365,33 @@ sub2api 后台的自定义菜单 URL 填**嵌入页路径**而非站点根路径
 ```
 https://your-monitor.com/embed/plaza
 https://your-monitor.com/embed/kyc
+https://your-monitor.com/embed/media
 ```
 
 sub2api 侧的 CSP `frame-src` 会自动放行该 origin（读自定义菜单配置动态注入），保存设置即生效，无需重启对方。
+
+### 生图 / 生视频（额外配置）
+
+该页让用户用**自己的 API Key** 调 sub2api 网关生成图片与视频。它在上面三项之外还需要：
+
+```bash
+MONITOR_MEDIA_ENABLED=true
+MONITOR_MEDIA_GATEWAY_BASE_URL=https://api.your-sub2api.com   # 网关 API 基址
+MONITOR_MEDIA_MAX_PENDING_VIDEOS=3                            # 单用户在途视频任务上限
+MONITOR_MEDIA_TASK_RETENTION_DAYS=30                          # 任务记录保留天数
+```
+
+`gateway_base_url` **刻意独立于 `plaza.sub2api_base_url`**：后者被归一化成纯 origin 专供 CSP `frame-ancestors` 使用，语义是「谁能嵌入本站」；前者是「本站去调谁的 API」。线上二者可能同域，但网关独立部署时会分叉。
+
+开关独立于 `plaza.enabled`：生图会真实花用户的钱，可以在开着广场的同时关掉它（`plaza.enabled` 仍是嵌入身份体系的总开关，必须为 true）。
+
+**⚠️ 这个功能会花用户的真钱，上线前务必了解三条规则：**
+
+1. **视频费用在提交成功那一刻即扣除，即便生成结果被上游内容审核拒绝也不退还。** 页面因此对视频任务强制二次确认，并在提交前展示预估金额。
+2. **图片计费按最长边判定档位**（≤1024 为 1K，≤2048 为 2K，更大为 4K）。`2560x1440` 会按 4K 计费而不是 2K —— 表单实时显示档位徽章。
+3. **`/v1/models` 返回的 `grok-imagine`、`grok-imagine-edit`、`grok-imagine-video-1.5` 三个模型不可用**（分别是 404、404、静默降级为 `grok-imagine-video` 但照原价计费）。本站用显式 allowlist 过滤它们，新模型上线需在 `service/media_catalog.go` 手工登记。
+
+明文 key 的流向：后端从只读 PG 按会话用户查出该用户的 key，仅用于「后端 ↔ 网关」这一段请求，**不下发浏览器、不进任务表、不进日志**。前端只见掩码（`sk-...ab12`）。产物同样由后端代理 —— 视频下载端点强制要求 `Authorization` 头，浏览器的 `<video src>` 带不了。
 
 ### 排查 `Refused to frame ... frame-ancestors 'none'`
 
@@ -378,9 +409,7 @@ curl -s -D - -o /dev/null -X GET https://your-monitor.com/embed/plaza | grep -i 
 
 期望输出 `frame-ancestors https://your-sub2api.com`。
 
-> `curl -I` 发的是 HEAD 请求，中间件只处理 GET，用 HEAD 探测**永远看不到这个头**，会误判成「头没下发」。
-
-## 安全说明
+> `curl -I` 发的是 HEAD 请求，中间件只处理 GET，用 HEAD 探测**永远看不到这个头**，会误判成「头没下发」。## 安全说明
 
 - 线上 PG 只读双保险：只读账号 + DSN 强制 `default_transaction_read_only=on`
 - **写自己站点只走 admin API**（调价映射）：GET + PUT 完整合并回写，绝不写 DB、绝不部分覆盖；检测到人工修改立即停止自动覆盖

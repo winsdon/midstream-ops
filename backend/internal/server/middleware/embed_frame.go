@@ -11,7 +11,7 @@ import (
 //
 // 刻意逐条列举而非用 "/embed/" 前缀通配：前缀匹配会让将来任何新增的 /embed/*
 // 页面自动获得可嵌入权限，这是隐式的安全降级——新增页面必须在此显式登记。
-var embedPagePaths = []string{"/embed/plaza", "/embed/kyc"}
+var embedPagePaths = []string{"/embed/plaza", "/embed/kyc", "/embed/media"}
 
 // EmbedFrameHeaders 为嵌入页下发 CSP frame-ancestors。
 //

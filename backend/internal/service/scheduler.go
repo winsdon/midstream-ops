@@ -24,6 +24,18 @@ type Scheduler struct {
 	rateRepo    *repository.RateRepo
 	probeRepo   *repository.ProbeRepo
 	healthRepo  *repository.HealthRepo
+
+	// mediaSvc 生图任务清理。可选功能，未启用时为 nil。
+	//
+	// 用 setter 注入而非构造参数：NewScheduler 已有 9 个参数，再加一个可空依赖
+	// 会让「必需」与「可选」在签名里混为一谈。
+	mediaSvc *MediaService
+}
+
+// SetMediaService 注入生图服务，使每日清理覆盖 media_tasks。
+// 未调用时该清理项自动跳过。
+func (s *Scheduler) SetMediaService(svc *MediaService) {
+	s.mediaSvc = svc
 }
 
 // NewScheduler 创建调度器。
@@ -138,6 +150,10 @@ func (s *Scheduler) cleanup() {
 		}
 		beforeDay := now.In(s.cfg.Location).AddDate(0, 0, -7).Format("2006-01-02")
 		_ = s.healthRepo.CleanupBudget(ctx, beforeDay)
+	}
+	// 生图 / 生视频任务记录（功能未启用时 mediaSvc 为 nil）
+	if s.mediaSvc != nil {
+		s.mediaSvc.Cleanup(ctx, s.cfg.Media.TaskRetentionDays)
 	}
 }
 

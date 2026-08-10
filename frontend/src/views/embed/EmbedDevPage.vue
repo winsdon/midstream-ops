@@ -102,7 +102,8 @@ import { ref } from 'vue'
 
 const PAGES = [
   { path: '/embed/plaza', label: '模型广场' },
-  { path: '/embed/kyc', label: 'KYC 自助' }
+  { path: '/embed/kyc', label: 'KYC 自助' },
+  { path: '/embed/media', label: '生图 / 生视频' }
 ] as const
 
 const THEMES = ['light', 'dark'] as const
