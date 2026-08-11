@@ -1,0 +1,42 @@
+# 行尾规范
+#
+# 【为什么必须有这个文件】Windows 上 git 的 core.autocrlf=true 会在 checkout 时
+# 把仓库里的 LF 转成 CRLF。对 shell 脚本这是致命的：`#!/bin/sh\r` 里的 \r 会被
+# Linux 内核当作解释器路径的一部分，容器启动直接报
+#   exec /app/docker-entrypoint.sh: no such file or directory
+# 文件明明存在，报错却说找不到——极难排查。
+#
+# 仓库里存的一直是正确的 LF，坏的只是 Windows 工作区副本，因此 Linux/CI 构建正常，
+# 只有在 Windows 上本地 docker build 才会产出无法启动的镜像。锁死这些类型即可根治。
+
+# 默认交给 git 自动判断文本/二进制
+* text=auto
+
+# 进容器、进 Linux 运行的文件：强制 LF，不受 core.autocrlf 影响
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
+docker-compose*.yml text eol=lf
+*.env.example text eol=lf
+
+# Go 工具链统一 LF
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+
+# Windows 专用脚本保持 CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制：不做任何行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.mp4 binary
+*.zip binary
+*.bundle binary

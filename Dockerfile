@@ -93,7 +93,13 @@ WORKDIR /app
 
 COPY --from=backend-builder --chown=monitor:monitor /app/monitor /app/monitor
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh && \
+# 剥掉可能存在的 CR：Windows 上 core.autocrlf 会把 checkout 出来的 .sh 转成 CRLF，
+# 而 `#!/bin/sh\r` 里的 \r 会被内核当成解释器路径的一部分，容器启动报
+# 「exec /app/docker-entrypoint.sh: no such file or directory」——文件明明在，
+# 报错却说找不到。仓库已用 .gitattributes 锁定 eol=lf，这里是第二道防线：
+# 覆盖 .gitattributes 未生效的旧工作区（加它之前 clone 的副本不会自动重转）。
+RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && \
+    chmod +x /app/docker-entrypoint.sh && \
     mkdir -p /app/data && chown monitor:monitor /app/data
 
 EXPOSE 9090
