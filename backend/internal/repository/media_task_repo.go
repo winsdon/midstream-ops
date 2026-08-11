@@ -66,11 +66,11 @@ type MediaTaskParams struct {
 
 // MediaTaskRepo 生图 / 生视频任务存储。
 type MediaTaskRepo struct {
-	db *sql.DB
+	db *DB
 }
 
 // NewMediaTaskRepo 创建 MediaTaskRepo。
-func NewMediaTaskRepo(s *SQLite) *MediaTaskRepo {
+func NewMediaTaskRepo(s *Store) *MediaTaskRepo {
 	return &MediaTaskRepo{db: s.DB()}
 }
 
@@ -105,22 +105,19 @@ func (r *MediaTaskRepo) Create(ctx context.Context, p MediaTaskParams) (*MediaTa
 		return nil, false, err
 	}
 
-	res, err := r.db.ExecContext(ctx, `
+	var id int64
+	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO media_tasks (sub2api_user_id, api_key_id, key_fingerprint, group_id,
 			task_kind, model, prompt, params_json, est_cost_ticks, client_request_id)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id`,
 		p.Sub2apiUserID, p.APIKeyID, p.KeyFingerprint, p.GroupID,
-		p.TaskKind, p.Model, p.Prompt, p.ParamsJSON, p.EstCostTicks, p.ClientRequestID)
+		p.TaskKind, p.Model, p.Prompt, p.ParamsJSON, p.EstCostTicks, p.ClientRequestID).Scan(&id)
 	if err != nil {
 		// UNIQUE 冲突：并发下两个请求同时通过了上面的存在性检查。
 		// 再查一次即可拿到先落地的那条。
 		if existing, getErr := r.GetByClientRequestID(ctx, p.Sub2apiUserID, p.ClientRequestID); getErr == nil {
 			return existing, true, nil
 		}
-		return nil, false, err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
 		return nil, false, err
 	}
 	t, err := r.GetByID(ctx, id)
@@ -206,21 +203,21 @@ func (r *MediaTaskRepo) CountPendingVideos(ctx context.Context, userID string) (
 // 丢了就等于花了钱却找不到产物。
 func (r *MediaTaskRepo) SetUpstreamRequestID(ctx context.Context, id int64, requestID string) error {
 	return r.exec(ctx, `UPDATE media_tasks SET upstream_request_id = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, requestID, id)
+		updated_at = ? WHERE id = ?`, requestID, nowUTC(), id)
 }
 
 // UpdateProgress 更新进行中任务的进度。
 func (r *MediaTaskRepo) UpdateProgress(ctx context.Context, id int64, progress int) error {
 	return r.exec(ctx, `UPDATE media_tasks SET progress = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, progress, id)
+		updated_at = ? WHERE id = ?`, progress, nowUTC(), id)
 }
 
 // MarkSucceeded 标记任务成功。resultURL 对图片是上游直链，对视频留空（用 request_id 代理）。
 func (r *MediaTaskRepo) MarkSucceeded(ctx context.Context, id int64, resultURL string, costTicks int64) error {
 	return r.exec(ctx, `UPDATE media_tasks SET status = ?, progress = 100,
 		result_url = ?, cost_ticks = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`,
-		MediaStatusSucceeded, resultURL, costTicks, id)
+		updated_at = ? WHERE id = ?`,
+		MediaStatusSucceeded, resultURL, costTicks, nowUTC(), id)
 }
 
 // MarkFailed 标记任务失败。msg 必须已过 redactError 脱敏。
@@ -229,8 +226,8 @@ func (r *MediaTaskRepo) MarkSucceeded(ctx context.Context, id int64, resultURL s
 // 之后被内容审核拒绝仍然扣费。前端必须对这种失败明确提示。
 func (r *MediaTaskRepo) MarkFailed(ctx context.Context, id int64, msg string) error {
 	return r.exec(ctx, `UPDATE media_tasks SET status = ?, error_message = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`,
-		MediaStatusFailed, msg, id)
+		updated_at = ? WHERE id = ?`,
+		MediaStatusFailed, msg, nowUTC(), id)
 }
 
 // Cleanup 删除 before（YYYY-MM-DDTHH:MM:SSZ）之前创建的任务，返回删除行数。

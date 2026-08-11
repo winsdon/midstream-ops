@@ -18,8 +18,15 @@ sub2api_db:                    # 线上库（只读；DSN 强制 default_transac
   dbname: sub2api
   sslmode: disable
 
-sqlite:
-  path: data/monitor.db
+# 本项目自己的 monitor 库（可写）。与上游库可以是同一 PG 实例上的不同 database。
+# 表结构启动时自动迁移，无需手工建表。PostgreSQL 15+ 须先 GRANT ALL ON SCHEMA public。
+store_db:
+  host: 127.0.0.1
+  port: 5432
+  user: monitor
+  password: "<填入 monitor 库密码>"
+  dbname: monitor
+  sslmode: disable
 
 balance:
   interval_minutes: 30
@@ -27,7 +34,7 @@ balance:
   concurrency: 3
   retention_days: 90
 
-# 上游真实成本同步：定时拉取供应商 per-key 的 actual_cost（倍率折后实扣）落本地库，
+# 上游真实成本同步：定时拉取供应商 per-key 的 actual_cost（倍率折后实扣）落 monitor 库，
 # 查询只读本地库。首次同步会回补 90 天历史，耗时较长。
 cost:
   interval_minutes: 10         # 同步间隔

@@ -131,11 +131,11 @@ func main() {
 		log.Fatalf("查询 usage_logs 失败: %v", err)
 	}
 	type usage struct {
-		requests           int64
-		totalCost          float64
-		oldCost            float64
-		revenue            float64
-		rateMin, rateMax   float64
+		requests         int64
+		totalCost        float64
+		oldCost          float64
+		revenue          float64
+		rateMin, rateMax float64
 	}
 	byAcct := map[int64]usage{}
 	for usageRows.Next() {

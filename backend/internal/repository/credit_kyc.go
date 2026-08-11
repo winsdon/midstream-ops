@@ -73,9 +73,8 @@ const kycCols = `customer_id, subject_type, status, country_region, id_type,
 // 对可重新配置的凭据尚可接受，对身份证号这类不可再生的 PII 不可接受 ——
 // 密钥丢失必须让错误浮到调用方，而不是把 PII 悄悄显示成空白。
 func (r *CreditRepo) scanKYC(row interface{ Scan(...any) error }) (*CustomerKYC, error) {
+	var reviewedAt, submittedAt sql.NullTime
 	var k CustomerKYC
-	var submittedAt, reviewedAt sql.NullString
-	var createdAt, updatedAt string
 
 	// 先按密文扫进目标字段，再原地解密（避免声明 20 个中间变量）
 	err := row.Scan(&k.CustomerID, &k.SubjectType, &k.Status, &k.CountryRegion, &k.IDType,
@@ -83,7 +82,7 @@ func (r *CreditRepo) scanKYC(row interface{ Scan(...any) error }) (*CustomerKYC,
 		&k.CompanyName, &k.RegNumber, &k.LegalRep, &k.RegAddress, &k.TaxNumber,
 		&k.ContactName, &k.ContactPhone, &k.ContactEmail,
 		&k.BankName, &k.BankAccount, &k.BankHolder,
-		&submittedAt, &reviewedAt, &k.ReviewedBy, &k.ReviewNote, &createdAt, &updatedAt)
+		&submittedAt, &reviewedAt, &k.ReviewedBy, &k.ReviewNote, &k.CreatedAt, &k.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -111,10 +110,8 @@ func (r *CreditRepo) scanKYC(row interface{ Scan(...any) error }) (*CustomerKYC,
 		*f.ptr = plain
 	}
 
-	k.SubmittedAt = parseTimePtr(submittedAt)
-	k.ReviewedAt = parseTimePtr(reviewedAt)
-	k.CreatedAt = parseTime(createdAt)
-	k.UpdatedAt = parseTime(updatedAt)
+	k.SubmittedAt = timePtr(submittedAt)
+	k.ReviewedAt = timePtr(reviewedAt)
 	return &k, nil
 }
 

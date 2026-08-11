@@ -17,8 +17,8 @@ var ErrInvalidCredentials = errors.New("用户名或密码错误")
 
 // AuthService 处理登录认证与 token 签发。
 type AuthService struct {
-	cfg     *config.AuthConfig
-	jwt     *jwtutil.Manager
+	cfg      *config.AuthConfig
+	jwt      *jwtutil.Manager
 	isBcrypt bool
 }
 

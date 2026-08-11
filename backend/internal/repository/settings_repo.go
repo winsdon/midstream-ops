@@ -8,11 +8,11 @@ import (
 
 // SettingsRepo 系统设置存储（key → JSON value）。
 type SettingsRepo struct {
-	db *sql.DB
+	db *DB
 }
 
 // NewSettingsRepo 创建 SettingsRepo。
-func NewSettingsRepo(s *SQLite) *SettingsRepo { return &SettingsRepo{db: s.DB()} }
+func NewSettingsRepo(s *Store) *SettingsRepo { return &SettingsRepo{db: s.DB()} }
 
 // Get 读取设置 JSON；不存在时返回空串（非错误）。
 func (r *SettingsRepo) Get(ctx context.Context, key string) (string, error) {

@@ -2,6 +2,9 @@
 package server
 
 import (
+	"context"
+	"time"
+
 	"sub2api-account-monitor/internal/config"
 	"sub2api-account-monitor/internal/handler"
 	"sub2api-account-monitor/internal/pkg/response"
@@ -38,6 +41,10 @@ type Handlers struct {
 
 	// PGAvailable 报告线上库是否可用（用于 /health 与 503 降级）。
 	PGAvailable func() bool
+
+	// StorePing 探测本地 monitor 库。与 PGAvailable 的区别是它同步发起真实探测
+	// 而非读缓存标记——本地库是写路径的唯一依赖，值得每次如实检查。
+	StorePing func(context.Context) error
 }
 
 // NewRouter 创建并配置 gin.Engine。
@@ -54,15 +61,32 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 	}
 
 	// 健康检查（免鉴权）
+	//
+	// 两个库的语义不同，刻意不对称：
+	//   - 上游 sub2api 库不可用 → 仍返回 200。相关接口各自降级返回 503，
+	//     整个服务不该因为读不到上游而被容器编排判死。
+	//   - 本地 monitor 库不可用 → 503。SQLite 时代它不可用等于进程起不来，
+	//     PG 下却可能在运行中断开；此时服务确实不健康，应让 HEALTHCHECK
+	//     标记 unhealthy 并触发重启。
 	r.GET("/health", func(c *gin.Context) {
-		pg := "down"
+		upstream := "down"
 		if h.PGAvailable != nil && h.PGAvailable() {
-			pg = "up"
+			upstream = "up"
 		}
-		c.JSON(200, gin.H{
-			"status": "ok",
-			"pg":     pg,
-			"sqlite": "up",
+		store := "up"
+		code := 200
+		if h.StorePing != nil {
+			ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+			defer cancel()
+			if err := h.StorePing(ctx); err != nil {
+				store = "down"
+				code = 503
+			}
+		}
+		c.JSON(code, gin.H{
+			"status":      map[bool]string{true: "ok", false: "degraded"}[code == 200],
+			"upstream_pg": upstream,
+			"store_pg":    store,
 		})
 	})
 

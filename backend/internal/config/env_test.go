@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,11 @@ import (
 func writeMinimalConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	body := "auth:\n  jwt_secret: \"" + strings.Repeat("a", 32) + "\"\n"
+	// 两组 DB 的 host/user 也是必填：本地库连不上程序必然起不来，在启动瞬间报
+	// 「store_db.host 必填」远好于让 pgx 几秒后抛连接超时。
+	body := "auth:\n  jwt_secret: \"" + strings.Repeat("a", 32) + "\"\n" +
+		"sub2api_db:\n  host: up-pg\n  user: ro\n" +
+		"store_db:\n  host: store-pg\n  user: rw\n"
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o600); err != nil {
 		t.Fatalf("写入临时 config.yaml 失败: %v", err)
 	}
@@ -40,7 +45,12 @@ func TestEnvOverridesEveryKey(t *testing.T) {
 		"MONITOR_SUB2API_DB_PASSWORD":       "ro-pass",
 		"MONITOR_SUB2API_DB_DBNAME":         "sub2api_prod",
 		"MONITOR_SUB2API_DB_SSLMODE":        "require",
-		"MONITOR_SQLITE_PATH":               "/app/data/monitor.db",
+		"MONITOR_STORE_DB_HOST":             "monitor-postgres",
+		"MONITOR_STORE_DB_PORT":             "6544",
+		"MONITOR_STORE_DB_USER":             "monitor_rw",
+		"MONITOR_STORE_DB_PASSWORD":         "rw-pass",
+		"MONITOR_STORE_DB_DBNAME":           "monitor_prod",
+		"MONITOR_STORE_DB_SSLMODE":          "require",
 		"MONITOR_BALANCE_INTERVAL_MINUTES":  "45",
 		"MONITOR_COST_INTERVAL_MINUTES":     "20",
 		"MONITOR_COST_RETENTION_DAYS":       "365",
@@ -79,7 +89,12 @@ func TestEnvOverridesEveryKey(t *testing.T) {
 		{"sub2api_db.password", cfg.Sub2api.Password, "ro-pass"},
 		{"sub2api_db.dbname", cfg.Sub2api.DBName, "sub2api_prod"},
 		{"sub2api_db.sslmode", cfg.Sub2api.SSLMode, "require"},
-		{"sqlite.path", cfg.SQLite.Path, "/app/data/monitor.db"},
+		{"store_db.host", cfg.Store.Host, "monitor-postgres"},
+		{"store_db.port", cfg.Store.Port, 6544},
+		{"store_db.user", cfg.Store.User, "monitor_rw"},
+		{"store_db.password", cfg.Store.Password, "rw-pass"},
+		{"store_db.dbname", cfg.Store.DBName, "monitor_prod"},
+		{"store_db.sslmode", cfg.Store.SSLMode, "require"},
 		{"balance.interval_minutes", cfg.Balance.IntervalMinutes, 45},
 		{"cost.interval_minutes", cfg.Cost.IntervalMinutes, 20},
 		{"cost.retention_days", cfg.Cost.RetentionDays, 365},
@@ -103,6 +118,10 @@ func TestEnvOverridesEveryKey(t *testing.T) {
 // 这是 Docker 部署的实际形态：镜像里没有 config.yaml，全靠 MONITOR_* 注入。
 func TestEnvJWTSecretAloneSatisfiesValidate(t *testing.T) {
 	t.Setenv("MONITOR_AUTH_JWT_SECRET", strings.Repeat("k", 32))
+	// 两组 DB 的 host/user 也是必填项，纯环境变量部署必须一并提供。
+	t.Setenv("MONITOR_SUB2API_DB_HOST", "up-pg")
+	t.Setenv("MONITOR_SUB2API_DB_USER", "ro")
+	t.Setenv("MONITOR_STORE_DB_HOST", "store-pg")
 
 	// 切到空目录，确保搜索路径 "." 与 "./.." 都找不到 config.yaml
 	dir := t.TempDir()
@@ -147,5 +166,59 @@ func TestDSNStaysReadOnly(t *testing.T) {
 	}
 	if !strings.Contains(dsn, "sub2api-postgres") {
 		t.Errorf("DSN 未采用环境变量的 host: %s", dsn)
+	}
+}
+
+// TestStoreDSNIsNotReadOnly 是 TestDSNStaysReadOnly 的反向守卫：可写库的 DSN
+// 绝不能带只读参数。
+//
+// pgx 会把未知 DSN 键当 RuntimeParam 静默透传给服务端，误加
+// default_transaction_read_only=on 的表现是所有写入报「cannot execute INSERT
+// in a read-only transaction」—— 而这在启动与 /health 都看不出来，直到第一次
+// 采集才炸。类型分离（StoreDB ≠ Sub2apiDB）是防线，本测试是断言。
+func TestStoreDSNIsNotReadOnly(t *testing.T) {
+	dir := writeMinimalConfig(t)
+	t.Setenv("MONITOR_STORE_DB_HOST", "monitor-postgres")
+	t.Setenv("MONITOR_STORE_DB_USER", "monitor_rw")
+	t.Setenv("MONITOR_STORE_DB_PASSWORD", "rw-pass")
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+
+	dsn := cfg.Store.DSN()
+	if strings.Contains(dsn, "read_only") {
+		t.Errorf("可写库 DSN 混入了只读参数，所有写入都会被服务端拒绝: %s", dsn)
+	}
+	if !strings.Contains(dsn, "monitor-postgres") {
+		t.Errorf("DSN 未采用环境变量的 host: %s", dsn)
+	}
+}
+
+// TestDSNEscapesSpecialCharsInPassword 密码含 @ / # 时 DSN 仍须可被解析。
+//
+// 原实现直接拼接密码，含 @ 的密码会让 URL 解析把它当成 host 分隔符，
+// 报的错还是「连接失败」而非「密码格式问题」，极难排查。
+func TestDSNEscapesSpecialCharsInPassword(t *testing.T) {
+	dir := writeMinimalConfig(t)
+	t.Setenv("MONITOR_STORE_DB_HOST", "monitor-postgres")
+	t.Setenv("MONITOR_STORE_DB_USER", "monitor_rw")
+	t.Setenv("MONITOR_STORE_DB_PASSWORD", "p@ss/w#rd")
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	u, err := url.Parse(cfg.Store.DSN())
+	if err != nil {
+		t.Fatalf("含特殊字符的密码破坏了 DSN 解析: %v", err)
+	}
+	if u.Host != "monitor-postgres:5432" {
+		t.Errorf("host 解析错误: %s（密码里的 @ 被当成了分隔符？）", u.Host)
+	}
+	pwd, _ := u.User.Password()
+	if pwd != "p@ss/w#rd" {
+		t.Errorf("密码往返不一致: got %q", pwd)
 	}
 }

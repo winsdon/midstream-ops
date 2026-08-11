@@ -16,67 +16,63 @@ var ErrNotFound = errors.New("记录不存在")
 // 凭据字段（LoginPassword/AccessToken/RefreshToken/SessionCookie）在仓储层
 // 透明加解密：内存中恒为明文，落库时按 secretbox 配置加密。
 type Provider struct {
-	ID                 int64
-	Name               string
-	Note               string
-	BalanceType        string // sub2api | manual | none（sub2api 泛指「API 自动采集」）
-	Platform           string // sub2api | new-api
-	AuthMode           string // password | token | user_key
-	Role               string // upstream（被监控的上游站）| self（自己站点，调价用）
-	BaseURL            string
-	LoginEmail         string
-	LoginPassword      string
-	AccessToken        string
-	RefreshToken       string // sub2api token 模式
-	SessionCookie      string // new-api password 模式登录产物
-	UpstreamUserID     string // new-api：New-Api-User 头
-	QuotaPerUnit       float64 // new-api：quota → USD 换算
-	TokenExpiresAt     *time.Time
+	ID                  int64
+	Name                string
+	Note                string
+	BalanceType         string // sub2api | manual | none（sub2api 泛指「API 自动采集」）
+	Platform            string // sub2api | new-api
+	AuthMode            string // password | token | user_key
+	Role                string // upstream（被监控的上游站）| self（自己站点，调价用）
+	BaseURL             string
+	LoginEmail          string
+	LoginPassword       string
+	AccessToken         string
+	RefreshToken        string  // sub2api token 模式
+	SessionCookie       string  // new-api password 模式登录产物
+	UpstreamUserID      string  // new-api：New-Api-User 头
+	QuotaPerUnit        float64 // new-api：quota → USD 换算
+	TokenExpiresAt      *time.Time
 	LowBalanceThreshold float64
-	ProbeEnabled       bool
-	ProbeModel         *string
-	LastBalance        *float64
-	LastBalanceAt      *time.Time
-	LastBalanceError   *string
-	RechargeRate       float64 // 充值倍率：balance × recharge_rate = 折合 CNY
-	LoginFailures      int     // 连续登录被拒次数（4xx）
-	LoginCooldownUntil *time.Time
-	IgnoreBalanceAlert bool    // 站点级静音：不推余额告警（采集照常）
+	ProbeEnabled        bool
+	ProbeModel          *string
+	LastBalance         *float64
+	LastBalanceAt       *time.Time
+	LastBalanceError    *string
+	RechargeRate        float64 // 充值倍率：balance × recharge_rate = 折合 CNY
+	LoginFailures       int     // 连续登录被拒次数（4xx）
+	LoginCooldownUntil  *time.Time
+	IgnoreBalanceAlert  bool // 站点级静音：不推余额告警（采集照常）
 	// SelfOperated 自营站：本站自己经营的上游，其上游实扣是左手倒右手，
 	// 不计入成本；真实支出改由 provider_operating_costs 手工记账。
-	SelfOperated       bool
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	SelfOperated bool
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // ProviderRepo 供应商存储。
 type ProviderRepo struct {
-	db  *sql.DB
+	db  *DB
 	box *secretbox.Box
 }
 
 // NewProviderRepo 创建 ProviderRepo（box 为凭据加解密器）。
-func NewProviderRepo(s *SQLite, box *secretbox.Box) *ProviderRepo {
+func NewProviderRepo(s *Store, box *secretbox.Box) *ProviderRepo {
 	return &ProviderRepo{db: s.DB(), box: box}
 }
 
-// nowUTC 返回当前 UTC 时间 RFC3339。
-func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
+// nowUTC 返回当前 UTC 时刻。
+//
+// 时间列在 PG 侧是 TIMESTAMPTZ，直接传 time.Time 即可，不再需要 RFC3339 字符串
+// 往返（SQLite 时代因为列是 TEXT 才必须格式化）。
+func nowUTC() time.Time { return time.Now().UTC() }
 
-// parseTime 解析 RFC3339（可空）。
-func parseTimePtr(s sql.NullString) *time.Time {
-	if !s.Valid || s.String == "" {
+// timePtr 把可空时间列转为 *time.Time。
+func timePtr(t sql.NullTime) *time.Time {
+	if !t.Valid {
 		return nil
 	}
-	if t, err := time.Parse(time.RFC3339, s.String); err == nil {
-		return &t
-	}
-	return nil
-}
-
-func parseTime(s string) time.Time {
-	t, _ := time.Parse(time.RFC3339, s)
-	return t
+	v := t.Time
+	return &v
 }
 
 const providerCols = `id, name, note, balance_type, platform, auth_mode, role, base_url, login_email, login_password,
@@ -89,18 +85,16 @@ const providerCols = `id, name, note, balance_type, platform, auth_mode, role, b
 // 注意：Scan 参数顺序与 providerCols 是手工维持的隐式契约，无编译期保护，
 // 新增列必须在两处同序追加，否则所有 SELECT 会静默错位。
 func (r *ProviderRepo) scanProvider(row interface{ Scan(...any) error }) (*Provider, error) {
+	var lastBalAt sql.NullTime
 	var p Provider
-	var tokenExp, lastBalAt sql.NullString
 	var probeModel, lastBalErr sql.NullString
 	var lastBal sql.NullFloat64
-	var loginCooldown sql.NullString
-	var createdAt, updatedAt string
-	var probeEnabled, ignoreBalanceAlert, selfOperated int
+	var loginCooldown, tokenExp sql.NullTime
 	err := row.Scan(&p.ID, &p.Name, &p.Note, &p.BalanceType, &p.Platform, &p.AuthMode, &p.Role, &p.BaseURL, &p.LoginEmail, &p.LoginPassword,
 		&p.AccessToken, &p.RefreshToken, &p.SessionCookie, &p.UpstreamUserID, &p.QuotaPerUnit,
-		&tokenExp, &p.LowBalanceThreshold, &probeEnabled, &probeModel,
+		&tokenExp, &p.LowBalanceThreshold, &p.ProbeEnabled, &probeModel,
 		&lastBal, &lastBalAt, &lastBalErr, &p.RechargeRate, &p.LoginFailures, &loginCooldown,
-		&ignoreBalanceAlert, &selfOperated, &createdAt, &updatedAt)
+		&p.IgnoreBalanceAlert, &p.SelfOperated, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -110,10 +104,7 @@ func (r *ProviderRepo) scanProvider(row interface{ Scan(...any) error }) (*Provi
 	p.RefreshToken = r.box.MustOpen(p.RefreshToken)
 	p.SessionCookie = r.box.MustOpen(p.SessionCookie)
 
-	p.TokenExpiresAt = parseTimePtr(tokenExp)
-	p.ProbeEnabled = probeEnabled != 0
-	p.IgnoreBalanceAlert = ignoreBalanceAlert != 0
-	p.SelfOperated = selfOperated != 0
+	p.TokenExpiresAt = timePtr(tokenExp)
 	if probeModel.Valid {
 		pm := probeModel.String
 		p.ProbeModel = &pm
@@ -122,20 +113,18 @@ func (r *ProviderRepo) scanProvider(row interface{ Scan(...any) error }) (*Provi
 		lb := lastBal.Float64
 		p.LastBalance = &lb
 	}
-	p.LastBalanceAt = parseTimePtr(lastBalAt)
+	p.LastBalanceAt = timePtr(lastBalAt)
 	if lastBalErr.Valid {
 		e := lastBalErr.String
 		p.LastBalanceError = &e
 	}
-	p.LoginCooldownUntil = parseTimePtr(loginCooldown)
-	p.CreatedAt = parseTime(createdAt)
-	p.UpdatedAt = parseTime(updatedAt)
+	p.LoginCooldownUntil = timePtr(loginCooldown)
 	return &p, nil
 }
 
 // List 返回全部上游供应商（按 name 排序；不含 role='self' 的本站记录）。
 func (r *ProviderRepo) List(ctx context.Context) ([]*Provider, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT `+providerCols+` FROM providers WHERE role = 'upstream' ORDER BY name COLLATE NOCASE`)
+	rows, err := r.db.QueryContext(ctx, `SELECT `+providerCols+` FROM providers WHERE role = 'upstream' ORDER BY lower(name)`)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +213,7 @@ func (r *ProviderRepo) NameByID(ctx context.Context) (map[int64]string, error) {
 // 且站点可能根本没接上游采集（balance_type=none），其账号永远匹配不到成本行。
 // 不加区分会让「⚠ 成本不完整」变成永久噪音。
 func (r *ProviderRepo) SelfOperatedIDs(ctx context.Context) (map[int64]bool, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id FROM providers WHERE self_operated = 1`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id FROM providers WHERE self_operated`)
 	if err != nil {
 		return nil, err
 	}
@@ -274,36 +263,21 @@ func normalizePlatformAuth(platform, authMode string) (string, string) {
 
 // Create 新建供应商。
 func (r *ProviderRepo) Create(ctx context.Context, cp CreateParams) (*Provider, error) {
-	probeEnabled := 0
-	if cp.ProbeEnabled {
-		probeEnabled = 1
-	}
-	ignoreBalanceAlert := 0
-	if cp.IgnoreBalanceAlert {
-		ignoreBalanceAlert = 1
-	}
-	selfOperated := 0
-	if cp.SelfOperated {
-		selfOperated = 1
-	}
 	if cp.RechargeRate <= 0 {
 		cp.RechargeRate = 1
 	}
 	platform, authMode := normalizePlatformAuth(cp.Platform, cp.AuthMode)
-	res, err := r.db.ExecContext(ctx, `
+	var id int64
+	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO providers (name, note, balance_type, platform, auth_mode, base_url, login_email, login_password,
 			access_token, refresh_token, upstream_user_id,
 			low_balance_threshold, recharge_rate, probe_enabled, probe_model, ignore_balance_alert,
 			self_operated, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
 		cp.Name, cp.Note, cp.BalanceType, platform, authMode, cp.BaseURL, cp.LoginEmail, r.box.Seal(cp.LoginPassword),
 		r.box.Seal(cp.AccessToken), r.box.Seal(cp.RefreshToken), cp.UpstreamUserID,
-		cp.LowBalanceThreshold, cp.RechargeRate, probeEnabled, cp.ProbeModel, ignoreBalanceAlert,
-		selfOperated, nowUTC(), nowUTC())
-	if err != nil {
-		return nil, err
-	}
-	id, err := res.LastInsertId()
+		cp.LowBalanceThreshold, cp.RechargeRate, cp.ProbeEnabled, cp.ProbeModel, cp.IgnoreBalanceAlert,
+		cp.SelfOperated, nowUTC(), nowUTC()).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -333,18 +307,6 @@ type UpdateParams struct {
 
 // Update 编辑供应商。任一凭据变化时清 token 缓存与登录冷却（须重新建立会话）。
 func (r *ProviderRepo) Update(ctx context.Context, id int64, up UpdateParams) (*Provider, error) {
-	probeEnabled := 0
-	if up.ProbeEnabled {
-		probeEnabled = 1
-	}
-	ignoreBalanceAlert := 0
-	if up.IgnoreBalanceAlert {
-		ignoreBalanceAlert = 1
-	}
-	selfOperated := 0
-	if up.SelfOperated {
-		selfOperated = 1
-	}
 	if up.RechargeRate <= 0 {
 		up.RechargeRate = 1
 	}
@@ -357,8 +319,8 @@ func (r *ProviderRepo) Update(ctx context.Context, id int64, up UpdateParams) (*
 			ignore_balance_alert=?, self_operated=?, updated_at=?
 		WHERE id=?`,
 		up.Name, up.Note, up.BalanceType, platform, authMode, up.BaseURL, up.LoginEmail,
-		up.UpstreamUserID, up.LowBalanceThreshold, up.RechargeRate, probeEnabled, up.ProbeModel,
-		ignoreBalanceAlert, selfOperated, nowUTC(), id)
+		up.UpstreamUserID, up.LowBalanceThreshold, up.RechargeRate, up.ProbeEnabled, up.ProbeModel,
+		up.IgnoreBalanceAlert, up.SelfOperated, nowUTC(), id)
 	if err != nil {
 		return nil, err
 	}
@@ -492,7 +454,7 @@ func (r *ProviderRepo) ClearLoginCooldown(ctx context.Context, id int64) error {
 
 // UpdateBalanceCache 更新余额冗余缓存列。
 func (r *ProviderRepo) UpdateBalanceCache(ctx context.Context, id int64, balance *float64, balanceErr *string) error {
-	var balAt *string
+	var balAt *time.Time
 	if balance != nil {
 		s := nowUTC()
 		balAt = &s
@@ -514,7 +476,7 @@ func (r *ProviderRepo) UpdateBalanceCache(ctx context.Context, id int64, balance
 //	new-api + password → email + password（loginNewAPI）
 //	new-api + user_key → access_token + upstream_user_id（ensureNewAPI）
 //
-// 凭据空值落库恒为空串（secretbox.Seal("") == ""），故 <> '' 判空成立。
+// 凭据空值落库恒为空串（secretbox.Seal("") == ""），故 <> ” 判空成立。
 const credentialsReadySQL = `base_url <> '' AND (
 		(auth_mode = 'password' AND login_email <> '' AND login_password <> '')
 	 OR (auth_mode = 'token'    AND (refresh_token <> '' OR access_token <> ''))
@@ -590,16 +552,12 @@ func (r *ProviderRepo) UpsertSelf(ctx context.Context, baseURL, email string, pa
 		if password != nil {
 			pwd = *password
 		}
-		res, insErr := r.db.ExecContext(ctx, `
+		var id int64
+		if insErr := r.db.QueryRowContext(ctx, `
 			INSERT INTO providers (name, note, balance_type, platform, auth_mode, role, base_url, login_email, login_password, created_at, updated_at)
-			VALUES ('__self__', '本站（调价用）', 'none', 'sub2api', 'password', 'self', ?, ?, ?, ?, ?)`,
-			baseURL, email, r.box.Seal(pwd), nowUTC(), nowUTC())
-		if insErr != nil {
+			VALUES ('__self__', '本站（调价用）', 'none', 'sub2api', 'password', 'self', ?, ?, ?, ?, ?) RETURNING id`,
+			baseURL, email, r.box.Seal(pwd), nowUTC(), nowUTC()).Scan(&id); insErr != nil {
 			return nil, insErr
-		}
-		id, idErr := res.LastInsertId()
-		if idErr != nil {
-			return nil, idErr
 		}
 		return r.GetByID(ctx, id)
 	}
@@ -625,7 +583,7 @@ func (r *ProviderRepo) UpsertSelf(ctx context.Context, baseURL, email string, pa
 
 // ListProbeEnabled 返回开启探测的供应商（仅上游站）。
 func (r *ProviderRepo) ListProbeEnabled(ctx context.Context) ([]*Provider, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT `+providerCols+` FROM providers WHERE probe_enabled = 1 AND role = 'upstream'`)
+	rows, err := r.db.QueryContext(ctx, `SELECT `+providerCols+` FROM providers WHERE probe_enabled AND role = 'upstream'`)
 	if err != nil {
 		return nil, err
 	}

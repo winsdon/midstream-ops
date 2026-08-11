@@ -300,7 +300,7 @@ func (h *StabilityHandler) findAccount(c *gin.Context, accountID int64) (*reposi
 	return nil, strconv.ErrSyntax
 }
 
-// providerLookup 取账号归属映射与供应商名表（两者都只读本地 SQLite）。
+// providerLookup 取账号归属映射与供应商名表（两者都只读本地 monitor 库）。
 //
 // 失败返回 nil map —— 对 nil map 取值得零值，前端渲染成「未归属」，
 // 比让整个接口 500 更合适：分位数本身仍然有价值，归属只是筛选维度。

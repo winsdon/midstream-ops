@@ -7,8 +7,10 @@
 #   3. docker compose up -d
 #   4. curl http://127.0.0.1:9090/health
 #
-# 本项目只用 SQLite 存自己的数据，Postgres 是【只读连接已有的 sub2api 库】，
-# 所以这里只有一个容器，不需要起 postgres / redis。
+# 本项目连两个 Postgres，都是【外部库】，本文件不负责起数据库：
+#   • sub2api 库 —— 只读，取账号 / 用量 / 分组等上游数据
+#   • monitor 库 —— 可写，存本项目自己的数据（供应商、快照、成本、授信台账）
+# 两者可以是同一个 PG 实例上的不同 database。因此这里只有一个容器。
 # =============================================================================
 
 services:
@@ -22,10 +24,8 @@ services:
       # 不应直接裸露公网。对外访问请在宿主机用 Nginx/Caddy 反代 + TLS。
       - "${BIND_HOST:-127.0.0.1}:${MONITOR_PORT:-9090}:9090"
 
-    volumes:
-      # 必须挂【目录】而非单个 .db 文件：SQLite 开了 WAL，
-      # 运行时会在同目录产生 monitor.db-wal / monitor.db-shm。
-      - monitor_data:/app/data
+    # 无数据卷：本项目自己的数据已全部存进外部 PG 的 monitor 库。
+    # 容器是无状态的，可随时重建。备份改用 pg_dump（见 DOCKER.md）。
 
     # 全部 MONITOR_* 配置项从 .env 直接透传。
     #
@@ -50,8 +50,6 @@ services:
       # [1] 容器内固定值：对外端口由 ports 段映射，此处改动只会让健康检查失联
       - MONITOR_SERVER_HOST=0.0.0.0
       - MONITOR_SERVER_PORT=9090
-      # 绝对路径：数据卷挂在 /app/data，改这里会让数据写到容器可写层而丢失
-      - MONITOR_SQLITE_PATH=/app/data/monitor.db
       # 须与 sub2api 主站一致，影响「今日」口径与对账
       - MONITOR_TIMEZONE=${TZ:-Asia/Shanghai}
       - TZ=${TZ:-Asia/Shanghai}
@@ -68,6 +66,11 @@ services:
       - MONITOR_CREDENTIALS_KEY=${MONITOR_CREDENTIALS_KEY:?MONITOR_CREDENTIALS_KEY 必填}
       - MONITOR_SUB2API_DB_USER=${MONITOR_SUB2API_DB_USER:?只读账号必填}
       - MONITOR_SUB2API_DB_PASSWORD=${MONITOR_SUB2API_DB_PASSWORD:?只读账号密码必填}
+      # 本地 monitor 库（可写）。缺失时程序会在启动瞬间报「store_db.host 必填」，
+      # 但在这里提前拦下，错误信息更直白。
+      - MONITOR_STORE_DB_HOST=${MONITOR_STORE_DB_HOST:?本地 monitor 库地址必填}
+      - MONITOR_STORE_DB_USER=${MONITOR_STORE_DB_USER:?本地 monitor 库账号必填}
+      - MONITOR_STORE_DB_PASSWORD=${MONITOR_STORE_DB_PASSWORD:?本地 monitor 库密码必填}
 
     networks:
       - sub2api-network
@@ -78,10 +81,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
-
-volumes:
-  monitor_data:
-    driver: local
 
 networks:
   # 接入 sub2api 已有的网络，从而用容器名访问它的 Postgres。

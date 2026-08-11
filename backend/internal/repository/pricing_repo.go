@@ -33,20 +33,20 @@ type PricingSource struct {
 
 // LocalGroupPricing 本站分组的调价规则（多上游聚合）。
 type LocalGroupPricing struct {
-	ID              int64    `json:"id"`
-	LocalGroupID    int64    `json:"local_group_id"`
-	LocalGroupName  string   `json:"local_group_name"`
-	AutoEnabled     bool     `json:"auto_enabled"`
-	PriceSource     string   `json:"price_source"`
-	PrimaryProvider *int64   `json:"primary_provider_id"`
-	PrimaryGroup    *string  `json:"primary_group"`
-	MarkupMode      string   `json:"markup_mode"`
-	MarkupValue     float64  `json:"markup_value"`
-	FollowThreshold float64  `json:"follow_threshold"`
-	MinRate         *float64 `json:"min_rate"`
-	MaxRate         *float64 `json:"max_rate"`
-	LastAppliedRate *float64 `json:"last_applied_rate"`
-	Conflict        bool     `json:"conflict"`
+	ID              int64     `json:"id"`
+	LocalGroupID    int64     `json:"local_group_id"`
+	LocalGroupName  string    `json:"local_group_name"`
+	AutoEnabled     bool      `json:"auto_enabled"`
+	PriceSource     string    `json:"price_source"`
+	PrimaryProvider *int64    `json:"primary_provider_id"`
+	PrimaryGroup    *string   `json:"primary_group"`
+	MarkupMode      string    `json:"markup_mode"`
+	MarkupValue     float64   `json:"markup_value"`
+	FollowThreshold float64   `json:"follow_threshold"`
+	MinRate         *float64  `json:"min_rate"`
+	MaxRate         *float64  `json:"max_rate"`
+	LastAppliedRate *float64  `json:"last_applied_rate"`
+	Conflict        bool      `json:"conflict"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 
@@ -137,11 +137,11 @@ type RateAction struct {
 
 // PricingRepo 调价规则与审计存储。
 type PricingRepo struct {
-	db *sql.DB
+	db *DB
 }
 
 // NewPricingRepo 创建 PricingRepo。
-func NewPricingRepo(s *SQLite) *PricingRepo { return &PricingRepo{db: s.DB()} }
+func NewPricingRepo(s *Store) *PricingRepo { return &PricingRepo{db: s.DB()} }
 
 const pricingCols = `id, local_group_id, local_group_name, auto_enabled, price_source,
 	primary_provider_id, primary_group, markup_mode, markup_value, follow_threshold,
@@ -149,18 +149,14 @@ const pricingCols = `id, local_group_id, local_group_name, auto_enabled, price_s
 
 func scanPricing(row interface{ Scan(...any) error }) (*LocalGroupPricing, error) {
 	var p LocalGroupPricing
-	var autoEnabled, conflict int
 	var primaryProvider sql.NullInt64
 	var primaryGroup sql.NullString
 	var minRate, maxRate, lastApplied sql.NullFloat64
-	var createdAt, updatedAt string
-	if err := row.Scan(&p.ID, &p.LocalGroupID, &p.LocalGroupName, &autoEnabled, &p.PriceSource,
+	if err := row.Scan(&p.ID, &p.LocalGroupID, &p.LocalGroupName, &p.AutoEnabled, &p.PriceSource,
 		&primaryProvider, &primaryGroup, &p.MarkupMode, &p.MarkupValue, &p.FollowThreshold,
-		&minRate, &maxRate, &lastApplied, &conflict, &createdAt, &updatedAt); err != nil {
+		&minRate, &maxRate, &lastApplied, &p.Conflict, &p.CreatedAt, &p.UpdatedAt); err != nil {
 		return nil, err
 	}
-	p.AutoEnabled = autoEnabled != 0
-	p.Conflict = conflict != 0
 	if primaryProvider.Valid {
 		v := primaryProvider.Int64
 		p.PrimaryProvider = &v
@@ -181,14 +177,12 @@ func scanPricing(row interface{ Scan(...any) error }) (*LocalGroupPricing, error
 		v := lastApplied.Float64
 		p.LastAppliedRate = &v
 	}
-	p.CreatedAt = parseTime(createdAt)
-	p.UpdatedAt = parseTime(updatedAt)
 	return &p, nil
 }
 
 // List 返回全部规则（含数据源）。
 func (r *PricingRepo) List(ctx context.Context) ([]*LocalGroupPricing, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT `+pricingCols+` FROM local_group_pricing ORDER BY local_group_name COLLATE NOCASE`)
+	rows, err := r.db.QueryContext(ctx, `SELECT `+pricingCols+` FROM local_group_pricing ORDER BY lower(local_group_name)`)
 	if err != nil {
 		return nil, err
 	}
@@ -311,10 +305,6 @@ func (r *PricingRepo) Upsert(ctx context.Context, p PricingParams) (*LocalGroupP
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	autoEnabled := 0
-	if p.AutoEnabled {
-		autoEnabled = 1
-	}
 	if p.PriceSource == "" {
 		p.PriceSource = PriceSourcePrimary
 	}
@@ -325,19 +315,15 @@ func (r *PricingRepo) Upsert(ctx context.Context, p PricingParams) (*LocalGroupP
 	var id int64
 	err = tx.QueryRowContext(ctx, `SELECT id FROM local_group_pricing WHERE local_group_id = ?`, p.LocalGroupID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		res, insErr := tx.ExecContext(ctx, `
+		if insErr := tx.QueryRowContext(ctx, `
 			INSERT INTO local_group_pricing (local_group_id, local_group_name, auto_enabled, price_source,
 				primary_provider_id, primary_group, markup_mode, markup_value, follow_threshold,
 				min_rate, max_rate, created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			p.LocalGroupID, p.LocalGroupName, autoEnabled, p.PriceSource,
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+			p.LocalGroupID, p.LocalGroupName, p.AutoEnabled, p.PriceSource,
 			p.PrimaryProvider, p.PrimaryGroup, p.MarkupMode, p.MarkupValue, p.FollowThreshold,
-			p.MinRate, p.MaxRate, nowUTC(), nowUTC())
-		if insErr != nil {
+			p.MinRate, p.MaxRate, nowUTC(), nowUTC()).Scan(&id); insErr != nil {
 			return nil, insErr
-		}
-		if id, err = res.LastInsertId(); err != nil {
-			return nil, err
 		}
 	} else if err != nil {
 		return nil, err
@@ -347,7 +333,7 @@ func (r *PricingRepo) Upsert(ctx context.Context, p PricingParams) (*LocalGroupP
 				primary_provider_id=?, primary_group=?, markup_mode=?, markup_value=?, follow_threshold=?,
 				min_rate=?, max_rate=?, updated_at=?
 			WHERE id=?`,
-			p.LocalGroupName, autoEnabled, p.PriceSource,
+			p.LocalGroupName, p.AutoEnabled, p.PriceSource,
 			p.PrimaryProvider, p.PrimaryGroup, p.MarkupMode, p.MarkupValue, p.FollowThreshold,
 			p.MinRate, p.MaxRate, nowUTC(), id); err != nil {
 			return nil, err
@@ -363,7 +349,8 @@ func (r *PricingRepo) Upsert(ctx context.Context, p PricingParams) (*LocalGroupP
 			continue
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO pricing_sources (pricing_id, provider_id, upstream_group) VALUES (?,?,?)`,
+			`INSERT INTO pricing_sources (pricing_id, provider_id, upstream_group) VALUES (?,?,?)
+			 ON CONFLICT (pricing_id, provider_id, upstream_group) DO NOTHING`,
 			id, s.ProviderID, s.UpstreamGroup); err != nil {
 			return nil, err
 		}
@@ -419,14 +406,12 @@ func (r *PricingRepo) ResolveConflict(ctx context.Context, id int64, currentRate
 
 // InsertAction 写入调价审计（返回 action id）。
 func (r *PricingRepo) InsertAction(ctx context.Context, a RateAction) (int64, error) {
-	res, err := r.db.ExecContext(ctx, `
+	var id int64
+	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO rate_actions (pricing_id, trigger_by, old_rate, new_rate, status, error, created_at)
-		VALUES (?,?,?,?,?,?,?)`,
-		a.PricingID, a.TriggerBy, a.OldRate, a.NewRate, a.Status, a.Error, nowUTC())
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+		VALUES (?,?,?,?,?,?,?) RETURNING id`,
+		a.PricingID, a.TriggerBy, a.OldRate, a.NewRate, a.Status, a.Error, nowUTC()).Scan(&id)
+	return id, err
 }
 
 // UpdateActionStatus 更新审计状态（pending → applied/failed）。
@@ -452,8 +437,7 @@ func (r *PricingRepo) Actions(ctx context.Context, pricingID int64, limit int) (
 		var a RateAction
 		var oldRate sql.NullFloat64
 		var errMsg sql.NullString
-		var createdAt string
-		if err := rows.Scan(&a.ID, &a.PricingID, &a.TriggerBy, &oldRate, &a.NewRate, &a.Status, &errMsg, &createdAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.PricingID, &a.TriggerBy, &oldRate, &a.NewRate, &a.Status, &errMsg, &a.CreatedAt); err != nil {
 			return nil, err
 		}
 		if oldRate.Valid {
@@ -464,7 +448,6 @@ func (r *PricingRepo) Actions(ctx context.Context, pricingID int64, limit int) (
 			e := errMsg.String
 			a.Error = &e
 		}
-		a.CreatedAt = parseTime(createdAt)
 		out = append(out, &a)
 	}
 	return out, rows.Err()

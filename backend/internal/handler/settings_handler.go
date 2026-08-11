@@ -52,9 +52,9 @@ func (h *SettingsHandler) SaveStrategy(c *gin.Context) {
 // notifyChannelsDTO 通知渠道输出（脱敏：secret/token 只回显是否已配置）。
 type notifyChannelsDTO struct {
 	DingTalk struct {
-		Enabled    bool   `json:"enabled"`
-		Webhook    string `json:"webhook"`
-		HasSecret  bool   `json:"has_secret"`
+		Enabled   bool   `json:"enabled"`
+		Webhook   string `json:"webhook"`
+		HasSecret bool   `json:"has_secret"`
 	} `json:"dingtalk"`
 	Feishu struct {
 		Enabled   bool   `json:"enabled"`

@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -66,12 +64,7 @@ func newNewAPIStub(t *testing.T, refreshStatus int) *newapiStub {
 // 且本组用例要验的正是「续期结果确实落了库」。凭据用零值 Box（明文直通）。
 func newTestProviderRepo(t *testing.T) *repository.ProviderRepo {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "test.db")
-	s, err := repository.NewSQLite(path)
-	if err != nil {
-		t.Fatalf("初始化 SQLite 失败: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close(); _ = os.Remove(path) })
+	s := newTestStore(t)
 	return repository.NewProviderRepo(s, &secretbox.Box{})
 }
 

@@ -26,29 +26,21 @@ type ProbeResult struct {
 
 // ProbeRepo 探测结果存储。
 type ProbeRepo struct {
-	db *sql.DB
+	db *DB
 }
 
 // NewProbeRepo 创建 ProbeRepo。
-func NewProbeRepo(s *SQLite) *ProbeRepo { return &ProbeRepo{db: s.DB()} }
+func NewProbeRepo(s *Store) *ProbeRepo { return &ProbeRepo{db: s.DB()} }
 
 // Insert 写入一条探测结果。
 func (r *ProbeRepo) Insert(ctx context.Context, pr *ProbeResult) error {
-	success := 0
-	if pr.Success {
-		success = 1
-	}
-	res, err := r.db.ExecContext(ctx, `
+	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO probe_results (provider_id, account_id, account_name, platform, model, base_url,
 			source, success, status_code, ttft_ms, total_ms, error, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
 		pr.ProviderID, pr.AccountID, pr.AccountName, pr.Platform, pr.Model, pr.BaseURL,
-		pr.Source, success, pr.StatusCode, pr.TTFTMs, pr.TotalMs, pr.Error, nowUTC())
-	if err != nil {
-		return err
-	}
-	pr.ID, _ = res.LastInsertId()
-	return nil
+		pr.Source, pr.Success, pr.StatusCode, pr.TTFTMs, pr.TotalMs, pr.Error, nowUTC()).Scan(&pr.ID)
+	return err
 }
 
 // ProbeFilter 探测明细查询过滤。
@@ -107,10 +99,8 @@ func scanProbe(row interface{ Scan(...any) error }) (*ProbeResult, error) {
 	var statusCode sql.NullInt64
 	var ttft, total sql.NullInt64
 	var errStr sql.NullString
-	var createdAt string
-	var success int
 	err := row.Scan(&pr.ID, &providerID, &pr.AccountID, &pr.AccountName, &pr.Platform, &pr.Model, &pr.BaseURL,
-		&pr.Source, &success, &statusCode, &ttft, &total, &errStr, &createdAt)
+		&pr.Source, &pr.Success, &statusCode, &ttft, &total, &errStr, &pr.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +108,6 @@ func scanProbe(row interface{ Scan(...any) error }) (*ProbeResult, error) {
 		id := providerID.Int64
 		pr.ProviderID = &id
 	}
-	pr.Success = success != 0
 	if statusCode.Valid {
 		sc := int(statusCode.Int64)
 		pr.StatusCode = &sc
@@ -135,7 +124,6 @@ func scanProbe(row interface{ Scan(...any) error }) (*ProbeResult, error) {
 		e := errStr.String
 		pr.Error = &e
 	}
-	pr.CreatedAt = parseTime(createdAt)
 	return &pr, nil
 }
 
@@ -157,7 +145,7 @@ func (r *ProbeRepo) Summary(ctx context.Context, since time.Time) ([]*SummaryRow
 	sinceStr := since.UTC().Format(time.RFC3339)
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT account_id, account_name, platform, COUNT(*) AS total,
-		       SUM(success) AS success_cnt,
+		       COUNT(*) FILTER (WHERE success) AS success_cnt,
 		       AVG(ttft_ms) AS avg_ttft,
 		       AVG(total_ms) AS avg_total,
 		       MAX(created_at) AS last_at
@@ -174,7 +162,7 @@ func (r *ProbeRepo) Summary(ctx context.Context, since time.Time) ([]*SummaryRow
 	for rows.Next() {
 		var s SummaryRow
 		var avgTTFT, avgTotal sql.NullFloat64
-		var lastAt sql.NullString
+		var lastAt sql.NullTime
 		if err := rows.Scan(&s.AccountID, &s.AccountName, &s.Platform, &s.Total, &s.SuccessCnt, &avgTTFT, &avgTotal, &lastAt); err != nil {
 			return nil, err
 		}
@@ -186,7 +174,7 @@ func (r *ProbeRepo) Summary(ctx context.Context, since time.Time) ([]*SummaryRow
 			v := avgTotal.Float64
 			s.AvgTotal = &v
 		}
-		s.LastAt = parseTimePtr(lastAt)
+		s.LastAt = timePtr(lastAt)
 		out = append(out, &s)
 	}
 	if err := rows.Err(); err != nil {
@@ -210,11 +198,11 @@ func (r *ProbeRepo) Summary(ctx context.Context, since time.Time) ([]*SummaryRow
 	lastByAccount := make(map[int64]bool, len(out))
 	for lastRows.Next() {
 		var aid int64
-		var success int
-		if err := lastRows.Scan(&aid, &success); err != nil {
+		var ok bool
+		if err := lastRows.Scan(&aid, &ok); err != nil {
 			return nil, err
 		}
-		lastByAccount[aid] = success != 0
+		lastByAccount[aid] = ok
 	}
 	if err := lastRows.Err(); err != nil {
 		return nil, err
@@ -246,7 +234,7 @@ func (r *ProbeRepo) SummaryByModel(ctx context.Context, since time.Time) ([]*Mod
 	sinceStr := since.UTC().Format(time.RFC3339)
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT model, COUNT(*) AS total,
-		       SUM(success) AS success_cnt,
+		       COUNT(*) FILTER (WHERE success) AS success_cnt,
 		       AVG(ttft_ms) AS avg_ttft,
 		       AVG(total_ms) AS avg_total
 		FROM probe_results
@@ -282,11 +270,11 @@ func (r *ProbeRepo) SummaryByModel(ctx context.Context, since time.Time) ([]*Mod
 	// 补充每个模型最近一次探测的成功与否（与 Summary 同样的逐行补充策略，
 	// 模型数量级与账号相当，额外查询开销可接受）。
 	for _, m := range out {
-		var lastSuccess int
+		var lastSuccess bool
 		row := r.db.QueryRowContext(ctx, `
 			SELECT success FROM probe_results WHERE model = ? ORDER BY created_at DESC, id DESC LIMIT 1`, m.Model)
 		if err := row.Scan(&lastSuccess); err == nil {
-			b := lastSuccess != 0
+			b := lastSuccess
 			m.LastSuccess = &b
 		}
 	}

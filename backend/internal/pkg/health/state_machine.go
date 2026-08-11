@@ -68,7 +68,7 @@ type Snapshot struct {
 // ProbeResult 一次探测的判定输入。
 type ProbeResult struct {
 	Success    bool
-	StatusCode int  // 0 = 网络层失败（无响应）
+	StatusCode int // 0 = 网络层失败（无响应）
 	At         time.Time
 }
 

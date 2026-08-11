@@ -44,11 +44,11 @@ type CostSyncState struct {
 
 // UpstreamCostRepo 上游真实成本存储。
 type UpstreamCostRepo struct {
-	db *sql.DB
+	db *DB
 }
 
 // NewUpstreamCostRepo 创建 UpstreamCostRepo。
-func NewUpstreamCostRepo(s *SQLite) *UpstreamCostRepo { return &UpstreamCostRepo{db: s.DB()} }
+func NewUpstreamCostRepo(s *Store) *UpstreamCostRepo { return &UpstreamCostRepo{db: s.DB()} }
 
 // UpsertCosts 按 (provider_id, upstream_key_id, usage_date) 幂等写入成本。
 // 同一天重复采集覆写而非追加，使定时同步与历史回补可共用一张表。
@@ -70,8 +70,8 @@ func (r *UpstreamCostRepo) UpsertCosts(ctx context.Context, costs []UpstreamKeyC
 			key_name      = excluded.key_name,
 			account_id    = excluded.account_id,
 			actual_cost   = excluded.actual_cost,
-			official_cost = MAX(excluded.official_cost, upstream_key_costs.official_cost),
-			requests      = MAX(excluded.requests, upstream_key_costs.requests),
+			official_cost = GREATEST(excluded.official_cost, upstream_key_costs.official_cost),
+			requests      = GREATEST(excluded.requests, upstream_key_costs.requests),
 			synced_at     = excluded.synced_at`)
 	if err != nil {
 		return err
@@ -133,7 +133,7 @@ func (r *UpstreamCostRepo) UpsertMappings(ctx context.Context, maps []UpstreamKe
 // 触发前端「成本不完整、利润被高估 ⚠」告警。自营站成本为 0 是有意为之，不是数据缺失。
 //
 // official_cost 不做剔除：它是官价对照口径，与「这笔钱付给了谁」无关。
-const actualCostExpr = `COALESCE(SUM(CASE WHEN p.self_operated = 1 THEN 0 ELSE c.actual_cost END),0)`
+const actualCostExpr = `COALESCE(SUM(CASE WHEN p.self_operated THEN 0 ELSE c.actual_cost END),0)`
 
 // AccountCost 账号在查询区间内的真实成本汇总。
 type AccountCost struct {
@@ -190,9 +190,12 @@ func (r *UpstreamCostRepo) CostByDay(ctx context.Context, startDate, endDate str
 	out := make(map[string]DailyCost)
 	for rows.Next() {
 		var d DailyCost
-		if err := rows.Scan(&d.UsageDate, &d.ActualCost, &d.OfficialCost); err != nil {
+		// usage_date 是 DATE，pgx 返回 time.Time；对外仍是 YYYY-MM-DD 字符串。
+		var usageDate time.Time
+		if err := rows.Scan(&usageDate, &d.ActualCost, &d.OfficialCost); err != nil {
 			return nil, err
 		}
+		d.UsageDate = usageDate.Format(dateLayout)
 		out[d.UsageDate] = d
 	}
 	return out, rows.Err()
@@ -318,22 +321,17 @@ func (r *UpstreamCostRepo) SyncStates(ctx context.Context) (map[int64]CostSyncSt
 	out := make(map[int64]CostSyncState)
 	for rows.Next() {
 		var st CostSyncState
-		var syncedAt, errStr, backfilledAt sql.NullString
+		var syncedAt, backfilledAt sql.NullTime
+		var errStr sql.NullString
 		if err := rows.Scan(&st.ProviderID, &syncedAt, &errStr, &st.KeysTotal, &st.KeysMatched, &backfilledAt); err != nil {
 			return nil, err
 		}
-		if syncedAt.Valid {
-			t := parseTime(syncedAt.String)
-			st.LastSyncedAt = &t
-		}
+		st.LastSyncedAt = timePtr(syncedAt)
 		if errStr.Valid {
 			e := errStr.String
 			st.LastError = &e
 		}
-		if backfilledAt.Valid {
-			t := parseTime(backfilledAt.String)
-			st.BackfilledAt = &t
-		}
+		st.BackfilledAt = timePtr(backfilledAt)
 		out[st.ProviderID] = st
 	}
 	return out, rows.Err()

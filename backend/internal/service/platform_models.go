@@ -8,10 +8,11 @@ package service
 // 否则这类分组在广场上会显示为「零个模型」，与用户实际能调用的模型不符。
 //
 // 数据来源：sub2api origin/main 的
-//   internal/pkg/claude/constants.go   DefaultModels
-//   internal/pkg/openai/constants.go   DefaultModels
-//   internal/pkg/geminicli/models.go   DefaultModels
-//   internal/pkg/xai/models.go         DefaultModelIDs()
+//
+//	internal/pkg/claude/constants.go   DefaultModels
+//	internal/pkg/openai/constants.go   DefaultModels
+//	internal/pkg/geminicli/models.go   DefaultModels
+//	internal/pkg/xai/models.go         DefaultModelIDs()
 //
 // sub2api 升级新增模型后此表会滞后；表现为个别新模型在这类空映射分组里缺失，
 // 属可接受的降级（配了 model_mapping 的分组不受影响）。

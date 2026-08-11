@@ -3,8 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -30,18 +28,10 @@ func (f *fakeCreditNotifier) bands() []int {
 	return out
 }
 
-// newTestCreditService 建临时 SQLite + CreditService + 假通知器。
+// newTestCreditService 建临时 monitor 测试库 + CreditService + 假通知器。
 func newTestCreditService(t *testing.T) (*CreditService, *fakeCreditNotifier) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "test.db")
-	s, err := repository.NewSQLite(path)
-	if err != nil {
-		t.Fatalf("初始化 SQLite 失败: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = s.Close()
-		_ = os.Remove(path)
-	})
+	s := newTestStore(t)
 	notifier := &fakeCreditNotifier{}
 	return NewCreditService(repository.NewCreditRepo(s, &secretbox.Box{}), notifier), notifier
 }
@@ -263,12 +253,7 @@ func TestAlertNameFallsBackToUserID(t *testing.T) {
 
 // TestNilNotifierIsSafe 未配置通知器时不 panic（装配层允许传 nil）。
 func TestNilNotifierIsSafe(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.db")
-	s, err := repository.NewSQLite(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = s.Close() }()
+	s := newTestStore(t)
 
 	svc := NewCreditService(repository.NewCreditRepo(s, &secretbox.Box{}), nil)
 	c := newCustomer(t, svc, "uid-nil", 100)

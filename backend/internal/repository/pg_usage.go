@@ -128,14 +128,14 @@ func (p *PG) AggregateUsageDaily(ctx context.Context, tz string, start, end time
 
 // PassiveStabilityRow 被动稳定性行（真实流量分位数）。
 type PassiveStabilityRow struct {
-	AccountID    int64
-	AccountName  string
-	Platform     string
-	Requests     int64
-	DurationP50  *float64
-	DurationP95  *float64
-	FirstTokP50  *float64
-	FirstTokP95  *float64
+	AccountID   int64
+	AccountName string
+	Platform    string
+	Requests    int64
+	DurationP50 *float64
+	DurationP95 *float64
+	FirstTokP50 *float64
+	FirstTokP95 *float64
 }
 
 // PassiveStability 近 N 小时按账号的耗时/首字分位数。

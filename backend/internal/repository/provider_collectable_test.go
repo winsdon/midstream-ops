@@ -2,8 +2,6 @@ package repository
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"sub2api-account-monitor/internal/pkg/secretbox"
@@ -11,15 +9,7 @@ import (
 
 func newTestProviderRepo(t *testing.T) *ProviderRepo {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "collectable.db")
-	s, err := NewSQLite(path)
-	if err != nil {
-		t.Fatalf("初始化 SQLite 失败: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = s.Close()
-		_ = os.Remove(path)
-	})
+	s := newTestStore(t)
 	return NewProviderRepo(s, &secretbox.Box{})
 }
 

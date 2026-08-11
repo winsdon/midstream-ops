@@ -2,25 +2,15 @@ package repository
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"sub2api-account-monitor/internal/pkg/secretbox"
 )
 
-// newTestLinkRepo 建临时 SQLite 并返回关联表 repo 与供应商 repo（建站用）。
+// newTestLinkRepo 建临时 monitor 测试库并返回关联表 repo 与供应商 repo（建站用）。
 func newTestLinkRepo(t *testing.T) (*ProviderAccountRepo, *ProviderRepo) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "links.db")
-	s, err := NewSQLite(path)
-	if err != nil {
-		t.Fatalf("初始化 SQLite 失败: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = s.Close()
-		_ = os.Remove(path)
-	})
+	s := newTestStore(t)
 	return NewProviderAccountRepo(s), NewProviderRepo(s, &secretbox.Box{})
 }
 

@@ -17,7 +17,7 @@ type Config struct {
 	Timezone string        `mapstructure:"timezone"`
 	Auth     AuthConfig    `mapstructure:"auth"`
 	Sub2api  Sub2apiDB     `mapstructure:"sub2api_db"`
-	SQLite   SQLiteConfig  `mapstructure:"sqlite"`
+	Store    StoreDB       `mapstructure:"store_db"`
 	Balance  BalanceConfig `mapstructure:"balance"`
 	Cost     CostConfig    `mapstructure:"cost"`
 	Probe    ProbeConfig   `mapstructure:"probe"`
@@ -42,7 +42,13 @@ type AuthConfig struct {
 	TokenTTLHours int    `mapstructure:"token_ttl_hours"`
 }
 
-type Sub2apiDB struct {
+// PGConn 一个 Postgres 连接的通用参数。上游只读库与本地可写库共用此结构。
+//
+// 【为什么不把只读标志做成本结构的字段】只读是「这个库是什么」的属性，不是
+// 「这次连接想怎么用」的选项。做成字段就意味着它可被配置文件/环境变量覆盖，
+// 而 TestDSNStaysReadOnly 守的正是「任何外部输入都不能把只读弄丢」。只读性
+// 因此上移到两个独立的 DSN 方法里各自硬编码，不接受输入。
+type PGConn struct {
 	Host     string `mapstructure:"host"`
 	Port     int    `mapstructure:"port"`
 	User     string `mapstructure:"user"`
@@ -51,21 +57,68 @@ type Sub2apiDB struct {
 	SSLMode  string `mapstructure:"sslmode"`
 }
 
-// DSN 返回强制只读的 Postgres DSN。
-func (d Sub2apiDB) DSN() string {
-	ssl := d.SSLMode
+// baseDSN 返回不含任何事务模式参数的基础 DSN。
+//
+// 【不导出】导出会让调用方绕过下面两个语义明确的包装，上游库就可能拿到一个
+// 丢了只读保障的 DSN。
+//
+// 用户名与密码走 url.QueryEscape：密码含 @ / # 等字符会破坏 URL 解析。
+func (p PGConn) baseDSN() string {
+	ssl := p.SSLMode
 	if ssl == "" {
 		ssl = "disable"
 	}
-	return fmt.Sprintf(
-		"postgres://%s:%s@%s:%d/%s?sslmode=%s&default_transaction_read_only=on",
-		d.User, d.Password, d.Host, d.Port, d.DBName, ssl,
-	)
+	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+		url.QueryEscape(p.User), url.QueryEscape(p.Password),
+		p.Host, p.Port, p.DBName, ssl)
 }
 
-type SQLiteConfig struct {
-	Path string `mapstructure:"path"`
+// validate 校验连接必填项。prefix 用于错误文案指明是哪一组配置。
+//
+// 不校验 password：本地开发常用 trust/peer 认证或 ~/.pgpass，强制非空会挡住
+// 合法用法。
+func (p PGConn) validate(prefix string) error {
+	if strings.TrimSpace(p.Host) == "" {
+		return fmt.Errorf("%s.host 必填", prefix)
+	}
+	if p.Port <= 0 || p.Port > 65535 {
+		return fmt.Errorf("%s.port 无效: %d", prefix, p.Port)
+	}
+	if strings.TrimSpace(p.User) == "" {
+		return fmt.Errorf("%s.user 必填", prefix)
+	}
+	if strings.TrimSpace(p.DBName) == "" {
+		return fmt.Errorf("%s.dbname 必填", prefix)
+	}
+	return nil
 }
+
+// Sub2apiDB 上游 sub2api 库（只读）。
+type Sub2apiDB struct {
+	PGConn `mapstructure:",squash"`
+}
+
+// DSN 返回强制只读的 Postgres DSN。只读性硬编码在此，不受任何配置项影响。
+func (d Sub2apiDB) DSN() string {
+	return d.baseDSN() + "&default_transaction_read_only=on"
+}
+
+// StoreDB 本地 monitor 库（可写），存本项目自己的数据。
+//
+// 与上游库一样是【外部 PG】：本项目不负责起数据库，可以是同一个 PG 实例上的
+// 另一个库，也可以是完全独立的实例。
+type StoreDB struct {
+	PGConn `mapstructure:",squash"`
+}
+
+// DSN 返回可写 DSN。
+//
+// 【绝不能带 default_transaction_read_only】pgx 会把未知 DSN 键当 RuntimeParam
+// 透传给服务端并静默生效，误加会让所有写入报「cannot execute INSERT in a
+// read-only transaction」——而这在启动与 /health 都看不出来，直到第一次采集
+// 才炸。类型分离（StoreDB ≠ Sub2apiDB）是防止误用的手段，
+// TestStoreDSNIsNotReadOnly 是守卫。
+func (s StoreDB) DSN() string { return s.baseDSN() }
 
 type BalanceConfig struct {
 	IntervalMinutes int `mapstructure:"interval_minutes"`
@@ -218,7 +271,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("sub2api_db.dbname", "sub2api")
 	v.SetDefault("sub2api_db.sslmode", "disable")
 
-	v.SetDefault("sqlite.path", "data/monitor.db")
+	v.SetDefault("store_db.port", 5432)
+	v.SetDefault("store_db.dbname", "monitor")
+	v.SetDefault("store_db.user", "monitor")
+	v.SetDefault("store_db.sslmode", "disable")
 
 	v.SetDefault("balance.interval_minutes", 30)
 	v.SetDefault("balance.timeout_seconds", 15)
@@ -275,7 +331,8 @@ func bindEnvs(v *viper.Viper) {
 		"sub2api_db.host", "sub2api_db.port", "sub2api_db.user",
 		"sub2api_db.password", "sub2api_db.dbname", "sub2api_db.sslmode",
 
-		"sqlite.path",
+		"store_db.host", "store_db.port", "store_db.user",
+		"store_db.password", "store_db.dbname", "store_db.sslmode",
 
 		"balance.interval_minutes", "balance.timeout_seconds",
 		"balance.concurrency", "balance.retention_days",
@@ -314,6 +371,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Auth.Password == "" {
 		return errors.New("auth.password 不能为空")
+	}
+	if err := c.Sub2api.validate("sub2api_db"); err != nil {
+		return err
+	}
+	if err := c.Store.validate("store_db"); err != nil {
+		return err
 	}
 	loc, err := time.LoadLocation(c.Timezone)
 	if err != nil {

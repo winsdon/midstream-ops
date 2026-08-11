@@ -2,23 +2,13 @@ package repository
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
-// newMediaTestDB 建临时 SQLite 并返回任务仓储。
+// newMediaTestDB 建临时 monitor 测试库并返回任务仓储。
 func newMediaTestDB(t *testing.T) *MediaTaskRepo {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "media.db")
-	s, err := NewSQLite(path)
-	if err != nil {
-		t.Fatalf("初始化 SQLite 失败: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = s.Close()
-		_ = os.Remove(path)
-	})
+	s := newTestStore(t)
 	return NewMediaTaskRepo(s)
 }
 

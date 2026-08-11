@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -16,15 +14,7 @@ import (
 // newEncryptedRepo 建一个**启用了加密**的 CreditRepo（区别于 newTestCreditRepo 的明文直通）。
 func newEncryptedRepo(t *testing.T) *CreditRepo {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "test.db")
-	s, err := NewSQLite(path)
-	if err != nil {
-		t.Fatalf("初始化 SQLite 失败: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = s.Close()
-		_ = os.Remove(path)
-	})
+	s := newTestStore(t)
 	// 32 字节全零密钥：测试只关心「加密确实发生」，不关心密钥强度
 	t.Setenv("MONITOR_CREDENTIALS_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	box := secretbox.FromEnv()

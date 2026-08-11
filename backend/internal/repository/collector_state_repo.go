@@ -19,11 +19,11 @@ type CollectorState struct {
 
 // CollectorStateRepo 采集健康状态存储。
 type CollectorStateRepo struct {
-	db *sql.DB
+	db *DB
 }
 
 // NewCollectorStateRepo 创建 CollectorStateRepo。
-func NewCollectorStateRepo(s *SQLite) *CollectorStateRepo { return &CollectorStateRepo{db: s.DB()} }
+func NewCollectorStateRepo(s *Store) *CollectorStateRepo { return &CollectorStateRepo{db: s.DB()} }
 
 // RecordSuccess 记录一次成功：清零失败计数与退避。
 func (r *CollectorStateRepo) RecordSuccess(ctx context.Context, providerID int64, task string) error {
@@ -46,20 +46,21 @@ func (r *CollectorStateRepo) RecordFailure(ctx context.Context, providerID int64
 		s := nextEligible.UTC().Format(time.RFC3339)
 		nextStr = &s
 	}
-	_, err := r.db.ExecContext(ctx, `
+	// 用 RETURNING 一条语句拿到自增后的值，而非「先 UPDATE 再 SELECT 回读」。
+	//
+	// SQLite 时代靠 SetMaxOpenConns(1) 让两条语句必然连续，回读拿到的一定是自己
+	// 写的值。PG 连接池下两条语句可能落在不同连接，中间插入同一 provider 的另一次
+	// 失败记录，回读就会拿到别人的计数，导致退避时长算错。
+	var n int
+	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO collector_state (provider_id, task, last_run_at, last_error, consecutive_failures, next_eligible_at)
 		VALUES (?,?,?,?,1,?)
 		ON CONFLICT(provider_id, task) DO UPDATE SET
 			last_run_at=excluded.last_run_at, last_error=excluded.last_error,
 			consecutive_failures=collector_state.consecutive_failures+1,
-			next_eligible_at=excluded.next_eligible_at`,
-		providerID, task, nowUTC(), errMsg, nextStr)
-	if err != nil {
-		return 0, err
-	}
-	var n int
-	err = r.db.QueryRowContext(ctx, `SELECT consecutive_failures FROM collector_state WHERE provider_id=? AND task=?`,
-		providerID, task).Scan(&n)
+			next_eligible_at=excluded.next_eligible_at
+		RETURNING consecutive_failures`,
+		providerID, task, nowUTC(), errMsg, nextStr).Scan(&n)
 	return n, err
 }
 
@@ -128,17 +129,18 @@ func (r *CollectorStateRepo) ListByProvider(ctx context.Context, providerID int6
 }
 
 func scanCollectorState(row interface{ Scan(...any) error }) (CollectorState, error) {
+	var lastSuccess, nextEligible, lastRun sql.NullTime
 	var st CollectorState
-	var lastRun, lastSuccess, lastErr, nextEligible sql.NullString
+	var lastErr sql.NullString
 	if err := row.Scan(&st.ProviderID, &st.Task, &lastRun, &lastSuccess, &lastErr, &st.ConsecutiveFailures, &nextEligible); err != nil {
 		return st, err
 	}
-	st.LastRunAt = parseTimePtr(lastRun)
-	st.LastSuccessAt = parseTimePtr(lastSuccess)
+	st.LastRunAt = timePtr(lastRun)
+	st.LastSuccessAt = timePtr(lastSuccess)
 	if lastErr.Valid {
 		e := lastErr.String
 		st.LastError = &e
 	}
-	st.NextEligibleAt = parseTimePtr(nextEligible)
+	st.NextEligibleAt = timePtr(nextEligible)
 	return st, nil
 }

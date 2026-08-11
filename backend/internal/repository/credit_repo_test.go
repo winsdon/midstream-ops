@@ -3,26 +3,16 @@ package repository
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"sub2api-account-monitor/internal/pkg/secretbox"
 )
 
-// newTestCreditRepo 建一个临时 SQLite（跑全部迁移）并返回 CreditRepo。
+// newTestCreditRepo 建一个临时 monitor 测试库（跑全部迁移）并返回 CreditRepo。
 func newTestCreditRepo(t *testing.T) *CreditRepo {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "test.db")
-	s, err := NewSQLite(path)
-	if err != nil {
-		t.Fatalf("初始化 SQLite 失败: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = s.Close()
-		_ = os.Remove(path)
-	})
+	s := newTestStore(t)
 	// &secretbox.Box{} 为明文直通实例，测试不依赖 MONITOR_CREDENTIALS_KEY
 	return NewCreditRepo(s, &secretbox.Box{})
 }
@@ -220,7 +210,7 @@ func TestOutstandingCanGoNegative(t *testing.T) {
 	}
 }
 
-// TestAppendEntryRejectsUnknownCustomer SQLite 默认不强制外键，须显式校验。
+// TestAppendEntryRejectsUnknownCustomer 仓储层显式校验客户存在（不依赖外键文案）。
 func TestAppendEntryRejectsUnknownCustomer(t *testing.T) {
 	repo := newTestCreditRepo(t)
 	_, err := repo.AppendEntry(context.Background(), EntryParams{

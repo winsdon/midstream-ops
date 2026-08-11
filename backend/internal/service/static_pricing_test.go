@@ -56,10 +56,10 @@ func TestStaticPriceTable_ThinkingMatchesBase(t *testing.T) {
 
 func TestBaseModelName(t *testing.T) {
 	cases := map[string]string{
-		"claude-opus-4-5-20251101": "claude-opus-4-5",
+		"claude-opus-4-5-20251101":  "claude-opus-4-5",
 		"claude-haiku-4-5-20251001": "claude-haiku-4-5",
-		"claude-opus-4-8":          "claude-opus-4-8", // 无版本号后缀，原样返回
-		"gemini-2.5-pro":           "gemini-2.5-pro",
+		"claude-opus-4-8":           "claude-opus-4-8", // 无版本号后缀，原样返回
+		"gemini-2.5-pro":            "gemini-2.5-pro",
 	}
 	for in, want := range cases {
 		if got := baseModelName(in); got != want {

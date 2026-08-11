@@ -2,25 +2,15 @@ package repository
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"sub2api-account-monitor/internal/pkg/secretbox"
 )
 
-// newCostTestDB 建临时 SQLite 并返回三个仓储。
+// newCostTestDB 建临时 monitor 测试库并返回三个仓储。
 func newCostTestDB(t *testing.T) (*UpstreamCostRepo, *OperatingCostRepo, *ProviderRepo) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "test.db")
-	s, err := NewSQLite(path)
-	if err != nil {
-		t.Fatalf("初始化 SQLite 失败: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = s.Close()
-		_ = os.Remove(path)
-	})
+	s := newTestStore(t)
 	return NewUpstreamCostRepo(s), NewOperatingCostRepo(s), NewProviderRepo(s, &secretbox.Box{})
 }
 
@@ -156,7 +146,7 @@ func TestSelfOperatedToggleAffectsHistoricalCosts(t *testing.T) {
 	}
 }
 
-// 删除站点应级联清掉其运营成本（foreign_keys pragma 已在 NewSQLite 开启）。
+// 删除站点应级联清掉其运营成本（PG 外键恒强制）。
 func TestOperatingCostCascadeOnProviderDelete(t *testing.T) {
 	_, opRepo, providerRepo := newCostTestDB(t)
 	ctx := context.Background()

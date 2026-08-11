@@ -53,7 +53,9 @@ func Conflict(c *gin.Context, message string) { Error(c, http.StatusConflict, me
 func InternalError(c *gin.Context, message string) { Error(c, http.StatusInternalServerError, message) }
 
 // ServiceUnavailable 503（用于 PG 不可用时）。
-func ServiceUnavailable(c *gin.Context, message string) { Error(c, http.StatusServiceUnavailable, message) }
+func ServiceUnavailable(c *gin.Context, message string) {
+	Error(c, http.StatusServiceUnavailable, message)
+}
 
 // Paginated 返回分页数据。
 func Paginated(c *gin.Context, items any, total int64, page, pageSize int) {

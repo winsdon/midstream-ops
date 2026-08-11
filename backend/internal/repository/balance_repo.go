@@ -20,23 +20,19 @@ type BalanceSnapshot struct {
 
 // BalanceRepo 余额快照存储。
 type BalanceRepo struct {
-	db *sql.DB
+	db *DB
 }
 
 // NewBalanceRepo 创建 BalanceRepo。
-func NewBalanceRepo(s *SQLite) *BalanceRepo { return &BalanceRepo{db: s.DB()} }
+func NewBalanceRepo(s *Store) *BalanceRepo { return &BalanceRepo{db: s.DB()} }
 
 // InsertSnapshot 写入一条快照。
 func (r *BalanceRepo) InsertSnapshot(ctx context.Context, snap *BalanceSnapshot) error {
-	res, err := r.db.ExecContext(ctx, `
+	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO balance_snapshots (provider_id, balance, currency, source, metrics, error, created_at)
-		VALUES (?,?,?,?,?,?,?)`,
-		snap.ProviderID, snap.Balance, snap.Currency, snap.Source, snap.Metrics, snap.Error, nowUTC())
-	if err != nil {
-		return err
-	}
-	snap.ID, _ = res.LastInsertId()
-	return nil
+		VALUES (?,?,?,?,?,?,?) RETURNING id`,
+		snap.ProviderID, snap.Balance, snap.Currency, snap.Source, snap.Metrics, snap.Error, nowUTC()).Scan(&snap.ID)
+	return err
 }
 
 // LatestSnapshot 返回供应商最新一条快照。
@@ -101,8 +97,7 @@ func scanSnapshot(row interface{ Scan(...any) error }) (*BalanceSnapshot, error)
 	var s BalanceSnapshot
 	var bal sql.NullFloat64
 	var metrics, errStr sql.NullString
-	var createdAt string
-	err := row.Scan(&s.ID, &s.ProviderID, &bal, &s.Currency, &s.Source, &metrics, &errStr, &createdAt)
+	err := row.Scan(&s.ID, &s.ProviderID, &bal, &s.Currency, &s.Source, &metrics, &errStr, &s.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +113,6 @@ func scanSnapshot(row interface{ Scan(...any) error }) (*BalanceSnapshot, error)
 		e := errStr.String
 		s.Error = &e
 	}
-	s.CreatedAt = parseTime(createdAt)
 	return &s, nil
 }
 

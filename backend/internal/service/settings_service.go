@@ -112,7 +112,7 @@ func NewSettingsService(repo *repository.SettingsRepo) (*SettingsService, error)
 	return s, nil
 }
 
-// load 从 SQLite 加载两域设置（缺失时用默认值）。
+// load 从 monitor 库加载两域设置（缺失时用默认值）。
 func (s *SettingsService) load(ctx context.Context) error {
 	raw, err := s.repo.Get(ctx, settingsKeyStrategy)
 	if err != nil {

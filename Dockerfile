@@ -62,7 +62,7 @@ COPY backend/ ./
 COPY --from=frontend-builder /app/backend/internal/web/dist ./internal/web/dist
 
 # -tags embed 必须带：不带则走 internal/web/embed_off.go，前端完全不服务。
-# CGO_ENABLED=0：SQLite 用的是纯 Go 的 modernc.org/sqlite，可静态编译。
+# CGO_ENABLED=0：本项目无 CGO 依赖（PG 驱动 pgx 是纯 Go），可静态编译。
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -tags embed \
     -ldflags="-s -w" \
@@ -80,9 +80,11 @@ LABEL org.opencontainers.image.description="sub2api 上游账号余额 / 成本 
 LABEL org.opencontainers.image.licenses="MIT"
 
 # tzdata：二进制已内嵌 time/tzdata，这里装包是为了 TZ 环境变量与容器内 date 显示。
-# su-exec：entrypoint 修好数据目录属主后降权到非 root。
 # wget：HEALTHCHECK 用（alpine 的 busybox 自带，此处显式声明依赖意图）。
-RUN apk add --no-cache ca-certificates tzdata su-exec && \
+#
+# 不再需要 su-exec：数据全在外部 PG，容器内没有需要修属主的数据目录，
+# 因此直接用 USER 降权，不走 entrypoint 脚本。
+RUN apk add --no-cache ca-certificates tzdata && \
     rm -rf /var/cache/apk/*
 
 # 非 root 用户
@@ -92,22 +94,17 @@ RUN addgroup -g 1000 monitor && \
 WORKDIR /app
 
 COPY --from=backend-builder --chown=monitor:monitor /app/monitor /app/monitor
-COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
-# 剥掉可能存在的 CR：Windows 上 core.autocrlf 会把 checkout 出来的 .sh 转成 CRLF，
-# 而 `#!/bin/sh\r` 里的 \r 会被内核当成解释器路径的一部分，容器启动报
-# 「exec /app/docker-entrypoint.sh: no such file or directory」——文件明明在，
-# 报错却说找不到。仓库已用 .gitattributes 锁定 eol=lf，这里是第二道防线：
-# 覆盖 .gitattributes 未生效的旧工作区（加它之前 clone 的副本不会自动重转）。
-RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && \
-    chmod +x /app/docker-entrypoint.sh && \
-    mkdir -p /app/data && chown monitor:monitor /app/data
+
+USER monitor
 
 EXPOSE 9090
 
-# /health 免鉴权。注意它在上游 PG 不可用时仍返回 200（只是 pg:"down"），
-# 这是有意的降级设计 —— 上游库挂掉不代表本容器不健康。
+# /health 免鉴权，两个库的语义刻意不对称：
+#   • 上游 sub2api 库不可用 → 仍返回 200（upstream_pg:"down"）。上游挂掉不代表
+#     本容器不健康，相关接口各自降级返回 503。
+#   • 本地 monitor 库不可用 → 返回 503（store_pg:"down"）。它是写路径的唯一
+#     依赖，此时服务确实不健康，应让本检查失败并触发重启。
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD wget -q -T 5 -O /dev/null http://localhost:9090/health || exit 1
 
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["/app/monitor"]
+ENTRYPOINT ["/app/monitor"]

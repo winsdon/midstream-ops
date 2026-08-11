@@ -4,7 +4,7 @@
 
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8.svg)](https://golang.org/)
 [![Vue](https://img.shields.io/badge/Vue-3.4+-4FC08D.svg)](https://vuejs.org/)
-[![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57.svg)](https://www.sqlite.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16%2B-336791.svg)](https://www.postgresql.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -15,7 +15,7 @@
 ## ⚠️ 重要提醒
 
 - **📖 用途声明**：本项目是 [sub2api](https://github.com/Wei-Shaw/sub2api) 的**第三方独立监控端**，与 sub2api 官方无隶属关系，不修改也不代理其业务流量。
-- **🔒 只读接入**：线上 Postgres 以只读账号 + DSN 强制 `default_transaction_read_only=on` 双保险接入，不写业务库。唯一的写操作是通过 admin API 调整本站分组倍率（调价映射功能，可不启用）。
+- **🔒 只读接入**：线上 sub2api Postgres 以只读账号 + DSN 强制 `default_transaction_read_only=on` 双保险接入，不写业务库。唯一的写操作是通过 admin API 调整本站分组倍率（调价映射功能，可不启用）。自身数据写在独立的 monitor 库。
 - **🔑 凭据风险**：本系统存储上游供应商站点的登录凭据与客户 KYC 实名资料。**生产部署必须配置 `MONITOR_CREDENTIALS_KEY`**，否则密码与身份证号明文落库。
 - **⚖️ 免责声明**：本项目仅供技术学习与内部运营使用，作者不对因使用本项目导致的账户封禁、数据丢失或其他任何直接或间接损失承担责任。
 
@@ -31,7 +31,7 @@ midstream-ops（代码内部标识 `sub2api-account-monitor`）是面向 AI API 
 | **上游还剩多少钱？** | 多平台多认证模式采集余额，阶梯退避防撞 WAF，低余额分级告警 |
 | **哪条链路在劣化？** | 真实流量被动统计 + 主动探测双口径，首字延迟为主视觉，六状态健康机 |
 
-单二进制交付（前端 embed），本地 SQLite 存监控数据，不额外依赖数据库容器。
+单二进制交付（前端 embed），容器无状态 —— 自身数据存外部 PostgreSQL 的 monitor 库。
 
 ## 核心功能
 
@@ -55,7 +55,7 @@ midstream-ops（代码内部标识 `sub2api-account-monitor`）是面向 AI API 
 | **收益统计** | 按供应商 / 按分组两个维度聚合收益·实扣成本·利润·请求数，均可展开子账号明细（未匹配上游 key 的账号显式标记）；Top 15 三系列并排柱状图；支持日期范围（今日 / 7 天 / 30 天 / 自定义） |
 | **分组倍率** | 变更驱动快照追踪上游站点与本站的分组倍率：当前倍率 / 上次倍率 / 涨跌幅（持续展示到下一次变化）/ 生效时长；每实体变更历史时间线 |
 | **调价映射** | 上游分组倍率 → 本站分组倍率联动：`目标 = 上游 × 系数 + 偏移`（夹紧上下限）；手动一键应用或自动调价；人工修改冲突检测（检测到即停止覆盖，须人工确认）；调价审计留痕 |
-| **上游成本同步** | 随供应商统一 sync 拉取各供应商 per-key `actual_cost` 落本地库，首次回补 90 天历史；只存 key 的 sha256 指纹 |
+| **上游成本同步** | 随供应商统一 sync 拉取各供应商 per-key `actual_cost` 落 monitor 库，首次回补 90 天历史；只存 key 的 sha256 指纹 |
 | **稳定性** | 默认被动统计（真实流量 duration / first_token 分位数）+ 主动探测（对上游 key 发最小流式请求测 TTFT / 总耗时 / 成功率）；按归属供应商与健康状态两维度筛选；实时窗口档位（5 分钟 / 30 分钟 / 1 小时 / 5 小时 / 24 小时）；**首字延迟为主视觉指标**（分档着色，P50/P95 合一格）+ 行首综合评级色点；六状态健康状态机（正常/降权/熔断/观察/恢复/停用）+ 状态迁移时间线；失败退避与每日探测预算。**详见 [稳定性可视化](docs/DESIGN_NOTES.md#稳定性可视化)** |
 | **授信台账** | 客户授信额度与垫付应收账的**人工台账**：建档时从 sub2api 用户列表直接选人（已建档的禁选）；垫付 / 回款只追加分录，记错走冲正；敞口 = Σ垫付 − Σ回款，每次写入在同一事务内全量重算；80% / 100% 分级告警（边沿触发，闩锁落库）。KYC 实名资料加密落库，支持管理端代录与客户自助填报 + 审核流。**详见 [授信台账](docs/DESIGN_NOTES.md#授信台账人工记账)** |
 | **系统设置** | 数据刷新频率（per-provider 错峰调度，热更新免重启）；余额预警（充值倍率折 CNY，1h 冷却，可按站点单独静音）；倍率变更预警；钉钉 / 飞书 / Telegram 机器人通知渠道（支持加签与测试发送） |
@@ -64,41 +64,13 @@ midstream-ops（代码内部标识 `sub2api-account-monitor`）是面向 AI API 
 
 > **📐 每个数字背后的口径、取舍与实现约束，见 [docs/DESIGN_NOTES.md](docs/DESIGN_NOTES.md)** —— 成本为什么取上游实扣而非本站推算、分组利润合计为什么偏高、稳定性色点为什么取最差而非平均，都在那里。
 
-## 界面预览
-
-> 以下截图均来自真实运行环境，敏感信息（站点名、客户名、账号）已打码。
-
-### 仪表盘
-
-收益 / 成本 / 利润三卡带环比，成本卡的 ⓘ 说明取的是上游实扣口径；卡片下方一行是成本同步状态与 **key 匹配率**（`65/78` 表示 78 个上游 key 中 65 个匹配到了本站账号，未匹配的部分成本不完整）。下方左为近 N 天收益·成本·利润趋势，右为分组贡献 Top6 与 Top3 集中度。
-
-![仪表盘](docs/images/dashboard.png)
-
-### 上游管理
-
-按平台 / 连接状态 / 采集方式三维筛选，默认按今日消费降序、「不监控」站点恒排最后。每张卡展示余额·今日消费·历史消费（CNY 主显 + USD 原值），角标为连接状态，卡底为刷新 / 配置 / 关联账号 / 编辑 / 删除。
-
-![上游管理](docs/images/providers.png)
-
-### 收益统计
-
-Top 15 三系列并排柱状图 + 明细表，按供应商或分组两个维度聚合。利润率带进度条着色，低利润率（如 22.3%）显式灰显区分。行可展开查看子账号明细。
-
-![收益统计](docs/images/stats.png)
-
-### 系统设置
-
-per-provider 错峰调度的刷新间隔、余额预警（按充值倍率折 CNY，站点级阈值覆盖全局默认，1h 冷却）、倍率变更预警。通知文案支持 `{siteName}` / `{balance}` / `{threshold}` 变量插值，点击即插入。
-
-![系统设置](docs/images/settings.png)
-
 ## 技术栈
 
 | 组件 | 技术 |
 |------|------|
 | 后端 | Go 1.25, gin, viper, robfig/cron, pgx/v5 |
 | 前端 | Vue 3.4+, Vite 5, Pinia, Tailwind, chart.js, vue-i18n |
-| 本地存储 | SQLite（modernc.org/sqlite，WAL，内嵌 migration） |
+| 自身存储 | PostgreSQL（pgx/v5，内嵌 migration，启动时自动建表） |
 | 数据源 | sub2api 线上 PostgreSQL（**只读**） |
 
 ---
@@ -107,7 +79,7 @@ per-provider 错峰调度的刷新间隔、余额预警（按充值倍率折 CNY
 
 ### 方式一：Docker（推荐用于线上）
 
-镜像已内嵌前端与时区库，单容器即可运行 —— 本项目自身只用 SQLite，Postgres 是**只读连接已有的 sub2api 库**，不需要额外起数据库容器。
+镜像已内嵌前端与时区库，单容器即可运行 —— 本项目连接两个 Postgres 库：sub2api 库（**只读**，取上游数据）与 monitor 库（**可写**，存自身数据）。二者都是外部库，可以是同一个 PG 实例上的不同 database，镜像本身不含数据库、容器无状态。
 
 ```bash
 docker pull winsdon8/midstream-ops:latest
@@ -117,7 +89,7 @@ docker pull winsdon8/midstream-ops:latest
 
 ```bash
 cd deploy
-cp .env.example .env      # 按注释填写，至少 3 个密钥 + DB 只读账号
+cp .env.example .env      # 按注释填写，至少 3 个密钥 + 两套 DB 账号
 docker compose up -d
 curl http://127.0.0.1:9090/health
 ```
@@ -126,7 +98,7 @@ curl http://127.0.0.1:9090/health
 
 1. **网络名要先查再填**。容器靠接入 sub2api 已有的 docker 网络来访问它的 Postgres，而 compose 会给网络名加项目名前缀。先跑 `docker network ls | grep sub2api` 拿到真实名字填进 `.env` 的 `SUB2API_NETWORK`。
 2. **`MONITOR_CREDENTIALS_KEY` 首次部署就要配**，否则供应商密码与 KYC 的 PII 明文落库；且换密钥会让旧密文永久无法解密。
-3. **数据卷必须挂目录**（`monitor_data:/app/data`）而非单个 `.db` 文件 —— SQLite 开了 WAL，需要 `-wal` / `-shm` 与主库同目录。
+3. **首次部署需先建 monitor 库并授权**（表结构由程序自动迁移）。注意 PostgreSQL 15+ 必须显式 `GRANT ALL ON SCHEMA public`，否则首次建表报 permission denied。**无需** `monitor_data` 数据卷。
 
 配置全部走 `MONITOR_` 前缀的环境变量，命名规则是配置键的 `.` 换 `_` 再大写（`sub2api_db.host` → `MONITOR_SUB2API_DB_HOST`），无需挂载 `config.yaml`。
 
@@ -164,11 +136,12 @@ cp backend/config.example.yaml backend/config.yaml
 | `auth.username` / `auth.password` | 监控端登录账密 |
 | `auth.jwt_secret` | **必填**，≥32 字节随机串 |
 | `sub2api_db.*` | 线上 sub2api Postgres（只读账号即可，DSN 会强制 `default_transaction_read_only=on`） |
+| `store_db.*` | 本项目自己的 monitor Postgres（**可写**，表结构启动时自动迁移） |
 | `cost.interval_minutes` | 上游成本同步间隔，默认 10 分钟 |
 | `cost.retention_days` | 成本明细保留天数，默认 180 |
 | `timezone` | 与 sub2api 主站一致（影响「今日」口径） |
 
-> 供应商站点的登录邮箱与密码不在配置文件里，而是在「供应商」页面录入后存本地 SQLite（接口只回显 `has_password` 布尔）。
+> 供应商站点的登录邮箱与密码不在配置文件里，而是在「上游管理」页面录入后加密存进 monitor 库（接口只回显 `has_password` 布尔）。
 
 > ⚠️ `config.yaml` 含真实凭据，已在 `.gitignore` 中，**勿提交**。
 
@@ -263,13 +236,13 @@ cd frontend && pnpm test && pnpm typecheck
 
 ```
 midstream-ops/
-├── backend/                Go 1.25 + gin + viper + robfig/cron + pgx/v5 + modernc.org/sqlite
+├── backend/                Go 1.25 + gin + viper + robfig/cron + pgx/v5
 │   ├── cmd/server/         入口（装配 + 优雅退出）
 │   └── internal/
-│       ├── config/         配置加载校验（PG DSN 强制只读）
+│       ├── config/         配置加载校验（上游 PG DSN 强制只读）
 │       ├── handler/        HTTP 处理器
 │       ├── service/        业务逻辑（余额采集 / 探测 / 倍率 / 统计 / 调度 / 授信台账）
-│       ├── repository/     PG 只读查询 + SQLite 存储（WAL，内嵌 migration）
+│       ├── repository/     sub2api 库只读查询 + monitor 库读写（内嵌 migration）
 │       ├── pkg/            response envelope / jwt / secretbox（凭据与 PII 加密）
 │       ├── server/         路由 + 中间件（管理员 JWT / 嵌入会话 / CSP frame-ancestors）
 │       └── web/            前端 embed（-tags embed）
@@ -277,14 +250,25 @@ midstream-ops/
 ├── frontend/               Vue3 + Vite5 + Pinia + vue-router4 + Tailwind + chart.js + vue-i18n
 │
 ├── deploy/                 部署文件
-│   ├── docker-compose.yml  容器编排
-│   ├── .env.example        环境变量模板
+│   ├── docker-compose.yml  容器编排（无数据卷，连外部 PG）
+│   ├── .env.example        环境变量模板（含 STORE_DB / SUB2API_DB）
 │   ├── build.ps1           镜像构建脚本
-│   └── DOCKER.md           Docker 部署说明
+│   ├── DOCKER.md           Docker 部署说明
+│   ├── UPGRADE_TO_PG.md    从 SQLite 版升级指南
+│   └── migrate-sqlite/     SQLite → PG 一次性数据迁移脚本
 │
 └── docs/
     └── DESIGN_NOTES.md     口径与设计说明
 ```
+
+## 界面预览
+
+| 菜单 | 预览 |
+|------|------|
+| 仪表盘 | ![仪表盘](docs/images/dashboard.png) |
+| 上游管理 | ![上游管理](docs/images/providers.png) |
+| 收益统计 | ![收益统计](docs/images/stats.png) |
+| 系统设置 | ![系统设置](docs/images/settings.png) |
 
 ## API 概览
 
@@ -441,21 +425,22 @@ curl -s -D - -o /dev/null -X GET https://your-monitor.com/embed/plaza | grep -i 
 
 ## 安全说明
 
-- 线上 PG 只读双保险：只读账号 + DSN 强制 `default_transaction_read_only=on`
-- **写自己站点只走 admin API**（调价映射）：GET + PUT 完整合并回写，绝不写 DB、绝不部分覆盖；检测到人工修改立即停止自动覆盖
+- 上游 sub2api PG 只读双保险：只读账号 + DSN 强制 `default_transaction_read_only=on`；自身数据写在独立的 monitor 库
+- **写自己站点只走 admin API**（调价映射）：GET + PUT 完整合并回写，绝不写上游 DB、绝不部分覆盖；检测到人工修改立即停止自动覆盖
 - 上游 key 永不出后端：探测请求的 key 仅用于单次请求，接口 / 日志 / 错误信息全部脱敏
-- 供应商登录密码、token 不在接口回显（仅 `has_password` 等布尔）；配置 `MONITOR_CREDENTIALS_KEY` 后 AES-256-GCM 加密落库
+- 供应商登录密码、token 不在接口回显（仅 `has_password` 等布尔）；配置 `MONITOR_CREDENTIALS_KEY` 后 AES-256-GCM 加密写入 monitor 库
 - 供应商站点前置 WAF 拦截非浏览器 UA：后端已内置浏览器 User-Agent 与连接重试；登录被拒自动进入阶梯冷却（30min → 2h → 6h），防止反复撞接口被拉黑 IP
 - 通知渠道加签密钥 / Bot Token 脱敏回显（仅 `has_secret` 布尔），保存时留空表示不修改
-- **授信模块永不写上游**：充值由人在 sub2api 后台手动执行，系统只记本地台账。sub2api 的会话绑定（JWT `bnd` = sha256(IP+UA)）会让服务端直连必然失败，并撤销该用户整个会话家族
-- KYC 的 PII 加密落库，客户身份只取自会话上下文（请求体无 `user_id`）；嵌入端纯 Bearer 头鉴权、不用 Cookie；日志永不打 token 明文 / 证件号 / 联系方式
+- **授信模块永不写上游**：充值由人在 sub2api 后台手动执行，系统只记 monitor 库台账。sub2api 的会话绑定（JWT `bnd` = sha256(IP+UA)）会让服务端直连必然失败，并撤销该用户整个会话家族
+- KYC 的 PII 加密写入 monitor 库，客户身份只取自会话上下文（请求体无 `user_id`）；嵌入端纯 Bearer 头鉴权、不用 Cookie；日志永不打 token 明文 / 证件号 / 联系方式
 
 ## 相关文档
 
 | 文档 | 内容 |
 |------|------|
 | [docs/DESIGN_NOTES.md](docs/DESIGN_NOTES.md) | 口径与设计说明 —— 收益成本利润口径、稳定性可视化取舍、授信台账约束 |
-| [deploy/DOCKER.md](deploy/DOCKER.md) | Docker 部署详解（网络、只读账号、密钥、持久化） |
+| [deploy/DOCKER.md](deploy/DOCKER.md) | Docker 部署详解（网络、两套库账号、密钥、备份） |
+| [deploy/UPGRADE_TO_PG.md](deploy/UPGRADE_TO_PG.md) | 从 0.1.x SQLite 版升级到 PostgreSQL |
 | [PLAN.md](PLAN.md) | 实施计划与架构决策记录 |
 
 ---

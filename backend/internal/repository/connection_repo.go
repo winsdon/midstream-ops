@@ -45,11 +45,11 @@ func (c *UpstreamConnection) CanDeleteRemote() bool {
 
 // ConnectionRepo 对接记录存储。
 type ConnectionRepo struct {
-	db *sql.DB
+	db *DB
 }
 
 // NewConnectionRepo 创建 ConnectionRepo。
-func NewConnectionRepo(s *SQLite) *ConnectionRepo { return &ConnectionRepo{db: s.DB()} }
+func NewConnectionRepo(s *Store) *ConnectionRepo { return &ConnectionRepo{db: s.DB()} }
 
 const connCols = `id, provider_id, upstream_group, upstream_group_id, upstream_key_id, upstream_key_name,
 	local_account_id, local_account_name, local_group_ids, group_platform, mode, operation_id,
@@ -59,10 +59,9 @@ func scanConnection(row interface{ Scan(...any) error }) (*UpstreamConnection, e
 	var c UpstreamConnection
 	var groupIDsJSON string
 	var errMsg sql.NullString
-	var createdAt, updatedAt string
 	if err := row.Scan(&c.ID, &c.ProviderID, &c.UpstreamGroup, &c.UpstreamGroupID, &c.UpstreamKeyID, &c.UpstreamKeyName,
 		&c.LocalAccountID, &c.LocalAccountName, &groupIDsJSON, &c.GroupPlatform, &c.Mode, &c.OperationID,
-		&c.Status, &errMsg, &createdAt, &updatedAt); err != nil {
+		&c.Status, &errMsg, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return nil, err
 	}
 	c.LocalGroupIDs = []int64{}
@@ -71,8 +70,6 @@ func scanConnection(row interface{ Scan(...any) error }) (*UpstreamConnection, e
 		e := errMsg.String
 		c.Error = &e
 	}
-	c.CreatedAt = parseTime(createdAt)
-	c.UpdatedAt = parseTime(updatedAt)
 	return &c, nil
 }
 
@@ -154,16 +151,14 @@ func (r *ConnectionRepo) CreatePending(ctx context.Context, p ConnectionParams) 
 	if p.Mode == "" {
 		p.Mode = ConnModeManaged
 	}
-	res, err := r.db.ExecContext(ctx, `
+	var id int64
+	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO upstream_connections (provider_id, upstream_group, upstream_group_id, group_platform,
 			local_group_ids, mode, operation_id, status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,'pending',?,?)`,
+		VALUES (?,?,?,?,?,?,?,'pending',?,?) RETURNING id`,
 		p.ProviderID, p.UpstreamGroup, p.UpstreamGroupID, p.GroupPlatform,
-		string(idsJSON), p.Mode, p.OperationID, nowUTC(), nowUTC())
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+		string(idsJSON), p.Mode, p.OperationID, nowUTC(), nowUTC()).Scan(&id)
+	return id, err
 }
 
 // SetKeyCreated 记录上游 key 建成（第一步成功）。
@@ -197,16 +192,14 @@ func (r *ConnectionRepo) BindExisting(ctx context.Context, p ConnectionParams,
 		p.LocalGroupIDs = []int64{}
 	}
 	idsJSON, _ := json.Marshal(p.LocalGroupIDs)
-	res, err := r.db.ExecContext(ctx, `
+	var id int64
+	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO upstream_connections (provider_id, upstream_group, upstream_group_id, upstream_key_id, upstream_key_name,
 			local_account_id, local_account_name, local_group_ids, group_platform, mode, operation_id, status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,'existing',?,'active',?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,'existing',?,'active',?,?) RETURNING id`,
 		p.ProviderID, p.UpstreamGroup, p.UpstreamGroupID, keyID, keyName,
-		accountID, accountName, string(idsJSON), p.GroupPlatform, p.OperationID, nowUTC(), nowUTC())
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+		accountID, accountName, string(idsJSON), p.GroupPlatform, p.OperationID, nowUTC(), nowUTC()).Scan(&id)
+	return id, err
 }
 
 // Delete 删除连接记录（远端资源是否删除由服务层决定）。

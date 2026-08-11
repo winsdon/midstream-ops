@@ -38,38 +38,38 @@ func NewProviderHandler(svc *service.ProviderService, balanceSvc *service.Balanc
 
 // providerDTO 列表/详情输出（脱敏：不回显密码/token）。
 type providerDTO struct {
-	ID                  int64    `json:"id"`
-	Name                string   `json:"name"`
-	Note                string   `json:"note"`
-	BalanceType         string   `json:"balance_type"`
-	Platform            string   `json:"platform"`
-	AuthMode            string   `json:"auth_mode"`
-	BaseURL             string   `json:"base_url"`
-	LoginEmail          string   `json:"login_email"`
-	HasPassword         bool     `json:"has_password"`
-	HasAccessToken      bool     `json:"has_access_token"`
-	HasRefreshToken     bool     `json:"has_refresh_token"`
-	UpstreamUserID      string   `json:"upstream_user_id"`
-	LowBalanceThreshold float64  `json:"low_balance_threshold"`
-	RechargeRate        float64  `json:"recharge_rate"`
+	ID                  int64   `json:"id"`
+	Name                string  `json:"name"`
+	Note                string  `json:"note"`
+	BalanceType         string  `json:"balance_type"`
+	Platform            string  `json:"platform"`
+	AuthMode            string  `json:"auth_mode"`
+	BaseURL             string  `json:"base_url"`
+	LoginEmail          string  `json:"login_email"`
+	HasPassword         bool    `json:"has_password"`
+	HasAccessToken      bool    `json:"has_access_token"`
+	HasRefreshToken     bool    `json:"has_refresh_token"`
+	UpstreamUserID      string  `json:"upstream_user_id"`
+	LowBalanceThreshold float64 `json:"low_balance_threshold"`
+	RechargeRate        float64 `json:"recharge_rate"`
 	// CredentialsReady 凭据是否齐备。false 时该站点不进采集队列（见 ListCollectable），
 	// 前端据此把「待配置凭据」与「采集失败」画成两种健康态。
-	CredentialsReady    bool     `json:"credentials_ready"`
-	ProbeEnabled        bool     `json:"probe_enabled"`
-	ProbeModel          *string  `json:"probe_model"`
-	IgnoreBalanceAlert  bool     `json:"ignore_balance_alert"`
-	SelfOperated        bool     `json:"self_operated"` // 自营站：上游实扣不计入成本，改记运营成本
-	LastBalance         *float64 `json:"last_balance"`
-	LastBalanceAt       *string  `json:"last_balance_at"`
-	LastBalanceError    *string  `json:"last_balance_error"`
-	LoginCooldownUntil  *string  `json:"login_cooldown_until"`
-	AccountCount        int      `json:"account_count"`
-	CreatedAt           string   `json:"created_at"`
+	CredentialsReady   bool     `json:"credentials_ready"`
+	ProbeEnabled       bool     `json:"probe_enabled"`
+	ProbeModel         *string  `json:"probe_model"`
+	IgnoreBalanceAlert bool     `json:"ignore_balance_alert"`
+	SelfOperated       bool     `json:"self_operated"` // 自营站：上游实扣不计入成本，改记运营成本
+	LastBalance        *float64 `json:"last_balance"`
+	LastBalanceAt      *string  `json:"last_balance_at"`
+	LastBalanceError   *string  `json:"last_balance_error"`
+	LoginCooldownUntil *string  `json:"login_cooldown_until"`
+	AccountCount       int      `json:"account_count"`
+	CreatedAt          string   `json:"created_at"`
 
 	// 上游站点指标（来自最近一次余额快照的 metrics，USD 原值；前端按 recharge_rate 折 CNY）
-	TodayCost  *float64 `json:"today_cost"`  // 今日实扣
-	TotalCost  *float64 `json:"total_cost"`  // 历史累计实扣（≈历史充值参照）
-	TodayReqs  *int64   `json:"today_reqs"`
+	TodayCost *float64 `json:"today_cost"` // 今日实扣
+	TotalCost *float64 `json:"total_cost"` // 历史累计实扣（≈历史充值参照）
+	TodayReqs *int64   `json:"today_reqs"`
 
 	// 采集健康（collector_state；无记录时为 nil）
 	SyncState *syncStateDTO `json:"sync_state,omitempty"`
@@ -184,23 +184,23 @@ func (h *ProviderHandler) List(c *gin.Context) {
 }
 
 type providerRequest struct {
-	Name                string   `json:"name" binding:"required"`
-	Note                string   `json:"note"`
-	BalanceType         string   `json:"balance_type"`
-	Platform            string   `json:"platform"`  // sub2api | new-api
-	AuthMode            string   `json:"auth_mode"` // password | token | user_key
-	BaseURL             string   `json:"base_url"`
-	LoginEmail          string   `json:"login_email"`
-	LoginPassword       *string  `json:"login_password"`
-	AccessToken         *string  `json:"access_token"`  // token / user_key 模式
-	RefreshToken        *string  `json:"refresh_token"` // sub2api token 模式
-	UpstreamUserID      string   `json:"upstream_user_id"`
-	LowBalanceThreshold float64  `json:"low_balance_threshold"`
-	RechargeRate        float64  `json:"recharge_rate"`
-	ProbeEnabled        bool     `json:"probe_enabled"`
-	ProbeModel          *string  `json:"probe_model"`
-	IgnoreBalanceAlert  bool     `json:"ignore_balance_alert"`
-	SelfOperated        bool     `json:"self_operated"`
+	Name                string  `json:"name" binding:"required"`
+	Note                string  `json:"note"`
+	BalanceType         string  `json:"balance_type"`
+	Platform            string  `json:"platform"`  // sub2api | new-api
+	AuthMode            string  `json:"auth_mode"` // password | token | user_key
+	BaseURL             string  `json:"base_url"`
+	LoginEmail          string  `json:"login_email"`
+	LoginPassword       *string `json:"login_password"`
+	AccessToken         *string `json:"access_token"`  // token / user_key 模式
+	RefreshToken        *string `json:"refresh_token"` // sub2api token 模式
+	UpstreamUserID      string  `json:"upstream_user_id"`
+	LowBalanceThreshold float64 `json:"low_balance_threshold"`
+	RechargeRate        float64 `json:"recharge_rate"`
+	ProbeEnabled        bool    `json:"probe_enabled"`
+	ProbeModel          *string `json:"probe_model"`
+	IgnoreBalanceAlert  bool    `json:"ignore_balance_alert"`
+	SelfOperated        bool    `json:"self_operated"`
 }
 
 var validBalanceTypes = map[string]bool{"sub2api": true, "manual": true, "none": true}

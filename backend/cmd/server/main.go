@@ -39,13 +39,13 @@ func main() {
 		log.Fatalf("加载配置失败: %v", err)
 	}
 
-	// SQLite（本地存储）
-	sqliteDB, err := repository.NewSQLite(cfg.SQLite.Path)
+	// 本地 monitor 库（PG，可写；存本项目自己的数据）
+	store, err := repository.NewStore(cfg.Store)
 	if err != nil {
-		log.Fatalf("初始化 SQLite 失败: %v", err)
+		log.Fatalf("初始化本地 PG 失败: %v", err)
 	}
-	defer func() { _ = sqliteDB.Close() }()
-	log.Printf("SQLite 就绪: %s", cfg.SQLite.Path)
+	defer func() { _ = store.Close() }()
+	log.Printf("本地 PG 就绪: %s:%d/%s", cfg.Store.Host, cfg.Store.Port, cfg.Store.DBName)
 
 	// PG（线上只读，失败仅告警不退出）
 	pg, err := repository.NewPG(cfg.Sub2api)
@@ -63,18 +63,18 @@ func main() {
 
 	// Repos（box 为凭据加解密器：MONITOR_CREDENTIALS_KEY 未配置时明文直通并告警）
 	box := secretbox.FromEnv()
-	providerRepo := repository.NewProviderRepo(sqliteDB, box)
-	balanceRepo := repository.NewBalanceRepo(sqliteDB)
-	rateRepo := repository.NewRateRepo(sqliteDB)
-	probeRepo := repository.NewProbeRepo(sqliteDB)
-	costRepo := repository.NewUpstreamCostRepo(sqliteDB)
+	providerRepo := repository.NewProviderRepo(store, box)
+	balanceRepo := repository.NewBalanceRepo(store)
+	rateRepo := repository.NewRateRepo(store)
+	probeRepo := repository.NewProbeRepo(store)
+	costRepo := repository.NewUpstreamCostRepo(store)
 	// 自营站运营成本（买号/订阅/服务器）：自营站上游实扣不计入成本，改由本表记账
-	opCostRepo := repository.NewOperatingCostRepo(sqliteDB)
-	settingsRepo := repository.NewSettingsRepo(sqliteDB)
-	collectorRepo := repository.NewCollectorStateRepo(sqliteDB)
-	healthRepo := repository.NewHealthRepo(sqliteDB)
+	opCostRepo := repository.NewOperatingCostRepo(store)
+	settingsRepo := repository.NewSettingsRepo(store)
+	collectorRepo := repository.NewCollectorStateRepo(store)
+	healthRepo := repository.NewHealthRepo(store)
 	// 供应商 ↔ 本站账号的显式关联（归属唯一真相，取代账号名【】前缀匹配）
-	linkRepo := repository.NewProviderAccountRepo(sqliteDB)
+	linkRepo := repository.NewProviderAccountRepo(store)
 
 	// Services
 	jwtMgr := jwtutil.New(cfg.Auth.JWTSecret, time.Duration(cfg.Auth.TokenTTLHours)*time.Hour)
@@ -87,12 +87,12 @@ func main() {
 	probeSvc := service.NewProbeService(probeRepo, providerRepo, linkRepo, healthRepo, pg, cfg)
 	costSvc := service.NewCostSyncService(providerRepo, costRepo, pg, cfg)
 	syncSvc := service.NewProviderSyncService(providerRepo, collectorRepo, balanceSvc, costSvc, rateSvc, pg)
-	pricingRepo := repository.NewPricingRepo(sqliteDB)
+	pricingRepo := repository.NewPricingRepo(store)
 	pricingSvc := service.NewPricingService(providerRepo, pricingRepo, rateRepo, balanceSvc, pg)
-	connRepo := repository.NewConnectionRepo(sqliteDB)
+	connRepo := repository.NewConnectionRepo(store)
 	provisionSvc := service.NewProvisionService(providerRepo, connRepo, balanceSvc)
 
-	// 系统设置（策略/通知，SQLite 持久化 + 热更新）
+	// 系统设置（策略/通知，monitor 库持久化 + 热更新）
 	settingsSvc, err := service.NewSettingsService(settingsRepo)
 	if err != nil {
 		log.Fatalf("加载系统设置失败: %v", err)
@@ -100,9 +100,9 @@ func main() {
 	notifier := notify.NewManager(settingsSvc.Channels())
 	alertSvc := service.NewAlertService(settingsSvc, notifier)
 
-	// 授信台账（本地记账 + 人工执行；系统永不写上游，见 012_credit_kyc.sql）
+	// 授信台账（本地记账 + 人工执行；系统永不写上游，见 migrations_pg/001_init_pg.sql）
 	// box 同时用于 KYC 的 PII 加解密 —— 未配置密钥时身份证号等会明文落库。
-	creditRepo := repository.NewCreditRepo(sqliteDB, box)
+	creditRepo := repository.NewCreditRepo(store, box)
 	creditSvc := service.NewCreditService(creditRepo, alertSvc)
 
 	// AfterSync 钩子：余额预警（采集服务不感知通知渠道，全部在装配层挂接）
@@ -170,7 +170,7 @@ func main() {
 		if cfg.Media.Enabled {
 			mediaSvc = service.NewMediaService(
 				pg,
-				repository.NewMediaTaskRepo(sqliteDB),
+				repository.NewMediaTaskRepo(store),
 				service.NewMediaGateway(cfg.Media.GatewayBaseURL),
 				cfg.Media.MaxPendingVideos,
 			)
@@ -207,6 +207,7 @@ func main() {
 		EmbedDev:         embedDevHandler,
 		EmbedSessions:    embedSessions,
 		EmbedFrameOrigin: cfg.Plaza.Sub2apiBaseURL,
+		StorePing:        store.Ping,
 		PGAvailable:      pg.Available,
 	}
 

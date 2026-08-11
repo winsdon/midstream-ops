@@ -14,10 +14,10 @@ import (
 
 // DashboardHandler 仪表盘处理器。
 type DashboardHandler struct {
-	statsSvc *service.StatsService
+	statsSvc    *service.StatsService
 	providerSvc *service.ProviderService
-	cfg      *config.Config
-	pg       *repository.PG
+	cfg         *config.Config
+	pg          *repository.PG
 }
 
 // NewDashboardHandler 创建 DashboardHandler。
@@ -100,15 +100,15 @@ func (h *DashboardHandler) Summary(c *gin.Context) {
 
 	loc := h.cfg.Location
 	response.Success(c, gin.H{
-		"date":                start.In(loc).Format("2006-01-02"),
-		"start":               start.In(loc).Format("2006-01-02"),
-		"end":                 end.In(loc).Add(-time.Second).Format("2006-01-02"),
+		"date":    start.In(loc).Format("2006-01-02"),
+		"start":   start.In(loc).Format("2006-01-02"),
+		"end":     end.In(loc).Add(-time.Second).Format("2006-01-02"),
 		"revenue": revenue,
 		"cost":    cost,
 		// 自营站的买号/订阅/服务器等站外支出，与上游实扣同为真实成本，一并从利润中扣除
-		"operating_cost": operatingCost,
-		"profit":         revenue - cost - operatingCost,
-		"requests":       requests,
+		"operating_cost":      operatingCost,
+		"profit":              revenue - cost - operatingCost,
+		"requests":            requests,
 		"provider_count":      providerCount,
 		"account_count":       accountCount,
 		"cost_complete":       costComplete,

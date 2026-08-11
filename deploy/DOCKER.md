@@ -1,16 +1,17 @@
 # midstream-ops
 
-sub2api 上游账号的余额 / 成本 / 稳定性监控端。单容器部署，只读连接已有的
-sub2api Postgres，自身数据存 SQLite。
+sub2api 上游账号的余额 / 成本 / 稳定性监控端。单容器部署，连两个 Postgres 库：
+sub2api 库（只读，取上游数据）与 monitor 库（可写，存自身数据）。两者都是
+**外部库**，本镜像不含数据库，容器本身无状态。
 
 ```bash
 docker pull winsdon8/midstream-ops:latest
 ```
 
-- 镜像体积约 43 MB（Alpine + 静态编译单二进制，前端已 embed）
+- 镜像体积约 55 MB（Alpine + 静态编译单二进制，前端已 embed）
 - 架构：`linux/amd64`
 - 端口：`9090`
-- 数据目录：`/app/data`（必须挂载，见下）
+- 无数据卷：自身数据全在外部 PG 的 monitor 库，容器可随时重建
 
 ## 快速开始
 
@@ -28,6 +29,7 @@ cp .env.example .env
 | `MONITOR_AUTH_JWT_SECRET` | JWT 签名密钥，须 ≥32 字节 | `openssl rand -hex 32` |
 | `MONITOR_CREDENTIALS_KEY` | 凭据/PII 加密密钥，base64 的 32 字节 | `openssl rand -base64 32` |
 | `MONITOR_SUB2API_DB_USER` / `_PASSWORD` | sub2api 库的只读账号 | 见下方 SQL |
+| `MONITOR_STORE_DB_HOST` / `_USER` / `_PASSWORD` | 本项目自己的 monitor 库（可写） | 见「数据持久化」 |
 | `SUB2API_NETWORK` | sub2api 的 docker 网络真实名 | `docker network ls \| grep sub2api` |
 
 然后：
@@ -37,7 +39,7 @@ docker compose up -d
 curl http://127.0.0.1:9090/health
 ```
 
-期望输出 `{"pg":"up","sqlite":"up","status":"ok"}`。
+期望输出 `{"status":"ok","upstream_pg":"up","store_pg":"up"}`。
 
 ## 部署前必读的三件事
 
@@ -74,7 +76,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO monitor_ro;
 ### 3. 加密密钥要一开始就配
 
 `MONITOR_CREDENTIALS_KEY` 未配置时，供应商站点的登录密码、KYC 的身份证号等
-PII 会**明文**存进 SQLite（程序只在启动日志告警，不阻止启动）。
+PII 会**明文**存进数据库（程序只在启动日志告警，不阻止启动）。
 
 - 后期补配不会炸：代码按 `enc:v1:` 前缀自动兼容新旧数据
 - 但已有明文不会自动加密，会形成新旧混存
@@ -82,17 +84,30 @@ PII 会**明文**存进 SQLite（程序只在启动日志告警，不阻止启�
 
 ## 数据持久化
 
-```yaml
-volumes:
-  - monitor_data:/app/data
+容器**无数据卷**：自身数据全部存在外部 PG 的 monitor 库里，容器可随时销毁重建，
+`docker compose down -v` 也不会碰到业务数据。
+
+首次启动需先建库授权（表结构由程序自动迁移，无需手工建表）：
+
+```sql
+CREATE DATABASE monitor;
+CREATE USER monitor WITH PASSWORD '<强密码>';
+GRANT ALL PRIVILEGES ON DATABASE monitor TO monitor;
+\c monitor
+GRANT ALL ON SCHEMA public TO monitor;
 ```
 
-必须挂**目录**而非单个 `.db` 文件：SQLite 开了 WAL，运行时会在同目录产生
-`monitor.db-wal` 与 `monitor.db-shm`。挂单文件会导致这两个文件落在容器可写层，
-容器重建即丢失未 checkpoint 的写入。
+⚠️ 最后一行不能省：PostgreSQL 15 起 public schema 默认不再对 PUBLIC 开放
+CREATE 权限，漏掉会在首次建表时报 `permission denied for schema public`。
 
-⚠️ `docker compose down -v` 会删除 volume，监控数据全丢。日常停服务请用不带
-`-v` 的 `docker compose down`。
+备份改用 `pg_dump`：
+
+```bash
+docker exec <pg容器> pg_dump -U monitor -d monitor   --format=custom --no-owner --no-privileges -f /tmp/monitor.dump
+```
+
+⚠️ 备份里的供应商密码与 KYC 字段是密文，恢复后必须配同一个
+`MONITOR_CREDENTIALS_KEY`，换密钥会让旧密文永久无法解密。
 
 ## 升级
 
@@ -103,13 +118,27 @@ docker compose pull && docker compose up -d
 ⚠️ 请用 `docker compose`（有空格）而非 `docker-compose`（有连字符）。后者是已停止
 维护的 v1，升级时会在 `Recreating` 阶段抛 `KeyError: 'ContainerConfig'` —— 它读旧
 容器的镜像配置时硬索引了一个新版 Docker Engine 已不再返回的字段。若手上只有 v1，
-升级前先删容器绕开该分支（数据在 volume 里，不受影响）：
+升级前先删容器绕开该分支（数据在外部 PG 里，不受影响）：
 
 ```bash
 docker-compose pull
 docker rm -f sub2api-monitor
 docker-compose up -d
 ```
+
+### 从 0.1.x（SQLite 版）升级
+
+`0.1.2` 及更早版本把数据存在容器内的 SQLite 单文件里，升到本版需要一次性搬运数据，
+**不能直接 `docker compose pull`**。完整步骤见项目仓库的
+`deploy/UPGRADE_TO_PG.md`，要点：
+
+1. 先备份旧的 `monitor.db`
+2. 建 monitor 库与账号
+3. 用 `deploy/migrate-sqlite/migrate.py` 搬数据，`verify.py` 校验
+4. `.env` 追加 `MONITOR_STORE_DB_*` 六项，换用新版 compose（无 volumes 段）
+
+回滚坐标：`winsdon8/midstream-ops:0.1.2` + 旧 compose，只要没删
+`monitor_data` 卷，SQLite 数据原封不动。
 
 ## 安全建议
 
@@ -127,7 +156,7 @@ docker-compose up -d
 
 | 类别 | 例子 | 为什么不能走 .env |
 |------|------|------------------|
-| 容器内固定值 | `MONITOR_SERVER_PORT=9090`、`MONITOR_SQLITE_PATH` | 对外端口由 `ports` 映射、数据目录由 volume 挂载，改了只会让健康检查失联或数据丢失 |
+| 容器内固定值 | `MONITOR_SERVER_HOST=0.0.0.0`、`MONITOR_SERVER_PORT=9090` | 对外端口由 `ports` 段映射，改了只会让健康检查失联 |
 | 安全兜底 | `MONITOR_PLAZA_DEV_MODE=false` | 该开关能签发任意用户身份的 token，硬编码不给误开的机会 |
 | 必填校验 | `MONITOR_AUTH_JWT_SECRET` 等 5 项 | 用 `${VAR:?...}` 让缺失时直接拒绝启动，而不是带着半截配置跑起来 |
 
@@ -152,7 +181,11 @@ docker-compose up -d
 
 ## 健康检查
 
-`/health` 免鉴权，返回 `{status, pg, sqlite}`。
+`/health` 免鉴权，返回 `{status, upstream_pg, store_pg}`。
+
+两个库的语义刻意不对称：上游 sub2api 库不可用仍返回 **200**（相关接口各自降级
+返回 503，上游挂掉不代表本容器不健康）；本地 monitor 库不可用返回 **503**
+（它是写路径的唯一依赖，此时服务确实不健康）。
 
 注意：上游 PG 不可用时它**仍返回 200**（只是 `pg: "down"`），这是有意的降级
 设计 —— 上游库挂掉不代表本容器不健康，相关接口会返回 503 并在后台持续重试。

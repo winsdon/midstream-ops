@@ -48,11 +48,11 @@ type HealthEvent struct {
 
 // HealthRepo 健康状态与事件存储。
 type HealthRepo struct {
-	db *sql.DB
+	db *DB
 }
 
 // NewHealthRepo 创建 HealthRepo。
-func NewHealthRepo(s *SQLite) *HealthRepo { return &HealthRepo{db: s.DB()} }
+func NewHealthRepo(s *Store) *HealthRepo { return &HealthRepo{db: s.DB()} }
 
 // Get 读取单账号状态；无记录时返回 healthy 零值。
 func (r *HealthRepo) Get(ctx context.Context, accountID int64) (HealthState, error) {
@@ -72,7 +72,7 @@ func (r *HealthRepo) List(ctx context.Context) ([]HealthState, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT account_id, account_name, provider_id, state, consecutive_failures, consecutive_successes,
 			weight_percent, cooldown_until, observing_until, last_probe_at, updated_at
-		FROM health_states ORDER BY account_name COLLATE NOCASE`)
+		FROM health_states ORDER BY lower(account_name)`)
 	if err != nil {
 		return nil, err
 	}
@@ -147,15 +147,13 @@ func (r *HealthRepo) Events(ctx context.Context, accountID int64, limit int) ([]
 	for rows.Next() {
 		var e HealthEvent
 		var detail sql.NullString
-		var createdAt string
-		if err := rows.Scan(&e.ID, &e.AccountID, &e.FromState, &e.ToState, &e.Reason, &detail, &createdAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.AccountID, &e.FromState, &e.ToState, &e.Reason, &detail, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		if detail.Valid {
 			d := detail.String
 			e.Detail = &d
 		}
-		e.CreatedAt = parseTime(createdAt)
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -166,7 +164,7 @@ func (r *HealthRepo) TryConsumeProbeBudget(ctx context.Context, day string, limi
 	if limit <= 0 {
 		return true, nil // 0 = 不限
 	}
-	// 先确保当日行存在，再条件递增（SQLite 单连接串行，无并发竞争）
+	// 先确保当日行存在，再条件递增（UPDATE 原子递增，可并发）
 	if _, err := r.db.ExecContext(ctx,
 		`INSERT INTO probe_budget (day, used) VALUES (?, 0) ON CONFLICT(day) DO NOTHING`, day); err != nil {
 		return false, err
@@ -208,11 +206,10 @@ func (r *HealthRepo) DeleteEventsOlderThan(ctx context.Context, before time.Time
 func scanHealthState(row interface{ Scan(...any) error }) (HealthState, error) {
 	var st HealthState
 	var providerID sql.NullInt64
+	var observing, lastProbe, cooldown sql.NullTime
 	var state string
-	var cooldown, observing, lastProbe sql.NullString
-	var updatedAt string
 	if err := row.Scan(&st.AccountID, &st.AccountName, &providerID, &state, &st.ConsecutiveFailures,
-		&st.ConsecutiveSuccesses, &st.WeightPercent, &cooldown, &observing, &lastProbe, &updatedAt); err != nil {
+		&st.ConsecutiveSuccesses, &st.WeightPercent, &cooldown, &observing, &lastProbe, &st.UpdatedAt); err != nil {
 		return st, err
 	}
 	if providerID.Valid {
@@ -220,10 +217,9 @@ func scanHealthState(row interface{ Scan(...any) error }) (HealthState, error) {
 		st.ProviderID = &v
 	}
 	st.State = health.State(state)
-	st.CooldownUntil = parseTimePtr(cooldown)
-	st.ObservingUntil = parseTimePtr(observing)
-	st.LastProbeAt = parseTimePtr(lastProbe)
-	st.UpdatedAt = parseTime(updatedAt)
+	st.CooldownUntil = timePtr(cooldown)
+	st.ObservingUntil = timePtr(observing)
+	st.LastProbeAt = timePtr(lastProbe)
 	return st, nil
 }
 

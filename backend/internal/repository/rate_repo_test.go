@@ -2,23 +2,13 @@ package repository
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
-// newTestRateRepo 建一个临时 SQLite（跑全部迁移）并返回 RateRepo。
+// newTestRateRepo 建一个临时 monitor 测试库（跑全部迁移）并返回 RateRepo。
 func newTestRateRepo(t *testing.T) *RateRepo {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "test.db")
-	s, err := NewSQLite(path)
-	if err != nil {
-		t.Fatalf("初始化 SQLite 失败: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = s.Close()
-		_ = os.Remove(path)
-	})
+	s := newTestStore(t)
 	return NewRateRepo(s)
 }
 

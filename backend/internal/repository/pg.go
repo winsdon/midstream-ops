@@ -1,4 +1,4 @@
-// Package repository 提供数据访问层（线上 PG 只读 + 本地 SQLite）。
+// Package repository 提供数据访问层（上游 sub2api PG 只读 + 本地 monitor PG 读写）。
 package repository
 
 import (

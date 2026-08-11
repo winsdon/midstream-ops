@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -51,12 +50,8 @@ func TestCostSyncNewAPIPersistsMappingTodayAndBackfill(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sqlite, err := repository.NewSQLite(filepath.Join(t.TempDir(), "monitor.db"))
-	if err != nil {
-		t.Fatalf("NewSQLite: %v", err)
-	}
-	defer sqlite.Close()
-	providerRepo := repository.NewProviderRepo(sqlite, &secretbox.Box{})
+	store := newTestStore(t)
+	providerRepo := repository.NewProviderRepo(store, &secretbox.Box{})
 	p, err := providerRepo.Create(context.Background(), repository.CreateParams{
 		Name:           "tongba",
 		BalanceType:    "sub2api",
@@ -71,7 +66,7 @@ func TestCostSyncNewAPIPersistsMappingTodayAndBackfill(t *testing.T) {
 	}
 
 	loc := time.FixedZone("CST", 8*60*60)
-	svc := NewCostSyncService(providerRepo, repository.NewUpstreamCostRepo(sqlite), nil, &config.Config{
+	svc := NewCostSyncService(providerRepo, repository.NewUpstreamCostRepo(store), nil, &config.Config{
 		Location: loc,
 		Cost:     config.CostConfig{TimeoutSeconds: 3},
 	})
@@ -85,7 +80,7 @@ func TestCostSyncNewAPIPersistsMappingTodayAndBackfill(t *testing.T) {
 
 	var accountID int64
 	var storedFingerprint string
-	if err := sqlite.DB().QueryRow(`SELECT account_id, key_fingerprint FROM upstream_key_map WHERE provider_id=? AND upstream_key_id=42`, p.ID).
+	if err := store.DB().QueryRow(`SELECT account_id, key_fingerprint FROM upstream_key_map WHERE provider_id=? AND upstream_key_id=42`, p.ID).
 		Scan(&accountID, &storedFingerprint); err != nil {
 		t.Fatalf("mapping row: %v", err)
 	}
@@ -95,7 +90,7 @@ func TestCostSyncNewAPIPersistsMappingTodayAndBackfill(t *testing.T) {
 
 	var rows int
 	var totalCost float64
-	if err := sqlite.DB().QueryRow(`SELECT COUNT(*), SUM(actual_cost) FROM upstream_key_costs WHERE provider_id=? AND upstream_key_id=42`, p.ID).
+	if err := store.DB().QueryRow(`SELECT COUNT(*), SUM(actual_cost) FROM upstream_key_costs WHERE provider_id=? AND upstream_key_id=42`, p.ID).
 		Scan(&rows, &totalCost); err != nil {
 		t.Fatalf("cost rows: %v", err)
 	}
@@ -108,7 +103,7 @@ func TestCostSyncNewAPIPersistsMappingTodayAndBackfill(t *testing.T) {
 
 	var matched int64
 	var backfilledAt *string
-	if err := sqlite.DB().QueryRow(`SELECT keys_matched, backfilled_at FROM cost_sync_state WHERE provider_id=?`, p.ID).
+	if err := store.DB().QueryRow(`SELECT keys_matched, backfilled_at FROM cost_sync_state WHERE provider_id=?`, p.ID).
 		Scan(&matched, &backfilledAt); err != nil {
 		t.Fatalf("sync state: %v", err)
 	}

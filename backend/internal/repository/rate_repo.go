@@ -9,19 +9,19 @@ import (
 // RateSnapshot 一行倍率快照：每行代表一次「真实的倍率状态」。
 // first_seen_at = 该倍率首次出现（变化时刻）；last_seen_at = 最后一次确认。
 type RateSnapshot struct {
-	ID         int64      `json:"id"`
-	Scope      string     `json:"scope"`       // local | upstream
-	ProviderID int64      `json:"provider_id"` // upstream 时有效
-	EntityType string     `json:"entity_type"` // group | account
-	EntityID   string     `json:"entity_id"`
-	Name       string     `json:"name"`
-	Rate       float64    `json:"rate"`
+	ID         int64   `json:"id"`
+	Scope      string  `json:"scope"`       // local | upstream
+	ProviderID int64   `json:"provider_id"` // upstream 时有效
+	EntityType string  `json:"entity_type"` // group | account
+	EntityID   string  `json:"entity_id"`
+	Name       string  `json:"name"`
+	Rate       float64 `json:"rate"`
 	// Platform 分组所属平台（anthropic|openai|gemini|...），空串表示上游未提供。
 	// 仅作展示分类用，不参与变化判定（见 RateService.Reconcile）。
 	Platform    string    `json:"platform"`
 	FirstSeenAt time.Time `json:"first_seen_at"`
-	LastSeenAt time.Time  `json:"last_seen_at"`
-	Deleted    bool       `json:"deleted"`
+	LastSeenAt  time.Time `json:"last_seen_at"`
+	Deleted     bool      `json:"deleted"`
 
 	// PrevRate 上一次不同的倍率（查询时由 LAG 推导，非表列）。
 	PrevRate *float64 `json:"prev_rate,omitempty"`
@@ -29,11 +29,11 @@ type RateSnapshot struct {
 
 // RateRepo 倍率快照存储（变更驱动：insert-on-change + touch-on-same + mark-deleted）。
 type RateRepo struct {
-	db *sql.DB
+	db *DB
 }
 
 // NewRateRepo 创建 RateRepo。
-func NewRateRepo(s *SQLite) *RateRepo { return &RateRepo{db: s.DB()} }
+func NewRateRepo(s *Store) *RateRepo { return &RateRepo{db: s.DB()} }
 
 // CurrentRow 某实体的最新一行（diff 基准）。
 type CurrentRow struct {
@@ -67,11 +67,9 @@ func (r *RateRepo) CurrentRows(ctx context.Context, scope string, providerID int
 	for rows.Next() {
 		var et, eid string
 		var row CurrentRow
-		var deleted int
-		if err := rows.Scan(&et, &eid, &row.ID, &row.Name, &row.Rate, &deleted); err != nil {
+		if err := rows.Scan(&et, &eid, &row.ID, &row.Name, &row.Rate, &row.Deleted); err != nil {
 			return nil, err
 		}
-		row.Deleted = deleted != 0
 		out[et+":"+eid] = row
 	}
 	return out, rows.Err()
@@ -82,7 +80,7 @@ func (r *RateRepo) Insert(ctx context.Context, scope string, providerID int64, e
 	now := nowUTC()
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO rate_snapshots (scope, provider_id, entity_type, entity_id, name, rate, platform, first_seen_at, last_seen_at, deleted)
-		VALUES (?,?,?,?,?,?,?,?,?,0)`,
+		VALUES (?,?,?,?,?,?,?,?,?,false)`,
 		scope, providerID, entityType, entityID, name, rate, platform, now, now)
 	return err
 }
@@ -98,7 +96,7 @@ func (r *RateRepo) Touch(ctx context.Context, id int64, name, platform string) e
 
 // MarkDeleted 标记实体已从上游消失。
 func (r *RateRepo) MarkDeleted(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE rate_snapshots SET deleted=1, last_seen_at=? WHERE id=?`, nowUTC(), id)
+	_, err := r.db.ExecContext(ctx, `UPDATE rate_snapshots SET deleted=true, last_seen_at=? WHERE id=?`, nowUTC(), id)
 	return err
 }
 
@@ -154,7 +152,7 @@ func (r *RateRepo) History(ctx context.Context, f SnapshotFilter) ([]*RateSnapsh
 				PARTITION BY scope, provider_id, entity_type, entity_id ORDER BY first_seen_at, id
 			) AS prev_rate
 			FROM rate_snapshots rs WHERE ` + where + `
-		) ORDER BY first_seen_at DESC, id DESC LIMIT ? OFFSET ?`
+		) AS t ORDER BY first_seen_at DESC, id DESC LIMIT ? OFFSET ?`
 	args = append(args, f.PageSize, offset)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -184,7 +182,7 @@ func (r *RateRepo) CurrentList(ctx context.Context, scope string, providerID *in
 	}
 	delCond := ""
 	if !includeDeleted {
-		delCond = " AND deleted = 0"
+		delCond = " AND NOT deleted"
 	}
 	// 取每实体最新行 + LAG 推导 prev
 	query := `
@@ -193,7 +191,7 @@ func (r *RateRepo) CurrentList(ctx context.Context, scope string, providerID *in
 				LAG(rate) OVER (PARTITION BY scope, provider_id, entity_type, entity_id ORDER BY first_seen_at, id) AS prev_rate,
 				ROW_NUMBER() OVER (PARTITION BY scope, provider_id, entity_type, entity_id ORDER BY first_seen_at DESC, id DESC) AS rn
 			FROM rate_snapshots rs WHERE ` + where + `
-		) WHERE rn = 1` + delCond + ` ORDER BY provider_id, entity_type, name COLLATE NOCASE`
+		) AS t WHERE rn = 1` + delCond + ` ORDER BY provider_id, entity_type, lower(name)`
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -213,16 +211,11 @@ func (r *RateRepo) CurrentList(ctx context.Context, scope string, providerID *in
 
 func scanRateSnapshot(rows *sql.Rows) (*RateSnapshot, error) {
 	var s RateSnapshot
-	var firstSeen, lastSeen string
-	var deleted int
 	var prev sql.NullFloat64
 	if err := rows.Scan(&s.ID, &s.Scope, &s.ProviderID, &s.EntityType, &s.EntityID, &s.Name, &s.Rate, &s.Platform,
-		&firstSeen, &lastSeen, &deleted, &prev); err != nil {
+		&s.FirstSeenAt, &s.LastSeenAt, &s.Deleted, &prev); err != nil {
 		return nil, err
 	}
-	s.FirstSeenAt = parseTime(firstSeen)
-	s.LastSeenAt = parseTime(lastSeen)
-	s.Deleted = deleted != 0
 	if prev.Valid {
 		v := prev.Float64
 		s.PrevRate = &v
@@ -239,7 +232,7 @@ func (r *RateRepo) DeleteOlderThan(ctx context.Context, before time.Time) (int64
 				SELECT id, ROW_NUMBER() OVER (
 					PARTITION BY scope, provider_id, entity_type, entity_id ORDER BY first_seen_at DESC, id DESC
 				) AS rn FROM rate_snapshots
-			) WHERE rn = 1
+			) AS t WHERE rn = 1
 		)`, before.UTC().Format(time.RFC3339))
 	if err != nil {
 		return 0, err

@@ -130,9 +130,9 @@ func (s *ProviderService) ScanPrefixes(ctx context.Context) ([]ScanPrefix, error
 		existingLower[strings.ToLower(n)] = true
 	}
 
-	countMap := make(map[string]int)      // lower prefix -> count
-	displayMap := make(map[string]string) // lower prefix -> 首次出现的原始大小写
-	idMap := make(map[string][]int64)     // lower prefix -> 账号 id
+	countMap := make(map[string]int)           // lower prefix -> count
+	displayMap := make(map[string]string)      // lower prefix -> 首次出现的原始大小写
+	idMap := make(map[string][]int64)          // lower prefix -> 账号 id
 	urlMap := make(map[string]map[string]bool) // lower prefix -> 归一化地址集合
 	for _, a := range accs {
 		if name, ok := ParseProviderName(a.Name); ok {

@@ -4,7 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 )
+
+// dateLayout 是日历日列（occurred_on / usage_date）的对外字符串格式。
+// 这些列在 PG 侧是 DATE：刻意不存时刻，避免时区换算风险；Go 侧保持字符串
+// 是因为调用方全在 API 边界（handler DTO 与前端 JSON 契约）。
+const dateLayout = "2006-01-02"
 
 // OperatingCost 自营站的一笔运营成本（买账号、订阅费、服务器等）。
 //
@@ -34,11 +40,11 @@ type OperatingCostParams struct {
 
 // OperatingCostRepo 运营成本存储。
 type OperatingCostRepo struct {
-	db *sql.DB
+	db *DB
 }
 
 // NewOperatingCostRepo 创建 OperatingCostRepo。
-func NewOperatingCostRepo(s *SQLite) *OperatingCostRepo {
+func NewOperatingCostRepo(s *Store) *OperatingCostRepo {
 	return &OperatingCostRepo{db: s.DB()}
 }
 
@@ -46,11 +52,15 @@ const operatingCostCols = `id, provider_id, category, amount, currency, occurred
 
 func scanOperatingCost(row interface{ Scan(...any) error }) (*OperatingCost, error) {
 	var c OperatingCost
+	// occurred_on 在 PG 侧是 DATE，pgx 返回 time.Time；对外仍保持 YYYY-MM-DD 字符串
+	// （handler DTO 与前端 JSON 契约依赖它）。
+	var occurredOn time.Time
 	err := row.Scan(&c.ID, &c.ProviderID, &c.Category, &c.Amount, &c.Currency,
-		&c.OccurredOn, &c.Note, &c.Operator, &c.CreatedAt)
+		&occurredOn, &c.Note, &c.Operator, &c.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
+	c.OccurredOn = occurredOn.Format(dateLayout)
 	return &c, nil
 }
 
@@ -100,14 +110,11 @@ func (r *OperatingCostRepo) GetByID(ctx context.Context, id int64) (*OperatingCo
 //
 // 币种恒为 USD：必须与上游实扣同币种才能直接相加。前端按 recharge_rate 折 CNY 展示。
 func (r *OperatingCostRepo) Create(ctx context.Context, p OperatingCostParams) (*OperatingCost, error) {
-	res, err := r.db.ExecContext(ctx, `
+	var id int64
+	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO provider_operating_costs (provider_id, category, amount, currency, occurred_on, note, operator)
-		VALUES (?,?,?,'USD',?,?,?)`,
-		p.ProviderID, p.Category, p.Amount, p.OccurredOn, p.Note, p.Operator)
-	if err != nil {
-		return nil, err
-	}
-	id, err := res.LastInsertId()
+		VALUES (?,?,?,'USD',?,?,?) RETURNING id`,
+		p.ProviderID, p.Category, p.Amount, p.OccurredOn, p.Note, p.Operator).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -169,12 +176,14 @@ func (r *OperatingCostRepo) SumByDay(ctx context.Context, startDate, endDate str
 	defer rows.Close()
 	out := make(map[string]float64)
 	for rows.Next() {
-		var day string
+		// occurred_on 是 DATE，pgx 返回 time.Time；map 的键必须是 YYYY-MM-DD
+		// 才能和调用方（趋势图 x 轴）对上。
+		var day time.Time
 		var sum float64
 		if err := rows.Scan(&day, &sum); err != nil {
 			return nil, err
 		}
-		out[day] = sum
+		out[day.Format(dateLayout)] = sum
 	}
 	return out, rows.Err()
 }

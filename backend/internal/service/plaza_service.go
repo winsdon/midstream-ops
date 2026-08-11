@@ -40,14 +40,14 @@ type PlazaPrice struct {
 
 // PlazaInterval 阶梯定价区间。
 type PlazaInterval struct {
-	MinTokens   int      `json:"min_tokens"`
-	MaxTokens   *int     `json:"max_tokens"`
-	TierLabel   string   `json:"tier_label,omitempty"`
-	Input       *float64 `json:"input"`
-	Output      *float64 `json:"output"`
-	CacheWrite  *float64 `json:"cache_write"`
-	CacheRead   *float64 `json:"cache_read"`
-	PerRequest  *float64 `json:"per_request"`
+	MinTokens  int      `json:"min_tokens"`
+	MaxTokens  *int     `json:"max_tokens"`
+	TierLabel  string   `json:"tier_label,omitempty"`
+	Input      *float64 `json:"input"`
+	Output     *float64 `json:"output"`
+	CacheWrite *float64 `json:"cache_write"`
+	CacheRead  *float64 `json:"cache_read"`
+	PerRequest *float64 `json:"per_request"`
 }
 
 // PlazaSource 模型的一个来源（渠道 × 平台），供详情弹窗展示明细。
@@ -180,7 +180,7 @@ func (s *PlazaService) Build(ctx context.Context) (*PlazaData, error) {
 		return nil, err
 	}
 
-	// 探测数据来自本地 SQLite，失败不阻塞整页（状态列显示「未接入监控」）。
+	// 探测数据来自本地 monitor 库，失败不阻塞整页（状态列显示「未接入监控」）。
 	var probes []*repository.ModelProbeRow
 	if s.probe != nil {
 		probes, _ = s.probe.SummaryByModel(ctx, start)

@@ -9,7 +9,7 @@ import (
 
 	"sub2api-account-monitor/internal/pkg/secretbox"
 
-	sqlite3 "modernc.org/sqlite"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ErrDuplicate 唯一约束冲突（调用方应转 409）。
@@ -18,15 +18,16 @@ import (
 // 目前只有 customers.sub2api_user_id 这一处唯一键需要向上层区分。
 var ErrDuplicate = errors.New("记录已存在")
 
-// sqliteConstraintUnique 是 SQLITE_CONSTRAINT_UNIQUE 的扩展错误码。
+// pgUniqueViolation 是 PostgreSQL unique_violation 的 SQLSTATE。
 //
-// 用错误码而非匹配错误文案：文案随驱动版本变化，错误码是 SQLite 的稳定契约。
-const sqliteConstraintUnique = 2067
+// 用错误码而非匹配错误文案：文案随 locale 与版本变化，SQLSTATE 是 SQL 标准的
+// 稳定契约。pgx stdlib 把 *pgconn.PgError 原样透过 database/sql 返回。
+const pgUniqueViolation = "23505"
 
 // isUniqueViolation 判定是否为唯一约束冲突。
 func isUniqueViolation(err error) bool {
-	var se *sqlite3.Error
-	return errors.As(err, &se) && se.Code() == sqliteConstraintUnique
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
 }
 
 // Customer 授信客户（一个客户 = 一个 sub2api user_id）。
@@ -85,12 +86,12 @@ type LedgerEntry struct {
 //
 // box 用于 KYC 字段加解密（见 credit_kyc.go）；客户与台账本身不含需加密字段。
 type CreditRepo struct {
-	db  *sql.DB
+	db  *DB
 	box *secretbox.Box
 }
 
 // NewCreditRepo 创建 CreditRepo（box 为 KYC 的 PII 加解密器）。
-func NewCreditRepo(s *SQLite, box *secretbox.Box) *CreditRepo {
+func NewCreditRepo(s *Store, box *secretbox.Box) *CreditRepo {
 	return &CreditRepo{db: s.DB(), box: box}
 }
 
@@ -101,19 +102,16 @@ const customerCols = `id, sub2api_user_id, display_name, email, note, admin_note
 // 注意：Scan 参数顺序与 customerCols 是手工维持的隐式契约，无编译期保护，
 // 新增列必须在两处同序追加，否则所有 SELECT 会静默错位。
 func scanCustomer(row interface{ Scan(...any) error }) (*Customer, error) {
+	var lastEntryAt, alertAt sql.NullTime
 	var c Customer
-	var alertAt, lastEntryAt sql.NullString
-	var createdAt, updatedAt string
 	err := row.Scan(&c.ID, &c.Sub2apiUserID, &c.DisplayName, &c.Email, &c.Note, &c.AdminNote,
 		&c.CreditLimit, &c.Outstanding, &c.Status, &c.AlertLevel, &alertAt, &lastEntryAt,
-		&createdAt, &updatedAt)
+		&c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
-	c.AlertAt = parseTimePtr(alertAt)
-	c.LastEntryAt = parseTimePtr(lastEntryAt)
-	c.CreatedAt = parseTime(createdAt)
-	c.UpdatedAt = parseTime(updatedAt)
+	c.AlertAt = timePtr(alertAt)
+	c.LastEntryAt = timePtr(lastEntryAt)
 	return &c, nil
 }
 
@@ -125,9 +123,8 @@ const ledgerCols = `id, customer_id, entry_type, amount, currency, occurred_at,
 func scanLedgerEntry(row interface{ Scan(...any) error }) (*LedgerEntry, error) {
 	var e LedgerEntry
 	var reversedOf sql.NullInt64
-	var occurredAt, createdAt string
-	err := row.Scan(&e.ID, &e.CustomerID, &e.EntryType, &e.Amount, &e.Currency, &occurredAt,
-		&e.Note, &e.ExternalRef, &e.Operator, &reversedOf, &createdAt)
+	err := row.Scan(&e.ID, &e.CustomerID, &e.EntryType, &e.Amount, &e.Currency, &e.OccurredAt,
+		&e.Note, &e.ExternalRef, &e.Operator, &reversedOf, &e.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -135,8 +132,6 @@ func scanLedgerEntry(row interface{ Scan(...any) error }) (*LedgerEntry, error) 
 		v := reversedOf.Int64
 		e.ReversedOf = &v
 	}
-	e.OccurredAt = parseTime(occurredAt)
-	e.CreatedAt = parseTime(createdAt)
 	return &e, nil
 }
 
@@ -192,7 +187,7 @@ func (r *CreditRepo) ListCustomers(ctx context.Context, f CustomerFilter) ([]*Cu
 		args = append(args, f.Status)
 	}
 	if f.Keyword != "" {
-		where += ` AND (sub2api_user_id LIKE ? OR display_name LIKE ? OR email LIKE ?)`
+		where += ` AND (sub2api_user_id ILIKE ? OR display_name ILIKE ? OR email ILIKE ?)`
 		kw := "%" + f.Keyword + "%"
 		args = append(args, kw, kw, kw)
 	}
@@ -284,20 +279,17 @@ func (r *CreditRepo) CreateCustomer(ctx context.Context, p CustomerParams) (*Cus
 	if p.Status == "" {
 		p.Status = "active"
 	}
-	res, err := r.db.ExecContext(ctx, `
+	var id int64
+	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO customers (sub2api_user_id, display_name, email, note, admin_note,
 			credit_limit, status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?) RETURNING id`,
 		p.Sub2apiUserID, p.DisplayName, p.Email, p.Note, p.AdminNote,
-		p.CreditLimit, p.Status, nowUTC(), nowUTC())
+		p.CreditLimit, p.Status, nowUTC(), nowUTC()).Scan(&id)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrDuplicate
 		}
-		return nil, err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
 		return nil, err
 	}
 	return r.GetCustomer(ctx, id)
@@ -375,7 +367,7 @@ func (r *CreditRepo) AppendEntry(ctx context.Context, p EntryParams) (*Customer,
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// 客户必须存在（外键在 SQLite 默认不强制，显式校验）
+	// 客户必须存在（显式校验，避免只依赖外键错误文案）
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM customers WHERE id = ?`, p.CustomerID).Scan(&exists); err != nil {
 		return nil, err
@@ -409,7 +401,7 @@ func (r *CreditRepo) AppendEntry(ctx context.Context, p EntryParams) (*Customer,
 }
 
 // recalcOutstandingTx 事务内全量重算某客户敞口并写回冗余列。
-func recalcOutstandingTx(ctx context.Context, tx *sql.Tx, customerID int64) error {
+func recalcOutstandingTx(ctx context.Context, tx *Tx, customerID int64) error {
 	var outstanding float64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(CASE WHEN entry_type='advance' THEN amount ELSE -amount END), 0)

@@ -57,8 +57,8 @@ type statBucket struct {
 	Profit   float64 `json:"profit"`
 	// CostComplete 为 false 表示桶内存在有流量但没匹配到上游实扣的账号，
 	// 此时 Cost 偏低、Profit 偏高，前端须提示「成本数据不完整」。
-	CostComplete    bool          `json:"cost_complete"`
-	AccountsMissing int           `json:"accounts_missing"`
+	CostComplete    bool `json:"cost_complete"`
+	AccountsMissing int  `json:"accounts_missing"`
 	// OperatingCost 站点级运营成本（自营站手工录入的买号/订阅/服务器支出）。
 	//
 	// 它是固定成本，不随用量变化，也不属于任何分组，故只在「按供应商」维度有值，

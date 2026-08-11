@@ -18,11 +18,11 @@ type ProviderAccount struct {
 
 // ProviderAccountRepo 供应商账号关联存储。
 type ProviderAccountRepo struct {
-	db *sql.DB
+	db *DB
 }
 
 // NewProviderAccountRepo 创建 ProviderAccountRepo。
-func NewProviderAccountRepo(s *SQLite) *ProviderAccountRepo {
+func NewProviderAccountRepo(s *Store) *ProviderAccountRepo {
 	return &ProviderAccountRepo{db: s.DB()}
 }
 
@@ -162,7 +162,7 @@ func (r *ProviderAccountRepo) LinkMany(ctx context.Context, items []ProviderAcco
 }
 
 // insertLinks 在事务内写入关联，逐条先解除该账号的旧归属（抢占语义）。
-func insertLinks(ctx context.Context, tx *sql.Tx, providerID int64, items []ProviderAccount) error {
+func insertLinks(ctx context.Context, tx *Tx, providerID int64, items []ProviderAccount) error {
 	for _, it := range items {
 		if it.AccountID <= 0 {
 			continue

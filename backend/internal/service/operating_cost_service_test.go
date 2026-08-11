@@ -3,8 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,19 +11,11 @@ import (
 	"sub2api-account-monitor/internal/repository"
 )
 
-// newTestOpCostService 建临时 SQLite + OperatingCostService，并预置一个自营站与一个普通站。
+// newTestOpCostService 建临时 monitor 测试库 + OperatingCostService，并预置一个自营站与一个普通站。
 // 返回 (service, 自营站 id, 普通站 id)。
 func newTestOpCostService(t *testing.T) (*OperatingCostService, int64, int64) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "test.db")
-	s, err := repository.NewSQLite(path)
-	if err != nil {
-		t.Fatalf("初始化 SQLite 失败: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = s.Close()
-		_ = os.Remove(path)
-	})
+	s := newTestStore(t)
 
 	providerRepo := repository.NewProviderRepo(s, &secretbox.Box{})
 	cfg := &config.Config{Location: time.UTC}

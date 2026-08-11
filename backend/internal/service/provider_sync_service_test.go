@@ -4,8 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,19 +14,11 @@ import (
 	"sub2api-account-monitor/internal/repository"
 )
 
-// newTestSyncService 建临时 SQLite + 一整套依赖的 ProviderSyncService。
+// newTestSyncService 建临时 monitor 测试库 + 一整套依赖的 ProviderSyncService。
 // PG 未连接（Available()=false），故成本同步分支自动跳过，测试聚焦余额采集与汇总。
 func newTestSyncService(t *testing.T) (*ProviderSyncService, *repository.ProviderRepo) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "sync.db")
-	s, err := repository.NewSQLite(path)
-	if err != nil {
-		t.Fatalf("初始化 SQLite 失败: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = s.Close()
-		_ = os.Remove(path)
-	})
+	s := newTestStore(t)
 
 	box := &secretbox.Box{}
 	providerRepo := repository.NewProviderRepo(s, box)
