@@ -749,7 +749,7 @@ export default {
       refImageSelected: '{n} selected',
       refImageHint: 'Multiple files supported, 20MB each at most.',
       refImageURL: 'Reference image URL',
-      refImageURLHint: 'Must be publicly reachable — the upstream fetches it directly. Images generated here are not retained and cannot be used.',
+      refImageURLHint: 'Must be publicly reachable — the upstream fetches it directly. Images generated here are not retained and cannot be used. The output aspect ratio follows the reference image, not the selected resolution.',
       estCost: 'Estimated cost',
       estUnknown: 'Priced by group, see your bill',
       videoBillingWarning:

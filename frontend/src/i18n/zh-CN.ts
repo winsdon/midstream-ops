@@ -749,7 +749,7 @@ export default {
       refImageSelected: '已选 {n} 张',
       refImageHint: '支持多张，单张不超过 20MB。',
       refImageURL: '参考图地址',
-      refImageURLHint: '需为公网可访问的图片地址，上游服务器会自行拉取（本站生成的图片不落库，无法作为参考图）。',
+      refImageURLHint: '需为公网可访问的图片地址，上游服务器会自行拉取（本站生成的图片不落库，无法作为参考图）。成片的宽高比会跟随参考图，而非所选分辨率。',
       estCost: '预估费用',
       estUnknown: '按分组定价，以账单为准',
       videoBillingWarning: '视频任务提交成功即扣费，即便生成结果被内容审核拒绝也不退还。',

@@ -225,9 +225,19 @@ func (g *MediaGateway) SubmitVideo(ctx context.Context, apiKey string, p MediaGe
 		"resolution": p.Resolution,
 		"duration":   p.Duration,
 	}
-	// 图生视频只认 JSON 的 image_url，且须公网可达；传 multipart 上游返回 415。
+	// 图生视频的参考图：字段是**嵌套对象** image.url，且须公网可达。
+	//
+	// 【绝不能写成顶层 image_url】上游对未知字段静默丢弃：HTTP 200、request_id
+	// 照发、费用照扣，但产物完全不参考图片，等于用户白花钱做了次文生视频。
+	// 对照实验（同模型、同参考图，只改字段形状）：
+	//   {"image_url": "…"}      → 产出与参考图毫无关系
+	//   {"image": {"url": "…"}} → 产出忠实还原参考图
+	// 供应商文档 kaola-doc grok-media.md 原写作顶层 image_url（与 xAI 官方
+	// docs.x.ai 的 image-to-video 不符），已同步订正。
+	//
+	// 另注：传 multipart 上游返回 415，参考图只能走 JSON URL。
 	if p.ImageURL != "" {
-		payload["image_url"] = p.ImageURL
+		payload["image"] = map[string]any{"url": p.ImageURL}
 	}
 
 	body, err := json.Marshal(payload)

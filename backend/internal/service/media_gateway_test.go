@@ -113,14 +113,23 @@ func TestSubmitVideo(t *testing.T) {
 	if gotBody["resolution"] != "720p" || gotBody["duration"] != float64(8) {
 		t.Fatalf("视频参数未透传: %v", gotBody)
 	}
-	// 未指定参考图时不应发送 image_url
-	if _, ok := gotBody["image_url"]; ok {
-		t.Fatal("文生视频不应发送 image_url")
+	// 未指定参考图时不应发送 image 字段
+	if _, ok := gotBody["image"]; ok {
+		t.Fatal("文生视频不应发送 image")
 	}
 }
 
-// 图生视频用 JSON 的 image_url，绝不能走 multipart（上游会 415）。
-func TestSubmitImage2VideoUsesJSONImageURL(t *testing.T) {
+// 图生视频用 JSON 的嵌套 image.url，绝不能走 multipart（上游会 415）。
+//
+// 【字段形状是嵌套对象，不是顶层字符串】实测：顶层 image_url 会被上游静默丢弃 ——
+// HTTP 200、照常扣费，但产物完全不参考图片。对照实验（同模型同图，只改字段形状）：
+//
+//	{"image_url": "…"}        → 产出与参考图毫无关系
+//	{"image": {"url": "…"}}   → 产出忠实还原参考图
+//
+// 供应商文档（kaola-doc grok-media.md）曾写作顶层 image_url，与 xAI 官方
+// docs.x.ai/developers/model-capabilities/video/image-to-video 不符，已同步订正。
+func TestSubmitImage2VideoUsesNestedImageObject(t *testing.T) {
 	var gotContentType string
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -140,8 +149,16 @@ func TestSubmitImage2VideoUsesJSONImageURL(t *testing.T) {
 	if !strings.HasPrefix(gotContentType, "application/json") {
 		t.Fatalf("图生视频必须用 JSON，实得 %s", gotContentType)
 	}
-	if gotBody["image_url"] != "https://example.com/a.jpg" {
+	img, ok := gotBody["image"].(map[string]any)
+	if !ok {
+		t.Fatalf("image 必须是嵌套对象: %v", gotBody)
+	}
+	if img["url"] != "https://example.com/a.jpg" {
 		t.Fatalf("参考图未透传: %v", gotBody)
+	}
+	// 顶层 image_url 会被上游静默丢弃，绝不能再发
+	if _, bad := gotBody["image_url"]; bad {
+		t.Fatalf("不应发送顶层 image_url（上游静默丢弃）: %v", gotBody)
 	}
 }
 
