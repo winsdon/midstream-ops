@@ -94,6 +94,27 @@ func TestGetOwnedRejectsOtherUsers(t *testing.T) {
 	}
 }
 
+func TestDeleteOwnedIsScopedToUser(t *testing.T) {
+	r := newMediaTestDB(t)
+	ctx := context.Background()
+	task, _, err := r.Create(ctx, mediaParams("owner", "delete-1", MediaKindText2Image))
+	if err != nil {
+		t.Fatalf("创建失败: %v", err)
+	}
+	if err := r.DeleteOwned(ctx, task.ID, "intruder"); err != ErrNotFound {
+		t.Fatalf("越权删除应返回 ErrNotFound，实际 %v", err)
+	}
+	if _, err := r.GetByID(ctx, task.ID); err != nil {
+		t.Fatalf("越权删除不应移除记录: %v", err)
+	}
+	if err := r.DeleteOwned(ctx, task.ID, "owner"); err != nil {
+		t.Fatalf("归属用户删除失败: %v", err)
+	}
+	if _, err := r.GetByID(ctx, task.ID); err != ErrNotFound {
+		t.Fatalf("删除后应查不到记录，实际 %v", err)
+	}
+}
+
 // 新任务恒为 pending：终态只能由 MarkSucceeded / MarkFailed 写入。
 func TestCreateStartsPending(t *testing.T) {
 	r := newMediaTestDB(t)

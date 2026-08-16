@@ -1,29 +1,46 @@
 package service
 
-import "testing"
+import (
+	"testing"
 
-// 三个陷阱模型必须被过滤掉：它们都出现在 /v1/models 里，但
-// grok-imagine 与 grok-imagine-edit 会 404，grok-imagine-video-1.5 会被
-// 静默降级为 grok-imagine-video 却照原价计费。放进下拉框就是让用户白花钱。
+	"sub2api-account-monitor/internal/repository"
+)
+
+// f 取地址辅助：MediaPricing 的价格字段是指针（nil 表示未配置，0 是合法价）。
+func f(v float64) *float64 { return &v }
+
+// grok-imagine-edit 是唯一仍被过滤的陷阱模型：图片编辑端点实测 404。
+//
+// grok-imagine 与 grok-imagine-video-1.5 曾一并被过滤，那是错的：
+// 前者走图片端点是通的（上游映射成 image-quality），后者在图生视频时真生效。
+// 它们现在带着 DowngradesTo 元信息放行，由预估逻辑按降级后的模型报价。
 func TestClassifyModelsFiltersTrapModels(t *testing.T) {
 	all := []string{
-		"grok-imagine",               // 视频接口 404
-		"grok-imagine-edit",          // 编辑接口 404
-		"grok-imagine-video-1.5",     // 静默降级但照原价计费
+		"grok-imagine",               // 图片端点可用，映射成 image-quality
+		"grok-imagine-edit",          // 编辑接口 404，必须过滤
+		"grok-imagine-video-1.5",     // 图生视频真生效，文生视频降级
 		"grok-imagine-image",         // 可用
 		"grok-imagine-image-quality", // 可用
 		"grok-imagine-video",         // 可用
 		"grok-4.5",                   // 文本模型，不是生成模型
 	}
-	got := ClassifyModels("grok", true, all)
+	got := ClassifyModels("grok", true, all, nil)
 
-	if len(got) != 3 {
-		t.Fatalf("应只剩 3 个可用模型，实得 %d: %v", len(got), got)
-	}
+	names := make(map[string]MediaModelOption, len(got))
 	for _, opt := range got {
-		switch opt.Name {
-		case "grok-imagine", "grok-imagine-edit", "grok-imagine-video-1.5", "grok-4.5":
-			t.Fatalf("陷阱模型 %s 未被过滤", opt.Name)
+		names[opt.Name] = opt
+	}
+	for _, want := range []string{
+		"grok-imagine", "grok-imagine-image", "grok-imagine-image-quality",
+		"grok-imagine-video", "grok-imagine-video-1.5",
+	} {
+		if _, ok := names[want]; !ok {
+			t.Fatalf("可用模型 %s 被误过滤", want)
+		}
+	}
+	for _, bad := range []string{"grok-imagine-edit", "grok-4.5"} {
+		if _, ok := names[bad]; ok {
+			t.Fatalf("陷阱模型 %s 未被过滤", bad)
 		}
 	}
 }
@@ -44,7 +61,7 @@ func TestClassifyModelsVideoGatedByPlatform(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.platform, func(t *testing.T) {
-			got := ClassifyModels(tc.platform, true, models)
+			got := ClassifyModels(tc.platform, true, models, nil)
 			hasVideo := false
 			for _, opt := range got {
 				if opt.Capability == MediaCapVideo {
@@ -62,7 +79,7 @@ func TestClassifyModelsVideoGatedByPlatform(t *testing.T) {
 func TestClassifyModelsImageGatedByFlag(t *testing.T) {
 	models := []string{"grok-imagine-image", "grok-imagine-video"}
 
-	off := ClassifyModels("grok", false, models)
+	off := ClassifyModels("grok", false, models, nil)
 	for _, opt := range off {
 		if opt.Capability == MediaCapImage {
 			t.Fatalf("allow_image_generation=false 时不应返回图片模型: %s", opt.Name)
@@ -76,33 +93,84 @@ func TestClassifyModelsImageGatedByFlag(t *testing.T) {
 
 // 分组无 model_mapping 时回落平台默认模型表（与 sub2api /v1/models 兜底同口径）。
 func TestClassifyModelsFallsBackToPlatformDefaults(t *testing.T) {
-	got := ClassifyModels("grok", true, nil)
+	got := ClassifyModels("grok", true, nil, nil)
 	if len(got) == 0 {
 		t.Fatal("空模型列表应回落平台默认表")
 	}
-	// 默认表里同样含三个陷阱模型，回落后也必须被过滤
 	for _, opt := range got {
-		switch opt.Name {
-		case "grok-imagine", "grok-imagine-edit", "grok-imagine-video-1.5":
-			t.Fatalf("回落路径未过滤陷阱模型 %s", opt.Name)
+		if opt.Name == "grok-imagine-edit" {
+			t.Fatal("回落路径未过滤 grok-imagine-edit")
 		}
 	}
 }
 
-// Grok 图片模型固定 1024×1024，size 被上游静默忽略——
-// 必须让前端知道不能给尺寸选择器，否则用户以为选了 4K 却拿到 1K 图。
-func TestGrokImageModelsRejectSize(t *testing.T) {
-	got := ClassifyModels("grok", true, []string{"grok-imagine-image"})
-	if len(got) != 1 || got[0].SupportsSize {
-		t.Fatalf("Grok 图片模型不应声明支持尺寸参数: %v", got)
+// Grok 图片模型走 aspect_ratio 而不是 size。
+//
+// 【这条曾经是反的】早先断言「Grok 不支持尺寸参数、传 size 应被拒」，结论是
+// 「Grok 恒出 1024×1024」。真相是 sub2api 网关在转发前主动删掉 size，Grok 认的
+// 是 aspect_ratio + resolution。拒 size 这一半是对的，但缺了「该传什么」。
+func TestGrokImageModelsUseAspectRatio(t *testing.T) {
+	got := ClassifyModels("grok", true, []string{"grok-imagine-image"}, nil)
+	if len(got) != 1 {
+		t.Fatalf("应返回 1 个模型，实得 %d", len(got))
+	}
+	opt := got[0]
+	if opt.SizeMode != SizeModeAspectRatio {
+		t.Fatalf("Grok 图片模型应为 aspect_ratio 模式，实得 %q", opt.SizeMode)
+	}
+	if len(opt.AspectRatios) != len(grokAspectRatios) {
+		t.Fatalf("应下发 %d 档宽高比，实得 %d", len(grokAspectRatios), len(opt.AspectRatios))
 	}
 
-	err := ValidateGenerateParams(MediaGenerateParams{
-		Kind: MediaKindText2Image, Model: "grok-imagine-image",
-		Prompt: "test", N: 1, Size: "3840x2160",
-	})
-	if err == nil {
+	base := MediaGenerateParams{
+		Kind: MediaKindText2Image, Model: "grok-imagine-image", Prompt: "test", N: 1,
+	}
+
+	// 传 size 应被拒：它会被网关删掉，让用户以为生效是最坏的结果
+	withSize := base
+	withSize.Size = "3840x2160"
+	if err := ValidateGenerateParams(withSize); err == nil {
 		t.Fatal("给 Grok 图片模型传 size 应被拒绝")
+	}
+
+	// 传合法 aspect_ratio 应放行
+	for _, ratio := range []string{"1:1", "16:9", "21:9", "auto"} {
+		p := base
+		p.AspectRatio = ratio
+		err := ValidateGenerateParams(p)
+		if ratio == "21:9" {
+			// 21:9 不在 xAI 的 14 档里——早先前端硬编码过它
+			if err == nil {
+				t.Fatal("21:9 不在支持列表内，应被拒绝")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("合法宽高比 %s 不应被拒: %v", ratio, err)
+		}
+	}
+}
+
+// OpenAI 格式图片走 size，传 aspect_ratio 应被拒——端点不认这个字段。
+func TestOpenAIImageModelsUsePixelSize(t *testing.T) {
+	got := ClassifyModels("openai", true, []string{"gpt-image-2"}, nil)
+	if len(got) != 1 || got[0].SizeMode != SizeModePixelSize {
+		t.Fatalf("gpt-image-2 应为 size 模式，实得 %v", got)
+	}
+
+	base := MediaGenerateParams{
+		Kind: MediaKindText2Image, Model: "gpt-image-2", Prompt: "test", N: 1,
+	}
+	ok := base
+	ok.Size = "2048x1152"
+	if err := ValidateGenerateParams(ok); err != nil {
+		t.Fatalf("合法 size 不应被拒: %v", err)
+	}
+
+	bad := base
+	bad.AspectRatio = "16:9"
+	if err := ValidateGenerateParams(bad); err == nil {
+		t.Fatal("给 OpenAI 格式模型传 aspect_ratio 应被拒绝")
 	}
 }
 
@@ -144,61 +212,240 @@ func TestImageSizeTierRejectsTierStrings(t *testing.T) {
 	}
 }
 
-// 费用预估：图片按张数线性，视频按分辨率单价 × 秒数。
-// 数值锚点来自文档计费表，改动这些数字等于改动给用户的报价。
-func TestEstimateCostTicks(t *testing.T) {
+// 费用预估的标准价锚点（无分组自定义价、倍率 1）。
+//
+// 数值逐条对齐 sub2api billing_service.go 的 defaultGrokImagine* 常量——
+// 那是分组没配自定义价时上游实际使用的价。改动这些数字等于改动给用户的报价，
+// 且会让页面预估与账单对不上。
+func TestEstimateCostTicksStandardPrices(t *testing.T) {
 	cases := []struct {
 		name string
 		p    MediaGenerateParams
 		want int64
 	}{
 		{
-			"标准图 1 张 = $0.02",
-			MediaGenerateParams{Model: "grok-imagine-image", N: 1},
+			"标准图 1K 1 张 = $0.02",
+			MediaGenerateParams{Kind: MediaKindText2Image, Model: "grok-imagine-image", N: 1, ImageResolution: "1k"},
 			200_000_000,
 		},
 		{
 			"标准图 4 张线性计费 = $0.08",
-			MediaGenerateParams{Model: "grok-imagine-image", N: 4},
+			MediaGenerateParams{Kind: MediaKindText2Image, Model: "grok-imagine-image", N: 4, ImageResolution: "1k"},
 			800_000_000,
 		},
 		{
-			"高质量图 1 张 = $0.07",
-			MediaGenerateParams{Model: "grok-imagine-image-quality", N: 1},
+			// 这一条曾经是错的：旧实现写死 $0.07/张，与 sub2api 的 1K 档 $0.05 差 40%
+			"高质量图 1K 1 张 = $0.05（非 $0.07）",
+			MediaGenerateParams{Kind: MediaKindText2Image, Model: "grok-imagine-image-quality", N: 1, ImageResolution: "1k"},
+			500_000_000,
+		},
+		{
+			"高质量图 2K 1 张 = $0.07",
+			MediaGenerateParams{Kind: MediaKindText2Image, Model: "grok-imagine-image-quality", N: 1, ImageResolution: "2k"},
+			700_000_000,
+		},
+		{
+			"grok-imagine 按映射后的 image-quality 计价",
+			MediaGenerateParams{Kind: MediaKindText2Image, Model: "grok-imagine", N: 1, ImageResolution: "2k"},
 			700_000_000,
 		},
 		{
 			"480p 8 秒 = $0.40",
-			MediaGenerateParams{Model: "grok-imagine-video", Resolution: "480p", Duration: 8},
+			MediaGenerateParams{Kind: MediaKindText2Video, Model: "grok-imagine-video", Resolution: "480p", Duration: 8},
 			4_000_000_000,
 		},
 		{
 			"720p 8 秒 = $0.56（与文档 usage 样例一致）",
-			MediaGenerateParams{Model: "grok-imagine-video", Resolution: "720p", Duration: 8},
+			MediaGenerateParams{Kind: MediaKindText2Video, Model: "grok-imagine-video", Resolution: "720p", Duration: 8},
+			5_600_000_000,
+		},
+		{
+			"1080p 按 720p 同价（sub2api getDefaultGrokImagineVideoPrice 的口径）",
+			MediaGenerateParams{Kind: MediaKindText2Video, Model: "grok-imagine-video", Resolution: "1080p", Duration: 8},
 			5_600_000_000,
 		},
 		{
 			"720p 15 秒上限 = $1.05",
-			MediaGenerateParams{Model: "grok-imagine-video", Resolution: "720p", Duration: 15},
+			MediaGenerateParams{Kind: MediaKindText2Video, Model: "grok-imagine-video", Resolution: "720p", Duration: 15},
 			10_500_000_000,
 		},
 		{
 			"未登记模型无法预估",
-			MediaGenerateParams{Model: "unknown-model", N: 1},
+			MediaGenerateParams{Kind: MediaKindText2Image, Model: "unknown-model", N: 1},
 			0,
 		},
 		{
-			"OpenAI 格式图片按分组定价，本站无权威价",
-			MediaGenerateParams{Model: "gpt-image-2", N: 1},
+			"OpenAI 格式图片标准价本站查不到，返回 0",
+			MediaGenerateParams{Kind: MediaKindText2Image, Model: "gpt-image-2", N: 1, Size: "1024x1024"},
 			0,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := EstimateCostTicks(tc.p); got != tc.want {
+			if got := EstimateCostTicks(tc.p, nil); got != tc.want {
 				t.Fatalf("预估应为 %d ticks，实得 %d", tc.want, got)
 			}
 		})
+	}
+}
+
+// grok-imagine-video-1.5 的静默降级：文生视频时上游换成 grok-imagine-video
+// 并按后者计费，图生视频时 1.5 真生效。
+//
+// 【报价必须跟着降】否则用户看到 $0.64 的预估、实扣 $0.40，页面在骗人。
+func TestEstimateCostTicksVideo15Downgrade(t *testing.T) {
+	cases := []struct {
+		name string
+		kind string
+		want int64
+	}{
+		// 文生视频降级为 grok-imagine-video：480p $0.05/s × 8s
+		{"文生视频降级按 $0.05/s 计", MediaKindText2Video, 4_000_000_000},
+		// 图生视频 1.5 生效：480p $0.08/s × 8s
+		{"图生视频按 1.5 的 $0.08/s 计", MediaKindImage2Video, 6_400_000_000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EstimateCostTicks(MediaGenerateParams{
+				Kind: tc.kind, Model: "grok-imagine-video-1.5",
+				Resolution: "480p", Duration: 8,
+			}, nil)
+			if got != tc.want {
+				t.Fatalf("预估应为 %d ticks，实得 %d", tc.want, got)
+			}
+		})
+	}
+
+	// 图生视频 720p × 8s = $0.14 × 8 = $1.12
+	got := EstimateCostTicks(MediaGenerateParams{
+		Kind: MediaKindImage2Video, Model: "grok-imagine-video-1.5",
+		Resolution: "720p", Duration: 8,
+	}, nil)
+	if got != 11_200_000_000 {
+		t.Fatalf("1.5 图生视频 720p×8s 应为 $1.12，实得 %s", FormatTicksUSD(got))
+	}
+}
+
+// 分组自定义单价优先于标准价——这是 sub2api CalculateImageCost 的第一优先级，
+// 漏读这几列会让配了自定义价的分组全部报错价。
+func TestEstimateCostTicksHonorsGroupPrices(t *testing.T) {
+	pricing := &repository.MediaPricing{
+		ImagePrice1K:        f(0.10),
+		VideoPrice720P:      f(0.20),
+		GroupRateMultiplier: 1,
+	}
+
+	img := EstimateCostTicks(MediaGenerateParams{
+		Kind: MediaKindText2Image, Model: "grok-imagine-image", N: 2, ImageResolution: "1k",
+	}, pricing)
+	if img != 2_000_000_000 { // $0.10 × 2
+		t.Fatalf("应取分组自定义单价 $0.10×2=$0.20，实得 %s", FormatTicksUSD(img))
+	}
+
+	vid := EstimateCostTicks(MediaGenerateParams{
+		Kind: MediaKindText2Video, Model: "grok-imagine-video", Resolution: "720p", Duration: 5,
+	}, pricing)
+	if vid != 10_000_000_000 { // $0.20 × 5
+		t.Fatalf("应取分组自定义单价 $0.20×5=$1.00，实得 %s", FormatTicksUSD(vid))
+	}
+
+	// 未配置的档位仍回落标准价：2K 没配，走 image-quality 的 $0.07
+	fallback := EstimateCostTicks(MediaGenerateParams{
+		Kind: MediaKindText2Image, Model: "grok-imagine-image-quality", N: 1, ImageResolution: "2k",
+	}, pricing)
+	if fallback != 700_000_000 {
+		t.Fatalf("未配置档位应回落标准价 $0.07，实得 %s", FormatTicksUSD(fallback))
+	}
+}
+
+// 倍率必须参与计算。旧实现完全没读倍率，配了 1.5 倍的分组会被少报三分之一。
+func TestEstimateCostTicksAppliesMultipliers(t *testing.T) {
+	cases := []struct {
+		name    string
+		pricing *repository.MediaPricing
+		kind    string
+		model   string
+		want    int64
+	}{
+		{
+			"分组倍率 1.5 作用于图片",
+			&repository.MediaPricing{GroupRateMultiplier: 1.5},
+			MediaKindText2Image, "grok-imagine-image", 300_000_000, // $0.02 × 1.5
+		},
+		{
+			"图片独立倍率覆盖分组倍率",
+			&repository.MediaPricing{
+				GroupRateMultiplier:  1.5,
+				ImageRateIndependent: true, ImageRateMultiplier: 2,
+			},
+			MediaKindText2Image, "grok-imagine-image", 400_000_000, // $0.02 × 2
+		},
+		{
+			"图片独立倍率不影响视频（视频仍用分组倍率）",
+			&repository.MediaPricing{
+				GroupRateMultiplier:  2,
+				ImageRateIndependent: true, ImageRateMultiplier: 10,
+			},
+			MediaKindText2Video, "grok-imagine-video", 8_000_000_000, // $0.05×8s×2
+		},
+		{
+			"视频独立倍率覆盖分组倍率",
+			&repository.MediaPricing{
+				GroupRateMultiplier:  1,
+				VideoRateIndependent: true, VideoRateMultiplier: 3,
+			},
+			MediaKindText2Video, "grok-imagine-video", 12_000_000_000, // $0.05×8s×3
+		},
+		{
+			"负倍率收敛到 0（上游的口径是免费而非报错）",
+			&repository.MediaPricing{
+				GroupRateMultiplier:  1,
+				ImageRateIndependent: true, ImageRateMultiplier: -1,
+			},
+			MediaKindText2Image, "grok-imagine-image", 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EstimateCostTicks(MediaGenerateParams{
+				Kind: tc.kind, Model: tc.model,
+				N: 1, ImageResolution: "1k",
+				Resolution: "480p", Duration: 8,
+			}, tc.pricing)
+			if got != tc.want {
+				t.Fatalf("预估应为 %d ticks（%s），实得 %d（%s）",
+					tc.want, FormatTicksUSD(tc.want), got, FormatTicksUSD(got))
+			}
+		})
+	}
+}
+
+// ClassifyModels 下发的单价必须已含倍率与分组自定义价——前端只做乘法，
+// 单价错了整页报价全错。
+func TestClassifyModelsDownstreamPrices(t *testing.T) {
+	pricing := &repository.MediaPricing{
+		ImagePrice1K:        f(0.10),
+		GroupRateMultiplier: 2,
+	}
+	got := ClassifyModels("grok", true, []string{"grok-imagine-image", "grok-imagine-video"}, pricing)
+
+	for _, opt := range got {
+		switch opt.Name {
+		case "grok-imagine-image":
+			if opt.PriceByTier["1K"] != 2_000_000_000 { // $0.10 × 2
+				t.Fatalf("图片 1K 单价应为 $0.20，实得 %s", FormatTicksUSD(opt.PriceByTier["1K"]))
+			}
+			if opt.PriceByTier["2K"] != 400_000_000 { // 标准价 $0.02 × 2
+				t.Fatalf("图片 2K 单价应为 $0.04，实得 %s", FormatTicksUSD(opt.PriceByTier["2K"]))
+			}
+		case "grok-imagine-video":
+			if opt.PriceByTier["720p"] != 1_400_000_000 { // $0.07 × 2
+				t.Fatalf("视频 720p 单价应为 $0.14/s，实得 %s", FormatTicksUSD(opt.PriceByTier["720p"]))
+			}
+			if len(opt.Resolutions) != 3 {
+				t.Fatalf("视频应下发 3 档分辨率（含 1080p），实得 %v", opt.Resolutions)
+			}
+		}
 	}
 }
 
@@ -209,6 +456,7 @@ func TestFormatTicksUSD(t *testing.T) {
 		want  string
 	}{
 		{200_000_000, "0.0200"},
+		{500_000_000, "0.0500"},
 		{5_600_000_000, "0.5600"},
 		{10_500_000_000, "1.0500"},
 		{0, "0.0000"},
@@ -220,7 +468,33 @@ func TestFormatTicksUSD(t *testing.T) {
 	}
 }
 
-// 视频参数边界：分辨率只认 480p/720p，时长 1-15 秒。
+// 浮点换算不能截断：0.07 在 float64 里是 0.06999...，直接 int64() 会得到
+// 699999999，展示成 $0.0699。
+func TestUSDToTicksRounds(t *testing.T) {
+	cases := []struct {
+		usd  float64
+		want int64
+	}{
+		{0.02, 200_000_000},
+		{0.05, 500_000_000},
+		{0.07, 700_000_000},
+		{0.14, 1_400_000_000},
+		{0.25, 2_500_000_000},
+		{0, 0},
+		{-1, 0},
+	}
+	for _, tc := range cases {
+		if got := usdToTicks(tc.usd); got != tc.want {
+			t.Fatalf("$%v 应为 %d ticks，实得 %d", tc.usd, tc.want, got)
+		}
+	}
+}
+
+// 视频参数边界：分辨率认 480p/720p/1080p，时长 1-15 秒。
+//
+// 【1080p 从被拒改为放行】旧实现拒它，依据是对 grok-imagine-video 的观察；
+// 但 sub2api 为 1.5 保留了独立的 1080p 单价，说明该组合上游认可。若某模型确实
+// 不支持，上游返回参数错误 400 且不扣费，代价远小于永久藏起一个能用的档位。
 func TestValidateVideoParams(t *testing.T) {
 	base := MediaGenerateParams{
 		Kind: MediaKindText2Video, Model: "grok-imagine-video",
@@ -230,16 +504,25 @@ func TestValidateVideoParams(t *testing.T) {
 		t.Fatalf("合法参数不应被拒: %v", err)
 	}
 
+	for _, res := range videoResolutions {
+		p := base
+		p.Resolution = res
+		if err := ValidateGenerateParams(p); err != nil {
+			t.Fatalf("分辨率 %s 不应被拒: %v", res, err)
+		}
+	}
+
 	bad := []struct {
 		name  string
 		patch func(*MediaGenerateParams)
 	}{
-		{"1080p 上游返回 400", func(p *MediaGenerateParams) { p.Resolution = "1080p" }},
 		{"360p 上游返回 422", func(p *MediaGenerateParams) { p.Resolution = "360p" }},
+		{"空分辨率", func(p *MediaGenerateParams) { p.Resolution = "" }},
 		{"时长 0 秒", func(p *MediaGenerateParams) { p.Duration = 0 }},
 		{"时长 16 秒超上限", func(p *MediaGenerateParams) { p.Duration = 16 }},
 		{"空提示词", func(p *MediaGenerateParams) { p.Prompt = "   " }},
 		{"图片模型不能生成视频", func(p *MediaGenerateParams) { p.Model = "grok-imagine-image" }},
+		{"非法宽高比", func(p *MediaGenerateParams) { p.AspectRatio = "21:9" }},
 	}
 	for _, tc := range bad {
 		t.Run(tc.name, func(t *testing.T) {

@@ -23,6 +23,7 @@ import (
 	"sub2api-account-monitor/internal/notify"
 	"sub2api-account-monitor/internal/pkg/health"
 	"sub2api-account-monitor/internal/pkg/jwtutil"
+	"sub2api-account-monitor/internal/pkg/objectstore"
 	"sub2api-account-monitor/internal/pkg/secretbox"
 	"sub2api-account-monitor/internal/repository"
 	"sub2api-account-monitor/internal/server"
@@ -168,13 +169,37 @@ func main() {
 		// 生图 / 生视频页有独立开关：它会真实花用户的钱（视频提交即扣费且不退款），
 		// 运营方可能想在开着广场的同时关掉它。
 		if cfg.Media.Enabled {
+			// 对象存储未配置时 uploader 为 nil：产物不转存，退化到
+			// 「图片 inline、视频经后端代理」的行为，生成本身不受影响。
+			var uploader objectstore.Uploader
+			if cfg.Media.R2.Enabled {
+				uploader = objectstore.NewR2(objectstore.R2Config{
+					AccountID:       cfg.Media.R2.AccountID,
+					Bucket:          cfg.Media.R2.Bucket,
+					AccessKeyID:     cfg.Media.R2.AccessKeyID,
+					SecretAccessKey: cfg.Media.R2.SecretAccessKey,
+					PublicBaseURL:   cfg.Media.R2.PublicBaseURL,
+				})
+				log.Printf("[media] 产物转存已启用，公开域名 %s", cfg.Media.R2.PublicBaseURL)
+			} else {
+				log.Printf("[media] 产物转存未启用：图片刷新后不可见，视频受上游保留期限制")
+			}
+
 			mediaSvc = service.NewMediaService(
 				pg,
 				repository.NewMediaTaskRepo(store),
+				repository.NewMediaArtifactRepo(store),
 				service.NewMediaGateway(cfg.Media.GatewayBaseURL),
+				uploader,
 				cfg.Media.MaxPendingVideos,
 			)
 			embedMediaHandler = handler.NewEmbedMediaHandler(mediaSvc, verifier, embedSessions, pg)
+
+			// 补投上次运行遗留的在途转存：进程在转存途中重启会留下一批
+			// storage_status='pending' 的孤儿，它们既不自愈也不会被用户操作触发。
+			// 放在后台跑，不阻塞启动。
+			go mediaSvc.ResumePendingArchives(context.Background())
+			defer mediaSvc.WaitArchives()
 		}
 
 		// 本地联调开关：暴露 token 自签端点，等同于「可登录成任意客户」。

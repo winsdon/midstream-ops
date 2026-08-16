@@ -141,6 +141,7 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 				authed.POST("/generate", h.EmbedMedia.Generate)
 				authed.POST("/edits", h.EmbedMedia.Edit)
 				authed.GET("/tasks", h.EmbedMedia.Tasks)
+				authed.DELETE("/tasks/:id", h.EmbedMedia.DeleteTask)
 				authed.GET("/tasks/:id/content", h.EmbedMedia.Content)
 			}
 		}

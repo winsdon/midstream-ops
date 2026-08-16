@@ -58,10 +58,16 @@ func TestGenerateImageRequestAndResponse(t *testing.T) {
 	}
 }
 
-// Grok 模型不传 size；OpenAI 格式模型传 size。
-func TestGenerateImageOmitsEmptySize(t *testing.T) {
+// 两套尺寸参数必须互斥，且各自走对模型。
+//
+// 【这是「Grok 只能出 1:1」的根因所在】sub2api 网关的 sanitizeGrokMediaForwardBody
+// 会在转发 Grok 图片请求前主动删掉 size 字段，所以给 Grok 传 size 永远不生效；
+// Grok 认的是 xAI 原生的 aspect_ratio + resolution，网关对这两个字段原样透传。
+// 反过来，OpenAI 格式端点不认 aspect_ratio。任一方向传错，用户拿到的都是默认比例。
+func TestGenerateImageSizeParamsAreMutuallyExclusive(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody = nil
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		_, _ = io.WriteString(w, `{"data":[{"b64_json":"SU1H"}]}`)
 	}))
@@ -69,22 +75,66 @@ func TestGenerateImageOmitsEmptySize(t *testing.T) {
 
 	g := NewMediaGateway(srv.URL)
 
+	// Grok：发 aspect_ratio + resolution，绝不发 size
 	if _, err := g.GenerateImage(context.Background(), testAPIKey, MediaGenerateParams{
 		Model: "grok-imagine-image", Prompt: "x", N: 1,
+		AspectRatio: "16:9", ImageResolution: "2k",
+		// 即便调用方误填了 size 与 quality，也不该被发出去
+		Size: "3840x2160", Quality: "high",
 	}); err != nil {
 		t.Fatalf("生成失败: %v", err)
 	}
+	if gotBody["aspect_ratio"] != "16:9" {
+		t.Fatalf("Grok 请求必须携带 aspect_ratio，实得: %v", gotBody)
+	}
+	if gotBody["resolution"] != "2k" {
+		t.Fatalf("Grok 请求必须携带 resolution，实得: %v", gotBody)
+	}
 	if _, ok := gotBody["size"]; ok {
-		t.Fatal("未指定尺寸时不应发送 size 字段")
+		t.Fatalf("Grok 请求绝不能带 size（网关会删掉它并让行为不确定）: %v", gotBody)
 	}
 
+	// OpenAI 格式：发 size + quality，绝不发 aspect_ratio
 	if _, err := g.GenerateImage(context.Background(), testAPIKey, MediaGenerateParams{
-		Model: "gpt-image-2", Prompt: "x", N: 1, Size: "2048x1152", Quality: "high",
+		Model: "gpt-image-2", Prompt: "x", N: 1,
+		Size: "2048x1152", Quality: "high",
+		AspectRatio: "16:9", ImageResolution: "2k",
 	}); err != nil {
 		t.Fatalf("生成失败: %v", err)
 	}
 	if gotBody["size"] != "2048x1152" || gotBody["quality"] != "high" {
 		t.Fatalf("尺寸与质量未透传: %v", gotBody)
+	}
+	if _, ok := gotBody["aspect_ratio"]; ok {
+		t.Fatalf("OpenAI 格式请求不应带 aspect_ratio: %v", gotBody)
+	}
+
+	// 都不填时两个字段都不出现
+	if _, err := g.GenerateImage(context.Background(), testAPIKey, MediaGenerateParams{
+		Model: "grok-imagine-image", Prompt: "x", N: 1,
+	}); err != nil {
+		t.Fatalf("生成失败: %v", err)
+	}
+	for _, field := range []string{"size", "aspect_ratio", "resolution"} {
+		if _, ok := gotBody[field]; ok {
+			t.Fatalf("未指定时不应发送 %s 字段: %v", field, gotBody)
+		}
+	}
+}
+
+func TestGenerateImageCarriesResultURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"data":[{"url":"https://cdn.example/image.png"}]}`)
+	}))
+	defer srv.Close()
+
+	got, err := NewMediaGateway(srv.URL).GenerateImage(context.Background(), testAPIKey,
+		MediaGenerateParams{Model: "grok-imagine-image", Prompt: "x", N: 1})
+	if err != nil {
+		t.Fatalf("生成失败: %v", err)
+	}
+	if got[0].URL != "https://cdn.example/image.png" {
+		t.Fatalf("未解析图片 URL: %+v", got[0])
 	}
 }
 
@@ -257,8 +307,13 @@ func TestOpenVideoContentStreams(t *testing.T) {
 }
 
 // 图生图走 multipart，参考图字段名必须是 image。
+//
+// multipart 与 JSON 是两条独立的提交路径，尺寸参数的互斥规则在两边必须一致——
+// 它们过去各写一遍参数装配，正是 size 只在其中一条路径被处理的温床。
 func TestEditImageSendsMultipart(t *testing.T) {
 	var gotContentType, gotModel, gotFilename string
+	var gotAspect, gotResolution, gotSize string
+	var hasSize bool
 	var gotFileBody []byte
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -268,6 +323,9 @@ func TestEditImageSendsMultipart(t *testing.T) {
 			return
 		}
 		gotModel = r.FormValue("model")
+		gotAspect = r.FormValue("aspect_ratio")
+		gotResolution = r.FormValue("resolution")
+		gotSize, hasSize = r.FormValue("size"), len(r.MultipartForm.Value["size"]) > 0
 		file, hdr, err := r.FormFile("image")
 		if err != nil {
 			t.Errorf("缺少 image 字段: %v", err)
@@ -282,7 +340,11 @@ func TestEditImageSendsMultipart(t *testing.T) {
 	defer srv.Close()
 
 	got, err := NewMediaGateway(srv.URL).EditImage(context.Background(), testAPIKey,
-		MediaGenerateParams{Model: "grok-imagine-image", Prompt: "赛博朋克", N: 1},
+		MediaGenerateParams{
+			Model: "grok-imagine-image", Prompt: "赛博朋克", N: 1,
+			AspectRatio: "9:16", ImageResolution: "1k",
+			Size: "3840x2160", // 误填也不该被发出去
+		},
 		[]MediaUploadFile{{Filename: "input.jpg", Reader: strings.NewReader("image-bytes")}})
 	if err != nil {
 		t.Fatalf("编辑失败: %v", err)
@@ -293,6 +355,12 @@ func TestEditImageSendsMultipart(t *testing.T) {
 	}
 	if gotModel != "grok-imagine-image" {
 		t.Fatalf("model 未透传: %s", gotModel)
+	}
+	if gotAspect != "9:16" || gotResolution != "1k" {
+		t.Fatalf("Grok 的 aspect_ratio / resolution 未透传: %q / %q", gotAspect, gotResolution)
+	}
+	if hasSize && gotSize != "" {
+		t.Fatalf("Grok 的 multipart 请求绝不能带 size，实得 %q", gotSize)
 	}
 	if gotFilename != "input.jpg" || string(gotFileBody) != "image-bytes" {
 		t.Fatalf("参考图未正确转发: %s / %s", gotFilename, gotFileBody)

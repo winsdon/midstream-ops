@@ -96,6 +96,38 @@ type imagesResponse struct {
 	} `json:"usage"`
 }
 
+// applyImageSizeParams 把尺寸相关参数按模型的尺寸模式写进 fields。
+//
+// 【两套参数必须互斥】sub2api 网关的 sanitizeGrokMediaForwardBody 在转发 Grok
+// 图片请求前会主动删掉 size 字段——这正是「Grok 传 size 没用、恒出 1024×1024」
+// 的真正原因，不是上游忽略了它。Grok 认的是 xAI 原生的 aspect_ratio +
+// resolution，网关对这两个字段原样透传。
+//
+// 因此：aspect_ratio 模式绝不能带 size（会触发网关的删除分支，行为不确定），
+// size 模式绝不能带 aspect_ratio（OpenAI 格式端点不认这个字段）。
+//
+// fields 用 map[string]any 而非直接写两处，是为了让 JSON 与 multipart 两条
+// 提交路径共用同一份参数装配逻辑——它们过去各写一遍，正是 size 只在其中一条
+// 路径被处理的温床。
+func applyImageSizeParams(fields map[string]any, p MediaGenerateParams) {
+	switch MediaSizeModeOf(p.Model) {
+	case SizeModeAspectRatio:
+		if p.AspectRatio != "" {
+			fields["aspect_ratio"] = p.AspectRatio
+		}
+		if p.ImageResolution != "" {
+			fields["resolution"] = p.ImageResolution
+		}
+	case SizeModePixelSize:
+		if p.Size != "" {
+			fields["size"] = p.Size
+		}
+		if p.Quality != "" {
+			fields["quality"] = p.Quality
+		}
+	}
+}
+
 // GenerateImage 文生图（同步）。
 func (g *MediaGateway) GenerateImage(ctx context.Context, apiKey string, p MediaGenerateParams) ([]ImageResult, error) {
 	payload := map[string]any{
@@ -105,17 +137,11 @@ func (g *MediaGateway) GenerateImage(ctx context.Context, apiKey string, p Media
 		// 【必须 b64_json，不能用 url】url 返回的是 xAI 自有 CDN（imgen.x.ai）
 		// 直链，不经网关：国内网络 DNS 被污染、TCP 连接超时，后端与浏览器都拉不到，
 		// 加代理也没用（代理进程同样在国内）。b64 让图片数据随响应体经网关返回，
-		// 一并解决直链过期问题。代价是响应体大几百 KB，可接受。
+		// 后端拿到字节后转存 R2，前端凭 R2 URL 长期可见。
 		// 见 kaola-doc/docs/guide/grok-media.md 的「国内网络建议使用 b64_json」。
 		"response_format": "b64_json",
 	}
-	// Grok 模型静默忽略 size，catalog 层已拒绝为其传 size，这里只透传合法值。
-	if p.Size != "" {
-		payload["size"] = p.Size
-	}
-	if p.Quality != "" {
-		payload["quality"] = p.Quality
-	}
+	applyImageSizeParams(payload, p)
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -152,23 +178,18 @@ func (g *MediaGateway) EditImage(ctx context.Context, apiKey string, p MediaGene
 	go func() {
 		// 任何一步失败都要 CloseWithError，否则读端会一直阻塞到 context 超时。
 		writeErr := func() error {
-			fields := map[string]string{
+			fields := map[string]any{
 				"model":  p.Model,
 				"prompt": p.Prompt,
 				// 与 GenerateImage 同因：xAI CDN 直链国内不可达，必须要 b64。
 				"response_format": "b64_json",
 			}
-			if p.Size != "" {
-				fields["size"] = p.Size
-			}
-			if p.Quality != "" {
-				fields["quality"] = p.Quality
-			}
+			applyImageSizeParams(fields, p)
 			if p.N > 0 {
 				fields["n"] = strconv.Itoa(p.N)
 			}
 			for k, v := range fields {
-				if err := mw.WriteField(k, v); err != nil {
+				if err := mw.WriteField(k, fmt.Sprint(v)); err != nil {
 					return err
 				}
 			}
@@ -225,6 +246,12 @@ func (g *MediaGateway) SubmitVideo(ctx context.Context, apiKey string, p MediaGe
 		"resolution": p.Resolution,
 		"duration":   p.Duration,
 	}
+	if p.AspectRatio != "" {
+		payload["aspect_ratio"] = p.AspectRatio
+	}
+	if p.Stream {
+		payload["stream"] = true
+	}
 	// 图生视频的参考图：字段是**嵌套对象** image.url，且须公网可达。
 	//
 	// 【绝不能写成顶层 image_url】上游对未知字段静默丢弃：HTTP 200、request_id
@@ -272,6 +299,8 @@ type VideoStatus struct {
 	Done      bool
 	Progress  int
 	CostTicks int64
+	// ResultURL 上游返回的产物 URL，供任务记录持久化。
+	ResultURL string
 	// Duration 上游返回的实际时长（秒）。
 	Duration int
 }
@@ -328,6 +357,7 @@ func (g *MediaGateway) QueryVideo(ctx context.Context, apiKey, requestID string)
 		Done:      resp.StatusCode == http.StatusOK,
 		Progress:  out.Progress,
 		CostTicks: out.Usage.CostInUSDTicks,
+		ResultURL: out.Video.URL,
 		Duration:  out.Video.Duration,
 	}
 	if st.Done && st.Progress == 0 {

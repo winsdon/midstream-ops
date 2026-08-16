@@ -62,6 +62,41 @@
 }
 
 @layer components {
+  .media-panel {
+    @apply rounded-2xl border border-gray-100 bg-white shadow-card dark:border-dark-700/50 dark:bg-dark-800/50;
+    color: inherit;
+  }
+
+  .media-panel-tabs {
+    @apply border-gray-100 bg-gray-50/80 dark:border-dark-700 dark:bg-dark-900/40;
+  }
+
+  .media-panel-body { @apply bg-white dark:bg-dark-800/50; }
+  .media-section-kicker { @apply mb-1 text-sm font-medium text-gray-400 dark:text-dark-400; }
+  .media-label { @apply mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300; }
+  .media-counter, .media-value { @apply text-xs tabular-nums text-gray-400 dark:text-dark-500; }
+  .media-select, .media-textarea {
+    @apply w-full rounded-xl px-3 py-2.5 text-sm outline-none transition;
+    @apply border border-gray-200 bg-white text-gray-900 placeholder:text-gray-400 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-100 dark:placeholder:text-dark-400;
+  }
+  .media-select:focus, .media-textarea:focus { @apply border-primary-500 ring-2 ring-primary-500/30; }
+  .media-design-controls { @apply space-y-4; }
+  .media-range { @apply h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-200 accent-primary-500 dark:bg-dark-700; }
+  .media-range::-webkit-slider-thumb { @apply h-4 w-4 appearance-none rounded-full bg-primary-500 shadow-sm; }
+  /* 宽高比按钮网格。xAI 有 14 档（含 auto），比早先的 8 档密得多，
+     用 auto-fill 而非固定列数，窄屏自动降列而不是把标签挤成两行。 */
+  .media-ratio-grid { @apply grid gap-1.5; grid-template-columns: repeat(auto-fill, minmax(3.25rem, 1fr)); }
+  .media-ratio { @apply flex min-h-[50px] flex-col items-center justify-center gap-1 rounded-lg border border-gray-200 px-1 text-[9px] leading-none text-gray-500 transition dark:border-dark-600 dark:text-dark-400; }
+  .media-ratio:hover, .media-ratio-active { @apply border-primary-400 bg-primary-50 text-primary-700 dark:border-primary-500 dark:bg-primary-900/20 dark:text-primary-300; }
+  .media-ratio-shape { display: block; width: 22px; height: 15px; border: 1px solid currentColor; border-radius: 2px; }
+  .ratio-portrait { width: 12px; height: 21px; }
+  .ratio-wide { width: 25px; height: 12px; }
+  .ratio-landscape { width: 20px; height: 16px; }
+  .ratio-auto { border-style: dashed; }
+  .media-check-row { @apply flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300; }
+  .media-checkbox { @apply h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500/30 dark:border-dark-500 dark:bg-dark-800; }
+  .media-submit { @apply inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-primary-500 to-primary-600 font-medium text-white shadow-md shadow-primary-500/25 transition hover:from-primary-600 hover:to-primary-700; }
+
   /* ============ 按钮样式 ============ */
   .btn {
     @apply inline-flex items-center justify-center gap-2;

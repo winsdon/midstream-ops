@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"sub2api-account-monitor/internal/pkg/keyidentity"
+	"sub2api-account-monitor/internal/pkg/objectstore"
 	"sub2api-account-monitor/internal/repository"
 )
 
@@ -24,12 +25,14 @@ var (
 
 // MediaService 生图 / 生视频编排。
 //
-// 【职责边界】校验 → 取 key → 落 pending → 打上游 → 更新终态。
+// 【职责边界】校验 → 取 key → 落 pending → 打上游 → 更新终态 → 转存产物。
 // 明文 key 只在本类型的方法栈内存在，绝不返回给 handler。
 type MediaService struct {
-	pg      *repository.PG
-	tasks   *repository.MediaTaskRepo
-	gateway *MediaGateway
+	pg        *repository.PG
+	tasks     *repository.MediaTaskRepo
+	artifacts *repository.MediaArtifactRepo
+	gateway   *MediaGateway
+	archiver  *mediaArchiver
 
 	maxPendingVideos int
 
@@ -39,45 +42,86 @@ type MediaService struct {
 }
 
 // NewMediaService 创建 MediaService。maxPendingVideos <= 0 时回退 3。
+//
+// uploader 为 nil 表示未配置对象存储：产物不转存，退化到「图片 inline、
+// 视频经后端代理」的行为，生成本身不受影响。
 func NewMediaService(pg *repository.PG, tasks *repository.MediaTaskRepo,
-	gateway *MediaGateway, maxPendingVideos int) *MediaService {
+	artifacts *repository.MediaArtifactRepo, gateway *MediaGateway,
+	uploader objectstore.Uploader, maxPendingVideos int) *MediaService {
 	if maxPendingVideos <= 0 {
 		maxPendingVideos = 3
 	}
 	return &MediaService{
 		pg:               pg,
 		tasks:            tasks,
+		artifacts:        artifacts,
 		gateway:          gateway,
+		archiver:         newMediaArchiver(tasks, artifacts, gateway, uploader),
 		maxPendingVideos: maxPendingVideos,
 		limiter:          newMediaRateLimiter(),
 	}
 }
+
+// ResumePendingArchives 补投进程重启时遗留的在途转存（由启动流程调用）。
+func (s *MediaService) ResumePendingArchives(ctx context.Context) {
+	s.archiver.ResumePending(ctx, func(t repository.MediaTask) string {
+		key, err := s.findKey(ctx, t.Sub2apiUserID, t.APIKeyID)
+		if err != nil {
+			return ""
+		}
+		return key.Key
+	})
+}
+
+// WaitArchives 等待在途转存结束（优雅关闭用）。
+func (s *MediaService) WaitArchives() { s.archiver.Wait() }
 
 // MediaKeyView 一把 key 的客户侧视图。
 //
 // 【绝无明文 key 字段】掩码在 service 层就完成，让「handler 忘了掩码」
 // 这种失误在类型层面不可能发生。
 type MediaKeyView struct {
-	ID           int64              `json:"id"`
-	Name         string             `json:"name"`
-	MaskedKey    string             `json:"masked_key"`
-	GroupName    string             `json:"group_name"`
-	Platform     string             `json:"platform"`
-	ImageModels  []MediaModelOption `json:"image_models"`
-	VideoModels  []MediaModelOption `json:"video_models"`
-	VideoPricing map[string]int64   `json:"video_pricing"` // 分辨率 → 每秒 ticks
+	ID          int64              `json:"id"`
+	Name        string             `json:"name"`
+	MaskedKey   string             `json:"masked_key"`
+	GroupName   string             `json:"group_name"`
+	Platform    string             `json:"platform"`
+	ImageModels []MediaModelOption `json:"image_models"`
+	VideoModels []MediaModelOption `json:"video_models"`
+	// PricingKnown 为 false 表示本站拿不到该分组的定价参数，
+	// 页面上的预估只能标注「以账单为准」而不能当成承诺。
+	PricingKnown bool `json:"pricing_known"`
 }
 
 // ListKeys 返回用户可用的 key 及每把 key 的生成能力。
+//
+// 每把 key 都会查一次所属分组的计费参数，把**折算后的最终单价**（含分组自定义
+// 单价与倍率）下发给前端。前端只做「单价 × 数量」，定价的全部复杂度留在这里——
+// 页面报价算错过一次，根因正是倍率与分组自定义价散落在两端各算一半。
 func (s *MediaService) ListKeys(ctx context.Context, userID string) ([]MediaKeyView, error) {
 	keys, err := s.pg.ListUserKeys(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
 
+	// 同一分组的多把 key 复用一次查询：用户常有多把 key 绑同一个分组。
+	pricingCache := make(map[int64]*repository.MediaPricing, len(keys))
+
 	out := make([]MediaKeyView, 0, len(keys))
 	for _, k := range keys {
-		opts := ClassifyModels(k.Platform, k.AllowImage, k.Models)
+		pricing, cached := pricingCache[k.GroupID]
+		if !cached {
+			// 查不到定价不该让整个页面空白：退化到标准价（不含倍率），
+			// 并由 PricingKnown=false 让 UI 标注这是参考值。
+			pricing, err = s.pg.GetMediaPricing(ctx, k.GroupID, userID)
+			if err != nil {
+				log.Printf("[media] 分组 %d 定价查询失败，退化到标准价: %v", k.GroupID, err)
+				pricing = nil
+			}
+			pricingCache[k.GroupID] = pricing
+		}
+
+		opts := ClassifyModels(k.Platform, k.AllowImage, k.Models, pricing)
 		view := MediaKeyView{
 			ID:           k.ID,
 			Name:         k.Name,
@@ -85,8 +129,8 @@ func (s *MediaService) ListKeys(ctx context.Context, userID string) ([]MediaKeyV
 			GroupName:    k.GroupName,
 			Platform:     k.Platform,
 			ImageModels:  make([]MediaModelOption, 0, len(opts)),
-			VideoModels:  make([]MediaModelOption, 0, 1),
-			VideoPricing: videoPricePerSecondTicks,
+			VideoModels:  make([]MediaModelOption, 0, 2),
+			PricingKnown: pricing != nil,
 		}
 		for _, o := range opts {
 			if o.Capability == MediaCapVideo {
@@ -117,16 +161,15 @@ type MediaSubmitRequest struct {
 
 // MediaSubmitResult 一次提交的结果。
 //
-// InlineImages 与 Task 分开返回，是因为二者生命周期不同：任务元数据落库长期可查，
-// 而图片字节只在本次响应里存在一次（用户选择的「即用即弃」）。把图片塞进
-// MediaTask 会让「这个字段有时有值有时没有」变成隐式约定。
+// 产物与 Task 分开返回，是因为二者生命周期不同：任务元数据落库长期可查，
+// 而产物的呈现方式取决于转存是否成功。把它们塞进 MediaTask 会让「这个字段
+// 有时有值有时没有」变成隐式约定。
 type MediaSubmitResult struct {
 	Task *repository.MediaTask
-	// InlineImages 是 data URI 列表，前端直接塞进 <img src> 渲染。
-	//
-	// 【为什么不落库也不走代理】图片走 b64 从网关取回（xAI CDN 直链国内不可达），
-	// 拿到的是字节而非链接。按「只存元数据」的取舍，字节随本次响应回给前端后即丢弃，
-	// 刷新页面后历史图片不可见 —— 这是明确接受的代价。
+	// Artifacts 已转存的产物（对象存储 URL，长期有效）。
+	Artifacts []repository.MediaArtifact
+	// InlineImages 仅在转存未启用或失败时有值：data URI 列表，
+	// 前端直接塞进 <img src> 渲染，刷新页面即丢失。
 	InlineImages []string
 }
 
@@ -160,6 +203,15 @@ func (s *MediaService) Submit(ctx context.Context, userID string, req MediaSubmi
 
 	paramsJSON, _ := json.Marshal(req.Params)
 
+	// 预估必须与 ListKeys 下发给前端的口径同源，否则列表里的 est_cost
+	// 会和表单里刚看到的数字对不上。查询失败退化到标准价而非中断提交——
+	// 预估只是展示，不该因为一次读库失败而挡住用户的生成。
+	pricing, err := s.pg.GetMediaPricing(ctx, key.GroupID, userID)
+	if err != nil {
+		log.Printf("[media] 分组 %d 定价查询失败，预估退化到标准价: %v", key.GroupID, err)
+		pricing = nil
+	}
+
 	// 【先落库再打上游】视频提交成功即扣费。若顺序反过来，落库失败就产生了
 	// 一笔查无实据的支出。反过来只是多一条 failed 记录，可对账。
 	task, reused, err := s.tasks.Create(ctx, repository.MediaTaskParams{
@@ -171,7 +223,7 @@ func (s *MediaService) Submit(ctx context.Context, userID string, req MediaSubmi
 		Model:           req.Params.Model,
 		Prompt:          req.Params.Prompt,
 		ParamsJSON:      string(paramsJSON),
-		EstCostTicks:    EstimateCostTicks(req.Params),
+		EstCostTicks:    EstimateCostTicks(req.Params, pricing),
 		ClientRequestID: req.ClientRequestID,
 	})
 	if err != nil {
@@ -189,7 +241,7 @@ func (s *MediaService) Submit(ctx context.Context, userID string, req MediaSubmi
 	return s.submitImage(ctx, key.Key, task, req)
 }
 
-// submitImage 同步生成图片并落终态，产物字节随本次响应返回。
+// submitImage 同步生成图片并落终态，产物转存到对象存储。
 func (s *MediaService) submitImage(ctx context.Context, apiKey string,
 	task *repository.MediaTask, req MediaSubmitRequest) (*MediaSubmitResult, error) {
 	var (
@@ -206,25 +258,41 @@ func (s *MediaService) submitImage(ctx context.Context, apiKey string,
 		return nil, err
 	}
 
-	// 【不落产物，只落元数据】图片字节随本次响应回给前端后即丢弃。
-	// result_url 留空：上游 CDN 直链国内不可达，存了也打不开，存空值让
-	// has_content 恒为 false，前端不会给出一个必然 404 的预览入口。
-	if err := s.tasks.MarkSucceeded(ctx, task.ID, "", results[0].CostTicks); err != nil {
+	resultURL := ""
+	for _, result := range results {
+		if result.URL != "" {
+			resultURL = result.URL
+			break
+		}
+	}
+	if err := s.tasks.MarkSucceeded(ctx, task.ID, resultURL, results[0].CostTicks); err != nil {
 		return nil, err
 	}
+
+	// 【转存放在标记成功之后】转存失败不该让一次已扣费、产物已在手的生成
+	// 变成失败记录。全部成功时前端用 R2 URL（刷新后仍可见），否则仍旧
+	// inline 返回字节，本次会话内照常显示。
+	archived := s.archiver.ArchiveImages(ctx, task.ID, results)
+
 	saved, err := s.tasks.GetByID(ctx, task.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	images := make([]string, 0, len(results))
-	for _, r := range results {
-		if r.B64 == "" {
-			continue
+	res := &MediaSubmitResult{Task: saved}
+	if !archived {
+		images := make([]string, 0, len(results))
+		for _, r := range results {
+			if r.B64 == "" {
+				continue
+			}
+			images = append(images, "data:"+r.MimeType+";base64,"+r.B64)
 		}
-		images = append(images, "data:"+r.MimeType+";base64,"+r.B64)
+		res.InlineImages = images
+	} else if arts, e := s.artifacts.ListByTasks(ctx, []int64{task.ID}); e == nil {
+		res.Artifacts = arts[task.ID]
 	}
-	return &MediaSubmitResult{Task: saved, InlineImages: images}, nil
+	return res, nil
 }
 
 // submitVideo 提交视频任务并记录 request_id。
@@ -248,6 +316,12 @@ func (s *MediaService) submitVideo(ctx context.Context, apiKey string,
 	return &MediaSubmitResult{Task: saved}, nil
 }
 
+// MediaTaskWithArtifacts 一条任务及其已转存的产物。
+type MediaTaskWithArtifacts struct {
+	Task      repository.MediaTask
+	Artifacts []repository.MediaArtifact
+}
+
 // ListTasks 返回用户任务列表，并顺手刷新进行中的视频任务。
 //
 // 【为什么用被动刷新而非后台轮询】后台 goroutine 需要常驻、需要重启恢复、
@@ -256,7 +330,9 @@ func (s *MediaService) submitVideo(ctx context.Context, apiKey string,
 // 状态变化会在下次打开时自然补齐。
 //
 // 单次最多刷新 maxRefreshPerList 个，避免一个用户堆积大量任务把列表请求拖垮。
-func (s *MediaService) ListTasks(ctx context.Context, userID string, limit int) ([]repository.MediaTask, error) {
+// 注意视频产物的转存是异步的：这里只负责发现「已完成」并投递，不等它传完——
+// 几十 MB 的上传会把一次本该几十毫秒的列表查询拖成几十秒。
+func (s *MediaService) ListTasks(ctx context.Context, userID string, limit int) ([]MediaTaskWithArtifacts, error) {
 	list, err := s.tasks.ListByUser(ctx, userID, limit)
 	if err != nil {
 		return nil, err
@@ -277,7 +353,28 @@ func (s *MediaService) ListTasks(ctx context.Context, userID string, limit int) 
 			list[i] = *updated
 		}
 	}
-	return list, nil
+
+	// 批量查产物，避免 N+1：列表每 5 秒被前端轮询一次。
+	ids := make([]int64, 0, len(list))
+	for i := range list {
+		ids = append(ids, list[i].ID)
+	}
+	byTask, err := s.artifacts.ListByTasks(ctx, ids)
+	if err != nil {
+		// 产物查询失败不该让整个列表 500：任务元数据本身仍然有价值，
+		// 前端会退化到 inline / 代理路径。
+		log.Printf("[media] 产物列表查询失败，本次不返回产物: %v", err)
+		byTask = nil
+	}
+
+	out := make([]MediaTaskWithArtifacts, 0, len(list))
+	for i := range list {
+		out = append(out, MediaTaskWithArtifacts{
+			Task:      list[i],
+			Artifacts: byTask[list[i].ID],
+		})
+	}
+	return out, nil
 }
 
 // refreshVideoTask 查询单个视频任务的上游状态并落库。失败时返回 nil（保留原状态）。
@@ -304,10 +401,18 @@ func (s *MediaService) refreshVideoTask(ctx context.Context, userID string,
 	}
 
 	if st.Done {
-		// 视频产物不存 URL：上游返回的是相对路径且需要认证，
-		// 统一走本站代理端点，用 upstream_request_id 定位即可。
-		if err := s.tasks.MarkSucceeded(ctx, t.ID, "", st.CostTicks); err != nil {
+		if err := s.tasks.MarkSucceeded(ctx, t.ID, st.ResultURL, st.CostTicks); err != nil {
 			return nil
+		}
+		// 【先置 pending 再投递】置状态失败就不投递：否则转存完成时会去更新
+		// 一条状态为 '' 的记录，前端永远看不到「转存中」这个中间态，
+		// 进程重启后的补扫也捞不到它。
+		if s.archiver.enabled() {
+			if err := s.tasks.SetStorageStatus(ctx, t.ID, repository.MediaStoragePending); err == nil {
+				s.archiver.Enqueue(t.ID, key.Key, t.UpstreamRequestID)
+			} else {
+				log.Printf("[media] 任务 %d 转存状态置 pending 失败，跳过转存: %v", t.ID, err)
+			}
 		}
 	} else if st.Progress != t.Progress {
 		if err := s.tasks.UpdateProgress(ctx, t.ID, st.Progress); err != nil {
@@ -322,6 +427,11 @@ func (s *MediaService) refreshVideoTask(ctx context.Context, userID string,
 		return nil
 	}
 	return updated
+}
+
+// DeleteTask 删除当前用户自己的生成记录。
+func (s *MediaService) DeleteTask(ctx context.Context, userID string, taskID int64) error {
+	return s.tasks.DeleteOwned(ctx, taskID, userID)
 }
 
 // MediaContent 一份待转发的产物流。

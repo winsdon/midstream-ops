@@ -47,12 +47,19 @@ func NewEmbedMediaHandler(
 // CreateSession POST /api/v1/embed/media/session（免鉴权）
 func (h *EmbedMediaHandler) CreateSession(c *gin.Context) { h.issuer.Issue(c) }
 
+// mediaArtifactDTO 一份已转存的产物。
+type mediaArtifactDTO struct {
+	URL      string `json:"url"`
+	MimeType string `json:"mime_type"`
+}
+
 // mediaTaskDTO 客户侧任务视图。
 //
 // 刻意不直接返回 repository.MediaTask：那里有 key_fingerprint、group_id
 // 等内部字段，复用会让「仓储层加一个字段」自动泄漏到客户侧。
 type mediaTaskDTO struct {
 	ID           int64  `json:"id"`
+	KeyID        int64  `json:"key_id"`
 	Kind         string `json:"kind"`
 	Model        string `json:"model"`
 	Prompt       string `json:"prompt"`
@@ -65,26 +72,38 @@ type mediaTaskDTO struct {
 	CreatedAt    string `json:"created_at"`
 	// HasContent 指示产物是否可通过 /tasks/:id/content 取回。
 	//
-	// 【只有视频为 true】图片走 b64 随提交响应一次性返回、不落库，
-	// 历史图片任务没有可取回的产物。若这里对图片也返回 true，
-	// 前端就会渲染出一个必然 404 的预览框——就是修复前的破图。
-	HasContent bool `json:"has_content"`
+	// 只有视频通过代理端点取回，且只在转存完成前需要——转存成功后前端直接用
+	// artifacts 里的 URL，不必再走代理。
+	HasContent bool   `json:"has_content"`
+	ResultURL  string `json:"result_url"`
+	// Artifacts 已转存的产物（对象存储 URL，不需要认证、不会过期）。
+	Artifacts []mediaArtifactDTO `json:"artifacts"`
+	// StorageStatus 转存状态，供前端区分「转存中」与「转存失败」。
+	StorageStatus string `json:"storage_status"`
 }
 
-func toMediaTaskDTO(t repository.MediaTask) mediaTaskDTO {
+func toMediaTaskDTO(t repository.MediaTask, artifacts []repository.MediaArtifact) mediaTaskDTO {
+	items := make([]mediaArtifactDTO, 0, len(artifacts))
+	for _, a := range artifacts {
+		items = append(items, mediaArtifactDTO{URL: a.URL, MimeType: a.MimeType})
+	}
 	return mediaTaskDTO{
-		ID:           t.ID,
-		Kind:         t.TaskKind,
-		Model:        t.Model,
-		Prompt:       t.Prompt,
-		Params:       t.ParamsJSON,
-		Status:       t.Status,
-		Progress:     t.Progress,
-		CostUSD:      service.FormatTicksUSD(t.CostTicks),
-		EstCostUSD:   service.FormatTicksUSD(t.EstCostTicks),
-		ErrorMessage: t.ErrorMessage,
-		CreatedAt:    t.CreatedAt,
-		HasContent:   t.Status == repository.MediaStatusSucceeded && t.UpstreamRequestID != "",
+		ID:            t.ID,
+		KeyID:         t.APIKeyID,
+		Kind:          t.TaskKind,
+		Model:         t.Model,
+		Prompt:        t.Prompt,
+		Params:        t.ParamsJSON,
+		Status:        t.Status,
+		Progress:      t.Progress,
+		CostUSD:       service.FormatTicksUSD(t.CostTicks),
+		EstCostUSD:    service.FormatTicksUSD(t.EstCostTicks),
+		ErrorMessage:  t.ErrorMessage,
+		CreatedAt:     t.CreatedAt,
+		HasContent:    t.Status == repository.MediaStatusSucceeded && t.UpstreamRequestID != "",
+		ResultURL:     t.ResultURL,
+		Artifacts:     items,
+		StorageStatus: t.StorageStatus,
 	}
 }
 
@@ -107,6 +126,10 @@ func (h *EmbedMediaHandler) Keys(c *gin.Context) {
 // mediaGenerateRequest 生成请求（JSON 路径：文生图 / 文生视频 / 图生视频）。
 //
 // 没有 user_id 字段 —— 身份只从会话取。
+//
+// Size 与 AspectRatio + ImageResolution 是两套互斥的尺寸参数，取决于模型：
+// Grok 图片用后者（前者会被 sub2api 网关删掉），OpenAI 格式图片用前者。
+// 校验在 service 层统一做，handler 只负责如实搬运。
 type mediaGenerateRequest struct {
 	KeyID           int64  `json:"key_id"`
 	Kind            string `json:"kind"`
@@ -114,24 +137,30 @@ type mediaGenerateRequest struct {
 	Prompt          string `json:"prompt"`
 	N               int    `json:"n"`
 	Size            string `json:"size"`
+	AspectRatio     string `json:"aspect_ratio"`
+	ImageResolution string `json:"image_resolution"`
 	Quality         string `json:"quality"`
 	Resolution      string `json:"resolution"`
 	Duration        int    `json:"duration"`
 	ImageURL        string `json:"image_url"`
+	Stream          bool   `json:"stream"`
 	ClientRequestID string `json:"client_request_id"`
 }
 
 func (r mediaGenerateRequest) toParams() service.MediaGenerateParams {
 	return service.MediaGenerateParams{
-		Kind:       r.Kind,
-		Model:      r.Model,
-		Prompt:     r.Prompt,
-		N:          r.N,
-		Size:       r.Size,
-		Quality:    r.Quality,
-		Resolution: r.Resolution,
-		Duration:   r.Duration,
-		ImageURL:   r.ImageURL,
+		Kind:            r.Kind,
+		Model:           r.Model,
+		Prompt:          r.Prompt,
+		N:               r.N,
+		Size:            r.Size,
+		AspectRatio:     r.AspectRatio,
+		ImageResolution: r.ImageResolution,
+		Quality:         r.Quality,
+		Resolution:      r.Resolution,
+		Duration:        r.Duration,
+		ImageURL:        r.ImageURL,
+		Stream:          r.Stream,
 	}
 }
 
@@ -206,26 +235,27 @@ func (h *EmbedMediaHandler) Edit(c *gin.Context) {
 	h.submit(c, service.MediaSubmitRequest{
 		KeyID: keyID,
 		Params: service.MediaGenerateParams{
-			Kind:    service.MediaKindImage2Image,
-			Model:   c.PostForm("model"),
-			Prompt:  c.PostForm("prompt"),
-			N:       n,
-			Size:    c.PostForm("size"),
-			Quality: c.PostForm("quality"),
+			Kind:            service.MediaKindImage2Image,
+			Model:           c.PostForm("model"),
+			Prompt:          c.PostForm("prompt"),
+			N:               n,
+			Size:            c.PostForm("size"),
+			AspectRatio:     c.PostForm("aspect_ratio"),
+			ImageResolution: c.PostForm("image_resolution"),
+			Quality:         c.PostForm("quality"),
 		},
 		ClientRequestID: c.PostForm("client_request_id"),
 		Files:           files,
 	})
 }
 
-// mediaSubmitDTO 提交响应：任务元数据 + 本次生成的图片。
+// mediaSubmitDTO 提交响应：任务元数据 + 本次生成的产物。
 //
-// images 只在本次响应里存在一次 —— 图片走 b64 从网关取回后不落库
-// （xAI CDN 直链国内不可达，存链接等于存一个打不开的地址）。
-// 刷新页面后历史任务只剩元数据，这是「只存元数据」取舍的明确代价。
+// images 只在**转存未启用或失败时**才有值 —— 正常情况下图片已落对象存储，
+// 任务里的 artifacts 带着长期可用的 URL，刷新页面照样能看。
 type mediaSubmitDTO struct {
 	Task mediaTaskDTO `json:"task"`
-	// Images 是 data URI 列表，前端直接塞进 <img src>。
+	// Images 是 data URI 列表，兜底路径用，前端直接塞进 <img src>。
 	Images []string `json:"images"`
 }
 
@@ -242,7 +272,10 @@ func (h *EmbedMediaHandler) submit(c *gin.Context, req service.MediaSubmitReques
 	if images == nil {
 		images = []string{}
 	}
-	response.Success(c, mediaSubmitDTO{Task: toMediaTaskDTO(*res.Task), Images: images})
+	response.Success(c, mediaSubmitDTO{
+		Task:   toMediaTaskDTO(*res.Task, res.Artifacts),
+		Images: images,
+	})
 }
 
 // writeSubmitError 把提交失败翻译成合适的状态码与提示。
@@ -285,9 +318,31 @@ func (h *EmbedMediaHandler) Tasks(c *gin.Context) {
 	}
 	items := make([]mediaTaskDTO, 0, len(list))
 	for _, t := range list {
-		items = append(items, toMediaTaskDTO(t))
+		items = append(items, toMediaTaskDTO(t.Task, t.Artifacts))
 	}
 	response.Success(c, gin.H{"items": items})
+}
+
+// DeleteTask DELETE /api/v1/embed/media/tasks/:id。
+func (h *EmbedMediaHandler) DeleteTask(c *gin.Context) {
+	if !h.ready(c) {
+		return
+	}
+	userID := c.GetString(middleware.EmbedUserIDKey)
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "media.errors.invalidParams")
+		return
+	}
+	if err := h.svc.DeleteTask(c.Request.Context(), userID, id); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			response.NotFound(c, "media.errors.taskNotFound")
+			return
+		}
+		response.InternalError(c, "media.errors.deleteTaskFailed")
+		return
+	}
+	response.Success(c, gin.H{})
 }
 
 // Content GET /api/v1/embed/media/tasks/:id/content（需嵌入会话）

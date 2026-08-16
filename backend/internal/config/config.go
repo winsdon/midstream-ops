@@ -198,6 +198,55 @@ type MediaConfig struct {
 	MaxPendingVideos int `mapstructure:"max_pending_videos"`
 	// TaskRetentionDays 任务记录保留天数，由每日清理任务消费。
 	TaskRetentionDays int `mapstructure:"task_retention_days"`
+	// R2 产物转存到 Cloudflare R2 的配置。
+	R2 MediaR2Config `mapstructure:"r2"`
+}
+
+// MediaR2Config 产物对象存储（Cloudflare R2）配置。
+//
+// 【为什么需要它】图片走 b64 只在提交响应里返回一次，视频只有一个带认证的临时
+// 端点且上游有保留期。两者都无法让用户在刷新页面后继续查看自己付费生成的东西。
+// 转存到 R2 后，前端拿到的是不需要认证、不会过期的普通 URL。
+//
+// 关闭时功能整体退化到「图片 inline、视频经后端代理」，不影响生成本身。
+type MediaR2Config struct {
+	Enabled         bool   `mapstructure:"enabled"`
+	AccountID       string `mapstructure:"account_id"`
+	Bucket          string `mapstructure:"bucket"`
+	AccessKeyID     string `mapstructure:"access_key_id"`
+	SecretAccessKey string `mapstructure:"secret_access_key"`
+	// PublicBaseURL 桶绑定的公开访问域名，如 https://media.example.com。
+	//
+	// 【必须用自定义域】R2 自带的 *.r2.dev 域有严格速率限制，生产用它会被限流。
+	PublicBaseURL string `mapstructure:"public_base_url"`
+}
+
+// validate 校验 R2 配置。启用时五项必填，公开域名须为绝对 http(s) 地址。
+func (r *MediaR2Config) validate() error {
+	if !r.Enabled {
+		return nil
+	}
+	required := map[string]string{
+		"media.r2.account_id":        r.AccountID,
+		"media.r2.bucket":            r.Bucket,
+		"media.r2.access_key_id":     r.AccessKeyID,
+		"media.r2.secret_access_key": r.SecretAccessKey,
+	}
+	for name, v := range required {
+		if strings.TrimSpace(v) == "" {
+			return fmt.Errorf("media.r2.enabled 为 true 时 %s 必填", name)
+		}
+	}
+	raw := strings.TrimSpace(r.PublicBaseURL)
+	if raw == "" {
+		return errors.New("media.r2.enabled 为 true 时 media.r2.public_base_url 必填")
+	}
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errors.New("media.r2.public_base_url 须为绝对 http(s) 地址，如 https://media.example.com")
+	}
+	r.PublicBaseURL = strings.TrimRight(raw, "/")
+	return nil
 }
 
 // validate 校验生图配置。启用时网关基址必填且须为绝对 http(s) 地址。
@@ -214,7 +263,7 @@ func (m *MediaConfig) validate() error {
 		return errors.New("media.gateway_base_url 须为绝对 http(s) 地址，如 https://api.your-sub2api.com")
 	}
 	m.GatewayBaseURL = strings.TrimRight(raw, "/")
-	return nil
+	return m.R2.validate()
 }
 
 // Load 从 path（目录或文件）加载配置，并填充默认值、执行校验。
@@ -307,6 +356,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("media.enabled", false)
 	v.SetDefault("media.max_pending_videos", 3)
 	v.SetDefault("media.task_retention_days", 30)
+	v.SetDefault("media.r2.enabled", false)
 
 	v.SetDefault("log.level", "info")
 }
@@ -351,6 +401,11 @@ func bindEnvs(v *viper.Viper) {
 
 		"media.enabled", "media.gateway_base_url",
 		"media.max_pending_videos", "media.task_retention_days",
+		// R2 凭据几乎只会走环境变量注入（不该写进配置文件），
+		// 漏登记会让纯环境变量部署静默拿到空值并在启动校验时报「必填」。
+		"media.r2.enabled", "media.r2.account_id", "media.r2.bucket",
+		"media.r2.access_key_id", "media.r2.secret_access_key",
+		"media.r2.public_base_url",
 
 		"log.level",
 	}

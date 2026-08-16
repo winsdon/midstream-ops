@@ -79,5 +79,47 @@ plaza:
   # 的合法身份（等同于无密码登录成任何客户）——生产环境必须保持 false。
   dev_mode: false
 
+# 生图 / 生视频：嵌入 sub2api 的自助生成页（菜单 URL 填 https://本站域名/embed/media）。
+#
+# 与 plaza 分成两个开关：这个页面会**真实花用户的钱**（视频提交成功即扣费，
+# 即便内容审核拒绝也不退还），运营方可能想在开着广场的同时关掉它。
+media:
+  enabled: false
+  # 生图 / 生视频 API 的基址。
+  #
+  # 【不复用 plaza.sub2api_base_url】后者被归一化成纯 origin 专供 CSP
+  # frame-ancestors 使用，语义是「谁能嵌入本站」；这里是「本站去调谁的 API」。
+  # 线上二者可能同域，但网关独立部署时就会分叉。
+  gateway_base_url: ""         # 如 https://api.your-sub2api.com
+  # 单用户同时进行中的视频任务上限，是防「狂点按钮把余额刷空」的最后一道闸。
+  max_pending_videos: 3
+  task_retention_days: 30      # 任务记录保留天数，由每日清理消费
+
+  # 产物转存到 Cloudflare R2。
+  #
+  # 【为什么需要】图片走 b64 只在提交响应里返回一次，视频只有一个带认证的临时
+  # 端点且上游保留期约半天。不转存的话，用户刷新页面图片就没了、视频过期后
+  # 连后端也取不到——付了钱却留不住产物。
+  #
+  # 关闭时整体退化为「图片 inline、视频经后端代理」，生成本身不受影响。
+  #
+  # 建桶步骤：
+  #   1. Cloudflare → R2 → Create bucket
+  #   2. bucket → Settings → Public access → 绑定自定义域
+  #      （必须用自定义域：R2 自带的 *.r2.dev 有严格限速，生产会被限流）
+  #   3. R2 → Manage API Tokens → Create Token，权限选 Object Read & Write，
+  #      作用域限定到这一个 bucket
+  #   4. Account ID 在 R2 首页右侧
+  #
+  # 【凭据建议走环境变量】MONITOR_MEDIA_R2_ACCESS_KEY_ID /
+  # MONITOR_MEDIA_R2_SECRET_ACCESS_KEY，不要写进配置文件。
+  r2:
+    enabled: false
+    account_id: ""
+    bucket: ""
+    access_key_id: ""
+    secret_access_key: ""
+    public_base_url: ""        # 桶绑定的自定义域，如 https://media.example.com
+
 log:
   level: info

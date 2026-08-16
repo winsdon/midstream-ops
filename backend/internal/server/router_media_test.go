@@ -61,6 +61,7 @@ func TestMediaEndpointsRequireSession(t *testing.T) {
 		{http.MethodPost, "/api/v1/embed/media/generate"},
 		{http.MethodPost, "/api/v1/embed/media/edits"},
 		{http.MethodGet, "/api/v1/embed/media/tasks"},
+		{http.MethodDelete, "/api/v1/embed/media/tasks/1"},
 		{http.MethodGet, "/api/v1/embed/media/tasks/1/content"},
 	}
 

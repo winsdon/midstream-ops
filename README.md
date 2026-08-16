@@ -42,7 +42,7 @@ midstream-ops（代码内部标识 `sub2api-account-monitor`）是面向 AI API 
 - **调价映射** — 上游倍率 → 本站倍率联动（`目标 = 上游 × 系数 + 偏移`），支持自动调价、人工修改冲突检测、审计留痕
 - **稳定性盯盘** — 被动统计（真实流量分位数）+ 主动探测（TTFT / 成功率）双口径，实时窗口下探到 5 分钟，六状态健康机
 - **授信台账** — 客户垫付应收的人工台账，只追加分录、记错走冲正，敞口分级告警；KYC 实名资料加密落库，支持客户自助填报 + 审核流
-- **生图 / 生视频** — 嵌入 sub2api 的自助生成页：文生图 / 图生图 / 文生视频 / 图生视频，用用户自己的 Key 调网关，提交前展示预估费用，视频强制二次确认（提交即扣费不退款）
+- **生图 / 生视频** — 嵌入 sub2api 的自助生成页：文生图 / 图生图 / 文生视频 / 图生视频，用用户自己的 Key 调网关，提交前展示按分组定价与倍率折算的预估费用，视频强制二次确认（提交即扣费不退款）；产物转存 Cloudflare R2，刷新页面后仍可查看与预览
 - **系统设置** — per-provider 错峰调度（热更新免重启）、余额与倍率预警、钉钉 / 飞书 / Telegram 通知渠道
 
 <details>
@@ -397,13 +397,42 @@ MONITOR_MEDIA_TASK_RETENTION_DAYS=30                          # 任务记录保�
 
 开关独立于 `plaza.enabled`：生图会真实花用户的钱，可以在开着广场的同时关掉它（`plaza.enabled` 仍是嵌入身份体系的总开关，必须为 true）。
 
+#### 产物转存（Cloudflare R2）
+
+**不配这一项，用户刷新页面就看不到自己付费生成的图了。** 图片走 b64 只随提交响应返回一次，视频只有一个带认证的临时端点且上游保留期约半天。转存后前端拿到的是不需要认证、不会过期的普通 URL。
+
+建桶（Cloudflare 控制台）：
+
+1. **R2 → Create bucket**，名字如 `media-artifacts`
+2. bucket → **Settings → Public access → 绑定自定义域**（如 `media.your-domain.com`）
+   **必须用自定义域**：R2 自带的 `*.r2.dev` 有严格速率限制，生产会被限流
+3. **R2 → Manage API Tokens → Create Token**，权限选 **Object Read & Write**，作用域限定到这一个 bucket
+4. Account ID 在 R2 首页右侧
+
+```bash
+MONITOR_MEDIA_R2_ENABLED=true
+MONITOR_MEDIA_R2_ACCOUNT_ID=xxxxxxxxxxxxxxxx
+MONITOR_MEDIA_R2_BUCKET=media-artifacts
+MONITOR_MEDIA_R2_ACCESS_KEY_ID=xxxxxxxx
+MONITOR_MEDIA_R2_SECRET_ACCESS_KEY=xxxxxxxx
+MONITOR_MEDIA_R2_PUBLIC_BASE_URL=https://media.your-domain.com
+```
+
+图片同步转存（几百 KB，相对 5-10 秒的生成耗时可忽略），视频后台异步转存（几十 MB，放在列表查询里会把请求拖成几十秒）。转存失败不影响生成本身：任务照常成功，前端回落到 inline / 代理路径，只是刷新后不可见。
+
+R2 上的对象不随任务删除同步清理——建议在桶上配一条生命周期规则（如 90 天后删除），避免让「删记录」这个高频操作依赖一次跨境网络调用。
+
 **⚠️ 这个功能会花用户的真钱，上线前务必了解三条规则：**
 
 1. **视频费用在提交成功那一刻即扣除，即便生成结果被上游内容审核拒绝也不退还。** 页面因此对视频任务强制二次确认，并在提交前展示预估金额。
 2. **图片计费按最长边判定档位**（≤1024 为 1K，≤2048 为 2K，更大为 4K）。`2560x1440` 会按 4K 计费而不是 2K —— 表单实时显示档位徽章。
-3. **`/v1/models` 返回的 `grok-imagine`、`grok-imagine-edit`、`grok-imagine-video-1.5` 三个模型不可用**（分别是 404、404、静默降级为 `grok-imagine-video` 但照原价计费）。本站用显式 allowlist 过滤它们，新模型上线需在 `service/media_catalog.go` 手工登记。
+3. **预估费用 = 单价 × 数量 × 倍率**，且单价可被分组的 `image_price_*` / `video_price_*` 覆盖。本站从只读 PG 读取这些列并按 sub2api 的口径折算，页面显示的是**已含倍率的最终价**。倍率或分组定价改动后，预估会在下次打开页面时自动跟上。
 
-明文 key 的流向：后端从只读 PG 按会话用户查出该用户的 key，仅用于「后端 ↔ 网关」这一段请求，**不下发浏览器、不进任务表、不进日志**。前端只见掩码（`sk-...ab12`）。产物同样由后端代理 —— 视频下载端点强制要求 `Authorization` 头，浏览器的 `<video src>` 带不了。
+两个尺寸参数**互斥**，取决于模型：Grok 图片模型用 `aspect_ratio`（14 档）+ `resolution`（1k/2k），传 `size` 会被 sub2api 网关删掉；`gpt-image-*` 用 `size`（真实 `宽x高`），不认 `aspect_ratio`。前端按后端下发的 `size_mode` 自动切换控件，新模型上线需在 `service/media_catalog.go` 手工登记。
+
+部分模型会被上游静默替换（`grok-imagine` → `grok-imagine-image-quality`；无参考图的 `grok-imagine-video-1.5` → `grok-imagine-video`）。本站在登记表里记下这层关系，**按替换后的模型报价**并在 UI 上明确提示，避免用户以为自己在用另一个模型。
+
+明文 key 的流向：后端从只读 PG 按会话用户查出该用户的 key，仅用于「后端 ↔ 网关」这一段请求，**不下发浏览器、不进任务表、不进日志**。前端只见掩码（`sk-...ab12`）。R2 凭据同理，建议只走环境变量注入。
 
 ### 排查 `Refused to frame ... frame-ancestors 'none'`
 

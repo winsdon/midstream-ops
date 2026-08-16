@@ -732,6 +732,7 @@ export default {
       failed: '失败'
     },
     form: {
+      parameters: '参数',
       key: 'API Key',
       model: '模型',
       prompt: '提示词',
@@ -740,20 +741,30 @@ export default {
       size: '尺寸',
       sizeDefault: '使用默认',
       sizeTierHint: '计费按最长边判定档位：≤1024 为 1K，≤2048 为 2K，更大为 4K。',
-      fixedSizeHint: '该模型固定输出 1024×1024，尺寸参数无效。',
+      imageResolution: '分辨率档',
       quality: '质量',
       resolution: '分辨率',
       duration: '时长（秒）',
+      aspectRatio: '宽高比',
+      aspectFollowsRefImage: '成片的宽高比会跟随参考图，此处的选择可能不生效。',
+      downgradeHint: '上游会把本次请求替换为 {model} 并按其价格计费，预估费用已按替换后的模型计算。',
+      streamPreview: '流式预览',
       refImage: '参考图',
       refImagePick: '点击选择参考图',
       refImageSelected: '已选 {n} 张',
       refImageHint: '支持多张，单张不超过 20MB。',
       refImageURL: '参考图地址',
-      refImageURLHint: '需为公网可访问的图片地址，上游服务器会自行拉取（本站生成的图片不落库，无法作为参考图）。成片的宽高比会跟随参考图，而非所选分辨率。',
+      refImageURLHint: '需为公网可访问的图片地址，上游服务器会自行拉取。成片的宽高比会跟随参考图，而非所选分辨率。',
       estCost: '预估费用',
       estUnknown: '按分组定价，以账单为准',
+      estReferenceOnly: '未能读取该分组的定价配置，此处按标准价估算，实扣以账单为准。',
       videoBillingWarning: '视频任务提交成功即扣费，即便生成结果被内容审核拒绝也不退还。',
       submit: '开始生成'
+    },
+    preview: {
+      title: '查看大图',
+      prev: '上一张',
+      next: '下一张'
     },
     confirm: {
       title: '确认提交视频任务',
@@ -764,8 +775,12 @@ export default {
       title: '生成记录',
       empty: '还没有生成记录',
       emptyHint: '在左侧填写提示词并提交，结果会显示在这里。',
-      imageNotRetained: '图片仅在生成时返回一次，未留存；刷新页面后不可见。',
-      videoExpired: '视频产物已从上游过期，无法再获取。'
+      reuse: '复用配置',
+      delete: '删除记录',
+      deleteTitle: '删除生成记录',
+      deleteMessage: '确认删除这条生成记录吗？已产生的费用不会退回。',
+      imageNotRetained: '本次图片未能转存，刷新页面后无法预览。',
+      videoExpired: '视频产物未能转存且已从上游过期，无法再获取。'
     },
     errors: {
       notConfigured: '生图功能未启用',
@@ -777,7 +792,9 @@ export default {
       emptyPrompt: '请填写提示词',
       promptTooLong: '提示词过长',
       badCount: '生成张数超出范围',
-      badResolution: '分辨率仅支持 480p 与 720p',
+      badResolution: '所选分辨率不在该模型的支持范围内',
+      badAspectRatio: '所选宽高比不在该模型的支持范围内',
+      badSize: '尺寸格式须为「宽x高」，如 1024x1024',
       badDuration: '时长须在 1-15 秒之间',
       badImageURL: '参考图须为公网可访问的 http(s) 地址',
       missingImage: '请选择参考图',
@@ -792,7 +809,8 @@ export default {
       contentFailed: '获取产物失败',
       contentExpired: '产物已从上游过期，无法再获取',
       loadKeysFailed: '加载 Key 列表失败',
-      loadTasksFailed: '加载任务列表失败'
+      loadTasksFailed: '加载任务列表失败',
+      deleteTaskFailed: '删除生成记录失败'
     }
   }
 }

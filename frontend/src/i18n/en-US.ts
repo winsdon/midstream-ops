@@ -732,6 +732,7 @@ export default {
       failed: 'Failed'
     },
     form: {
+      parameters: 'Parameters',
       key: 'API Key',
       model: 'Model',
       prompt: 'Prompt',
@@ -740,21 +741,32 @@ export default {
       size: 'Size',
       sizeDefault: 'Use default',
       sizeTierHint: 'Billing tier is decided by the longest edge: ≤1024 is 1K, ≤2048 is 2K, larger is 4K.',
-      fixedSizeHint: 'This model always outputs 1024×1024; the size parameter is ignored.',
+      imageResolution: 'Resolution tier',
       quality: 'Quality',
       resolution: 'Resolution',
       duration: 'Duration (s)',
+      aspectRatio: 'Aspect ratio',
+      aspectFollowsRefImage: 'The output aspect ratio follows the reference image; this choice may have no effect.',
+      downgradeHint:
+        'The upstream substitutes {model} for this request and bills at its rate. The estimate below already reflects the substitution.',
+      streamPreview: 'Stream preview',
       refImage: 'Reference image',
       refImagePick: 'Click to choose images',
       refImageSelected: '{n} selected',
       refImageHint: 'Multiple files supported, 20MB each at most.',
       refImageURL: 'Reference image URL',
-      refImageURLHint: 'Must be publicly reachable — the upstream fetches it directly. Images generated here are not retained and cannot be used. The output aspect ratio follows the reference image, not the selected resolution.',
+      refImageURLHint: 'Must be publicly reachable — the upstream fetches it directly. The output aspect ratio follows the reference image, not the selected resolution.',
       estCost: 'Estimated cost',
       estUnknown: 'Priced by group, see your bill',
+      estReferenceOnly: 'Could not read this group\'s pricing configuration; the estimate uses standard rates. Your bill is authoritative.',
       videoBillingWarning:
         'Video jobs are charged the moment they are accepted, and are not refunded even if the result is rejected by content moderation.',
       submit: 'Generate'
+    },
+    preview: {
+      title: 'View full size',
+      prev: 'Previous',
+      next: 'Next'
     },
     confirm: {
       title: 'Confirm video job',
@@ -766,8 +778,12 @@ export default {
       title: 'History',
       empty: 'No generations yet',
       emptyHint: 'Fill in a prompt on the left and submit — results will appear here.',
-      imageNotRetained: 'Images are returned once at generation time and not retained; they disappear on refresh.',
-      videoExpired: 'The video has expired upstream and can no longer be fetched.'
+      reuse: 'Reuse configuration',
+      delete: 'Delete record',
+      deleteTitle: 'Delete generation record',
+      deleteMessage: 'Delete this generation record? Any charge already incurred will not be refunded.',
+      imageNotRetained: 'These images were not archived, so the preview is unavailable after a refresh.',
+      videoExpired: 'The video was not archived and has expired upstream, so it can no longer be fetched.'
     },
     errors: {
       notConfigured: 'Generation is not enabled',
@@ -779,7 +795,9 @@ export default {
       emptyPrompt: 'Prompt is required',
       promptTooLong: 'Prompt is too long',
       badCount: 'Count is out of range',
-      badResolution: 'Only 480p and 720p are supported',
+      badResolution: 'The selected resolution is not supported by this model',
+      badAspectRatio: 'The selected aspect ratio is not supported by this model',
+      badSize: 'Size must be in "width x height" form, e.g. 1024x1024',
       badDuration: 'Duration must be between 1 and 15 seconds',
       badImageURL: 'Reference image must be a public http(s) URL',
       missingImage: 'Please choose a reference image',
@@ -794,7 +812,8 @@ export default {
       contentFailed: 'Failed to fetch the result',
       contentExpired: 'The result has expired upstream',
       loadKeysFailed: 'Failed to load keys',
-      loadTasksFailed: 'Failed to load tasks'
+      loadTasksFailed: 'Failed to load tasks',
+      deleteTaskFailed: 'Failed to delete generation record'
     }
   }
 }

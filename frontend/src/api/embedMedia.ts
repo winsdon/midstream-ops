@@ -8,14 +8,43 @@ import { createEmbedClient } from './embedClient'
 
 const client = createEmbedClient('/api/v1/embed/media')
 
+/**
+ * 尺寸参数模式。**这不是「支不支持尺寸」的布尔，而是两条互斥的上游路径。**
+ *
+ * - `aspect_ratio`：Grok 图片模型。用 aspect_ratio（14 档）+ resolution（1k/2k）。
+ *   传 size 无效——sub2api 网关在转发前会主动删掉它。
+ * - `size`：OpenAI 格式图片模型。用 size = "宽x高"，不认 aspect_ratio。
+ */
+export type MediaSizeMode = 'aspect_ratio' | 'size'
+
 /** 一个可选模型。 */
 export interface MediaModelOption {
   name: string
   capability: 'image' | 'video'
-  /** 该模型是否真的接受 size 参数。Grok 图片模型会静默忽略它。 */
-  supports_size: boolean
-  /** 图片为每张价格，视频为每秒价格，单位 tick（1e-10 USD）。0 表示未知。 */
+  /** 该模型用哪一套尺寸参数。 */
+  size_mode: MediaSizeMode
+  /** 可选宽高比（仅 aspect_ratio 模式的图片模型 + 全部视频模型）。 */
+  aspect_ratios?: string[]
+  /** 可选分辨率档（图片为 1k/2k，视频为 480p/720p/1080p）。 */
+  resolutions?: string[]
+  /**
+   * 展示基准单价，单位 tick（1e-10 USD）。0 表示无法预估。
+   *
+   * **已含分组自定义单价与计费倍率** —— 前端只做「单价 × 数量」，
+   * 定价的复杂度全部留在后端。
+   */
   unit_price_ticks: number
+  /** 各档单价：图片按 1K/2K/4K，视频按 480p/720p/1080p。 */
+  price_by_tier?: Record<string, number>
+  /**
+   * 上游会把本模型静默替换成的模型名。
+   *
+   * 典型例子：grok-imagine-video-1.5 在文生视频时被换成 grok-imagine-video
+   * 并按后者计费，响应里没有任何提示。必须告知用户「你选的不是你得到的」。
+   */
+  downgrades_to?: string
+  /** 触发降级的任务类型；缺省表示全部类型都降级。 */
+  downgrade_kinds?: MediaTaskKind[]
 }
 
 /** 一把 key 的客户侧视图。绝不含明文 key。 */
@@ -27,15 +56,22 @@ export interface MediaKey {
   platform: string
   image_models: MediaModelOption[]
   video_models: MediaModelOption[]
-  /** 分辨率 → 每秒 ticks */
-  video_pricing: Record<string, number>
+  /** false 表示本站拿不到该分组的定价参数，预估只能当参考值。 */
+  pricing_known: boolean
 }
 
 export type MediaTaskKind = 't2i' | 'i2i' | 't2v' | 'i2v'
 export type MediaTaskStatus = 'pending' | 'succeeded' | 'failed'
 
+/** 一份已转存到对象存储的产物。URL 长期有效，刷新页面后依然可用。 */
+export interface MediaArtifact {
+  url: string
+  mime_type: string
+}
+
 export interface MediaTask {
   id: number
+  key_id: number
   kind: MediaTaskKind
   model: string
   prompt: string
@@ -46,8 +82,18 @@ export interface MediaTask {
   est_cost_usd: string
   error_message: string
   created_at: string
-  /** 产物是否可通过代理端点取回。**只有视频为 true** —— 图片不落库。 */
+  /** 产物是否可通过代理端点取回（仅视频，且转存未完成时才需要）。 */
   has_content: boolean
+  result_url: string
+  /**
+   * 已转存的产物列表。
+   *
+   * 有值时前端直接用这些 URL 渲染——它们不需要认证头、不会过期。
+   * 为空表示转存未完成或未启用，回落到 data URI（图片）/ 代理 blob（视频）。
+   */
+  artifacts?: MediaArtifact[]
+  /** '' 未涉及 | 'pending' 转存中 | 'stored' 已转存 | 'failed' 转存失败 */
+  storage_status?: string
 }
 
 /**
@@ -68,11 +114,18 @@ export interface MediaGenerateInput {
   model: string
   prompt: string
   n?: number
+  /** 仅 size 模式的图片模型。与 aspect_ratio 互斥。 */
   size?: string
+  /** 仅 aspect_ratio 模式的图片模型 + 视频模型。与 size 互斥。 */
+  aspect_ratio?: string
+  /** Grok 图片的分辨率档（1k / 2k），同时决定计费档。 */
+  image_resolution?: string
   quality?: string
+  /** 视频分辨率（480p / 720p / 1080p）。 */
   resolution?: string
   duration?: number
   image_url?: string
+  stream?: boolean
   client_request_id: string
 }
 
@@ -85,6 +138,9 @@ export const generate = (input: MediaGenerateInput) =>
 
 export const fetchTasks = (limit = 30) =>
   client.request<{ items: MediaTask[] }>(`/tasks?limit=${limit}`).then((r) => r.items)
+
+export const deleteTask = (taskId: number) =>
+  client.request(`/tasks/${taskId}`, { method: 'DELETE' })
 
 /**
  * 图生图：multipart 上传参考图。

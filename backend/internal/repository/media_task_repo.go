@@ -21,6 +21,18 @@ const (
 	MediaKindImage2Video = "i2v"
 )
 
+// 产物转存状态。
+//
+// 【为什么不是「有没有产物行」二态】视频转存是异步的：任务已成功但产物还在
+// 后台上传的这段时间必须能被识别出来，否则进程重启后那些任务永远停在「有记录
+// 无产物」，既不会重试也没人知道。
+const (
+	MediaStorageNone    = ""        // 未涉及转存（对象存储未启用，或任务未成功）
+	MediaStoragePending = "pending" // 转存中
+	MediaStorageStored  = "stored"  // 已转存
+	MediaStorageFailed  = "failed"  // 转存失败，前端回退到 inline / 代理
+)
+
 // MediaTask 一次生图 / 生视频任务。
 //
 // 图片任务同步完成，落库时已是终态；视频任务落 pending，由后续轮询推进。
@@ -42,6 +54,7 @@ type MediaTask struct {
 	EstCostTicks      int64
 	ErrorMessage      string
 	ClientRequestID   string
+	StorageStatus     string
 	CreatedAt         string
 	UpdatedAt         string
 }
@@ -77,14 +90,14 @@ func NewMediaTaskRepo(s *Store) *MediaTaskRepo {
 const mediaTaskCols = `id, sub2api_user_id, api_key_id, key_fingerprint, group_id,
 	task_kind, model, prompt, params_json, status, progress,
 	upstream_request_id, result_url, cost_ticks, est_cost_ticks,
-	error_message, client_request_id, created_at, updated_at`
+	error_message, client_request_id, storage_status, created_at, updated_at`
 
 func scanMediaTask(row interface{ Scan(...any) error }) (*MediaTask, error) {
 	var t MediaTask
 	err := row.Scan(&t.ID, &t.Sub2apiUserID, &t.APIKeyID, &t.KeyFingerprint, &t.GroupID,
 		&t.TaskKind, &t.Model, &t.Prompt, &t.ParamsJSON, &t.Status, &t.Progress,
 		&t.UpstreamRequestID, &t.ResultURL, &t.CostTicks, &t.EstCostTicks,
-		&t.ErrorMessage, &t.ClientRequestID, &t.CreatedAt, &t.UpdatedAt)
+		&t.ErrorMessage, &t.ClientRequestID, &t.StorageStatus, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +160,11 @@ func (r *MediaTaskRepo) GetOwned(ctx context.Context, id int64, userID string) (
 		return nil, ErrNotFound
 	}
 	return t, err
+}
+
+// DeleteOwned 删除属于指定用户的任务记录。
+func (r *MediaTaskRepo) DeleteOwned(ctx context.Context, id int64, userID string) error {
+	return r.exec(ctx, `DELETE FROM media_tasks WHERE id = ? AND sub2api_user_id = ?`, id, userID)
 }
 
 // GetByClientRequestID 按幂等键查询。
@@ -230,7 +248,46 @@ func (r *MediaTaskRepo) MarkFailed(ctx context.Context, id int64, msg string) er
 		MediaStatusFailed, msg, nowUTC(), id)
 }
 
+// SetStorageStatus 更新产物转存状态。
+func (r *MediaTaskRepo) SetStorageStatus(ctx context.Context, id int64, status string) error {
+	return r.exec(ctx, `UPDATE media_tasks SET storage_status = ?,
+		updated_at = ? WHERE id = ?`, status, nowUTC(), id)
+}
+
+// ListPendingStorage 列出转存未完成的已成功任务，供进程启动时补投。
+//
+// 【为什么需要补扫】视频转存是后台异步的，进程在转存途中重启就会留下一批
+// storage_status='pending' 的孤儿。它们既不会自己恢复，也不会被任何用户操作
+// 触发重试——除非启动时主动捞一遍。
+//
+// 限制条数是防「一次积压几百条把启动拖垮」，剩下的下次启动继续。
+func (r *MediaTaskRepo) ListPendingStorage(ctx context.Context, limit int) ([]MediaTask, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+mediaTaskCols+` FROM media_tasks
+		 WHERE storage_status = ? AND status = ?
+		 ORDER BY id LIMIT ?`, MediaStoragePending, MediaStatusSucceeded, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []MediaTask
+	for rows.Next() {
+		t, err := scanMediaTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *t)
+	}
+	return out, rows.Err()
+}
+
 // Cleanup 删除 before（YYYY-MM-DDTHH:MM:SSZ）之前创建的任务，返回删除行数。
+//
+// media_artifacts 由外键的 ON DELETE CASCADE 一并清理。
 func (r *MediaTaskRepo) Cleanup(ctx context.Context, before string) (int64, error) {
 	res, err := r.db.ExecContext(ctx, `DELETE FROM media_tasks WHERE created_at < ?`, before)
 	if err != nil {
