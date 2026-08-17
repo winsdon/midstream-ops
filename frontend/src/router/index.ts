@@ -82,6 +82,15 @@ const router = createRouter({
           meta: { titleKey: 'nav.credit', descriptionKey: 'page.creditDesc' }
         },
         {
+          // 嵌入页 Hub：主应用内统一查看哪些 /embed/* 页面可嵌入 sub2api，
+          // 本地（plaza.dev_mode）环境下可一键签 token 打开。挂在 Layout 下
+          // 走管理员鉴权——它是运营工具，不该像 /embed/* 那样公开。
+          path: 'embed-hub',
+          name: 'embed-hub',
+          component: () => import('@/views/EmbedHub.vue'),
+          meta: { titleKey: 'nav.embedHub', descriptionKey: 'page.embedHubDesc' }
+        },
+        {
           path: 'settings',
           name: 'settings',
           component: () => import('@/views/Settings.vue'),

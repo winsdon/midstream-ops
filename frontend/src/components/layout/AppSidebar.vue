@@ -115,6 +115,7 @@ const navItems = [
   { name: 'pricing', label: 'nav.pricing', icon: 'arrowsUpDown' },
   { name: 'stability', label: 'nav.stability', icon: 'trendingUp' },
   { name: 'credit', label: 'nav.credit', icon: 'creditCard' },
+  { name: 'embed-hub', label: 'nav.embedHub', icon: 'grid' },
   { name: 'settings', label: 'nav.settings', icon: 'cog' }
 ] as const
 
