@@ -157,6 +157,39 @@ export function isPublicImageURL(raw: string): boolean {
   return /^https?:\/\//i.test(raw.trim())
 }
 
+/** 按出现顺序去重，只留公网 http(s)。 */
+export function uniquePublicImageURLs(...groups: Array<string | string[] | undefined>): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const group of groups) {
+    const items = Array.isArray(group) ? group : group ? [group] : []
+    for (const raw of items) {
+      const url = raw.trim()
+      if (!isPublicImageURL(url) || seen.has(url)) continue
+      seen.add(url)
+      out.push(url)
+    }
+  }
+  return out
+}
+
+/**
+ * 追加参考图，超出 max 的丢掉。
+ * overflow 表示这次选择里有没装下的。
+ */
+export function appendRefImages<T>(existing: T[], incoming: T[], max: number): { items: T[]; overflow: boolean } {
+  const room = Math.max(0, max - existing.length)
+  return {
+    items: [...existing, ...incoming.slice(0, room)],
+    overflow: incoming.length > room
+  }
+}
+
+/** 从粘贴/输入框拆出公网图片地址：空白、逗号、分号都当分隔符。 */
+export function splitRefImageInput(raw: string): string[] {
+  return uniquePublicImageURLs(raw.split(/[\s,，;；]+/))
+}
+
 /**
  * 按任务类型返回该 key 可用的模型。
  *

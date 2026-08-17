@@ -210,9 +210,12 @@ func TestSubmitImage2VideoUsesNestedImageObject(t *testing.T) {
 	if _, bad := gotBody["image_url"]; bad {
 		t.Fatalf("不应发送顶层 image_url（上游静默丢弃）: %v", gotBody)
 	}
+	if _, extra := gotBody["reference_images"]; extra {
+		t.Fatalf("单张参考图不应发送 reference_images: %v", gotBody)
+	}
 }
 
-// 图生视频最多 4 张参考图：第一张走 image，全部走 images。
+// 图生视频两张及以上只发 reference_images，不能同时带 image。
 func TestSubmitImage2VideoSendsAllImages(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -234,18 +237,20 @@ func TestSubmitImage2VideoSendsAllImages(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("提交失败: %v", err)
 	}
-	img, ok := gotBody["image"].(map[string]any)
-	if !ok || img["url"] != urls[0] {
-		t.Fatalf("第一张必须在 image.url: %v", gotBody["image"])
+	if _, hasImage := gotBody["image"]; hasImage {
+		t.Fatalf("多张参考图不能同时发 image: %v", gotBody)
 	}
-	raw, ok := gotBody["images"].([]any)
+	if _, bad := gotBody["images"]; bad {
+		t.Fatalf("不应再发送已弃用的 images 字段: %v", gotBody)
+	}
+	raw, ok := gotBody["reference_images"].([]any)
 	if !ok || len(raw) != 4 {
-		t.Fatalf("images 必须含 4 张: %v", gotBody["images"])
+		t.Fatalf("reference_images 必须含 4 张: %v", gotBody["reference_images"])
 	}
 	for i, item := range raw {
 		m, _ := item.(map[string]any)
 		if m["url"] != urls[i] {
-			t.Fatalf("images[%d] 错误: %v", i, item)
+			t.Fatalf("reference_images[%d] 错误: %v", i, item)
 		}
 	}
 }

@@ -205,9 +205,9 @@ func (g *MediaGateway) EditImage(ctx context.Context, apiKey string, p MediaGene
 	return parseImagesResponse(resp)
 }
 
-// refImageJSON 组装上游要的 image / images。
-// 只有一张时只发 image，避免空 images 数组被某些实现当成非法输入。
-func refImageJSON(p MediaGenerateParams) (image map[string]any, images []map[string]any) {
+// refImageJSON 组装上游要的 image / 多图列表。
+// 只有一张时只发 image；多张时第二返回值给 reference_images（视频）或 images（图生图）。
+func refImageJSON(p MediaGenerateParams) (image map[string]any, extras []map[string]any) {
 	urls := allImageURLs(p)
 	if len(urls) == 0 {
 		return nil, nil
@@ -216,11 +216,11 @@ func refImageJSON(p MediaGenerateParams) (image map[string]any, images []map[str
 	if len(urls) < 2 {
 		return image, nil
 	}
-	images = make([]map[string]any, 0, len(urls))
+	extras = make([]map[string]any, 0, len(urls))
 	for _, u := range urls {
-		images = append(images, map[string]any{"url": u})
+		extras = append(extras, map[string]any{"url": u})
 	}
-	return image, images
+	return image, extras
 }
 
 // MediaUploadFile 一张待上传到对象存储的参考图。
@@ -259,13 +259,14 @@ func (g *MediaGateway) SubmitVideo(ctx context.Context, apiKey string, p MediaGe
 	// docs.x.ai 的 image-to-video 不符），已同步订正。
 	//
 	// 另注：传 multipart 上游返回 415，参考图只能走 JSON URL。
-	// 多张时同时带 image（第一张）和 images（全部），与 sub2api 网关的
-	// prepareGrokMediaForwardBody 一致；图生视频最多 4 张。
-	if img, images := refImageJSON(p); img != nil {
+	//
+	// 一张走 image（image-to-video）；两张及以上只走 reference_images
+	// （reference-to-video）。两个字段一起发会上游 400：
+	// Cannot specify both 'image' and 'reference_images'.
+	if img, refs := refImageJSON(p); len(refs) > 0 {
+		payload["reference_images"] = refs
+	} else if img != nil {
 		payload["image"] = img
-		if len(images) > 0 {
-			payload["images"] = images
-		}
 	}
 
 	body, err := json.Marshal(payload)

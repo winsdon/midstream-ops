@@ -15,6 +15,9 @@ import {
   isVideoKind,
   needsUpload,
   needsImageURL,
+  uniquePublicImageURLs,
+  appendRefImages,
+  splitRefImageInput,
   newClientRequestID,
   IMAGE_MAX_N,
   PROMPT_MAX_LEN
@@ -177,6 +180,49 @@ describe('任务类型判定', () => {
   it('图生视频仍可粘贴公网 URL（复用任务 / 已有地址）', () => {
     expect(needsImageURL('i2v')).toBe(true)
     expect(needsImageURL('i2i')).toBe(false)
+  })
+})
+
+describe('appendRefImages', () => {
+  it('在上限内追加，不覆盖已有项', () => {
+    expect(appendRefImages(['a'], ['b', 'c'], 4)).toEqual({ items: ['a', 'b', 'c'], overflow: false })
+  })
+
+  it('超出上限只收下空位，并标记 overflow', () => {
+    expect(appendRefImages(['a', 'b', 'c'], ['d', 'e'], 4)).toEqual({
+      items: ['a', 'b', 'c', 'd'],
+      overflow: true
+    })
+  })
+
+  it('已满时不再追加', () => {
+    expect(appendRefImages(['a', 'b', 'c', 'd'], ['e'], 4)).toEqual({
+      items: ['a', 'b', 'c', 'd'],
+      overflow: true
+    })
+  })
+})
+
+describe('uniquePublicImageURLs', () => {
+  it('合并去重并丢掉非法地址', () => {
+    expect(uniquePublicImageURLs('https://a.com/1.jpg', ['https://a.com/1.jpg', 'https://b.com/2.jpg', '/local.png'])).toEqual([
+      'https://a.com/1.jpg',
+      'https://b.com/2.jpg'
+    ])
+  })
+})
+
+describe('splitRefImageInput', () => {
+  it('按空白和逗号拆出多个公网地址', () => {
+    expect(splitRefImageInput('https://a.com/1.jpg, https://b.com/2.jpg\nhttps://c.com/3.jpg')).toEqual([
+      'https://a.com/1.jpg',
+      'https://b.com/2.jpg',
+      'https://c.com/3.jpg'
+    ])
+  })
+
+  it('非法地址丢掉', () => {
+    expect(splitRefImageInput('ftp://x/a.jpg /local.png')).toEqual([])
   })
 })
 

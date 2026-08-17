@@ -110,63 +110,130 @@
                 />
               </div>
 
-              <!-- 参考图：图生图上传 -->
+              <!-- 参考图：图生图只走本地上传；图生视频可用按钮切换上传 / 填地址。 -->
               <div v-if="needsUpload(form.kind)">
-                <label class="input-label">{{ t('media.form.refImage') }}</label>
-                <label
-                  class="group flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-gray-200 bg-gray-50/60 px-4 py-6 transition-colors hover:border-primary-300 hover:bg-primary-50/40 dark:border-dark-600 dark:bg-dark-900/30 dark:hover:border-primary-700 dark:hover:bg-primary-900/10"
-                  :class="files.length ? 'border-primary-300 bg-primary-50/30 dark:border-primary-700' : ''"
-                >
-                  <div
-                    class="flex h-10 w-10 items-center justify-center rounded-full bg-white text-gray-400 shadow-sm ring-1 ring-gray-100 transition-colors group-hover:text-primary-500 dark:bg-dark-800 dark:ring-dark-700 dark:group-hover:text-primary-400"
-                  >
-                    <Icon name="upload" size="sm" />
-                  </div>
-                  <div class="text-center">
-                    <p class="text-sm font-medium text-gray-700 dark:text-dark-200">
-                      {{ files.length ? t('media.form.refImageSelected', { n: files.length }) : t('media.form.refImagePick') }}
-                    </p>
-                    <p class="mt-0.5 text-xs text-gray-400 dark:text-dark-500">
-                      {{ isVideoKind(form.kind) ? t('media.form.refImageHintVideo') : t('media.form.refImageHint') }}
-                    </p>
-                  </div>
-                  <input type="file" accept="image/jpeg,image/png,image/webp" class="sr-only" multiple @change="onFileChange" />
-                </label>
-                <ul v-if="files.length" class="mt-2 space-y-1">
-                  <li
-                    v-for="(f, i) in files"
-                    :key="`${f.name}-${i}`"
-                    class="flex items-center gap-2 rounded-lg bg-gray-50 px-2.5 py-1.5 text-xs text-gray-600 dark:bg-dark-900/50 dark:text-dark-300"
-                  >
-                    <img
-                      v-if="filePreviews[i]"
-                      :src="filePreviews[i]"
-                      :alt="f.name"
-                      class="h-8 w-8 shrink-0 rounded object-cover"
-                    />
-                    <Icon v-else name="document" size="xs" class="shrink-0 text-gray-400" />
-                    <span class="min-w-0 flex-1 truncate">{{ f.name }}</span>
-                    <span class="shrink-0 tabular-nums text-gray-400">{{ formatFileSize(f.size) }}</span>
-                  </li>
-                </ul>
-              </div>
-
-              <!-- 参考图：图生视频可粘贴公网 URL（复用任务时不必重选文件） -->
-              <div v-if="needsImageURL(form.kind)">
-                    <label class="media-label">{{ t('media.form.refImageURL') }}</label>
-                <div class="relative">
-                  <Icon
-                    name="link"
-                    size="sm"
-                    class="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400"
-                  />
-                  <input
-                    v-model="form.imageURL"
-                    class="media-select pl-10 font-mono text-[13px]"
-                    placeholder="https://..."
-                  />
+                <div class="mb-1.5 flex items-center justify-between">
+                  <label class="media-label mb-0">{{ t('media.form.refImage') }}</label>
+                  <span class="media-counter">{{ refImageCount }} / {{ REF_IMAGE_MAX }}</span>
                 </div>
-                <p class="input-hint">{{ t('media.form.refImageURLHint') }}</p>
+                <div v-if="form.kind === 'i2v'" class="mb-3 tabs w-full">
+                  <button
+                    type="button"
+                    class="tab flex-1 px-2 py-1.5 text-xs sm:text-sm"
+                    :class="refSource === 'upload' ? 'tab-active' : ''"
+                    @click="refSource = 'upload'"
+                  >
+                    {{ t('media.form.refSourceUpload') }}
+                  </button>
+                  <button
+                    type="button"
+                    class="tab flex-1 px-2 py-1.5 text-xs sm:text-sm"
+                    :class="refSource === 'url' ? 'tab-active' : ''"
+                    @click="refSource = 'url'"
+                  >
+                    {{ t('media.form.refSourceURL') }}
+                  </button>
+                </div>
+
+                <template v-if="form.kind !== 'i2v' || refSource === 'upload'">
+                  <label
+                    class="group flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-6 transition-colors"
+                    :class="refPickerClass"
+                  >
+                    <div
+                      class="flex h-10 w-10 items-center justify-center rounded-full bg-white text-gray-400 shadow-sm ring-1 ring-gray-100 transition-colors group-hover:text-primary-500 dark:bg-dark-800 dark:ring-dark-700 dark:group-hover:text-primary-400"
+                    >
+                      <Icon name="upload" size="sm" />
+                    </div>
+                    <div class="text-center">
+                      <p class="text-sm font-medium text-gray-700 dark:text-dark-200">
+                        {{ refPickerTitle }}
+                      </p>
+                      <p class="mt-0.5 text-xs text-gray-400 dark:text-dark-500">
+                        {{ isVideoKind(form.kind) ? t('media.form.refImageHintVideo') : t('media.form.refImageHint') }}
+                      </p>
+                    </div>
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      class="sr-only"
+                      multiple
+                      :disabled="refSlotsLeft <= 0"
+                      @change="onFileChange"
+                    />
+                  </label>
+                  <ul v-if="files.length" class="mt-2 space-y-1">
+                    <li
+                      v-for="(f, i) in files"
+                      :key="`${f.name}-${f.size}-${f.lastModified}-${i}`"
+                      class="flex items-center gap-2 rounded-lg bg-gray-50 px-2.5 py-1.5 text-xs text-gray-600 dark:bg-dark-900/50 dark:text-dark-300"
+                    >
+                      <img
+                        v-if="filePreviews[i]"
+                        :src="filePreviews[i]"
+                        :alt="f.name"
+                        class="h-8 w-8 shrink-0 rounded object-cover"
+                      />
+                      <Icon v-else name="document" size="xs" class="shrink-0 text-gray-400" />
+                      <span class="min-w-0 flex-1 truncate">{{ f.name }}</span>
+                      <span class="shrink-0 tabular-nums text-gray-400">{{ formatFileSize(f.size) }}</span>
+                      <button
+                        type="button"
+                        class="icon-btn shrink-0 text-gray-400 hover:text-red-600 dark:text-dark-500 dark:hover:text-red-400"
+                        :title="t('media.form.refImageRemove')"
+                        @click="removeFile(i)"
+                      >
+                        <Icon name="trash" size="xs" />
+                      </button>
+                    </li>
+                  </ul>
+                </template>
+
+                <template v-else>
+                  <p class="input-hint mb-2">{{ t('media.form.refImageURLHint') }}</p>
+                  <ul v-if="typedRefURLs.length" class="mb-2 space-y-1">
+                    <li
+                      v-for="(item, i) in typedRefURLs"
+                      :key="`url-${item}`"
+                      class="flex items-center gap-2 rounded-lg bg-gray-50 px-2.5 py-1.5 text-xs text-gray-600 dark:bg-dark-900/50 dark:text-dark-300"
+                    >
+                      <img :src="item" alt="" class="h-8 w-8 shrink-0 rounded object-cover" />
+                      <span class="min-w-0 flex-1 truncate font-mono">{{ item }}</span>
+                      <button
+                        type="button"
+                        class="icon-btn shrink-0 text-gray-400 hover:text-red-600 dark:text-dark-500 dark:hover:text-red-400"
+                        :title="t('media.form.refImageRemove')"
+                        @click="removeTypedURL(i)"
+                      >
+                        <Icon name="trash" size="xs" />
+                      </button>
+                    </li>
+                  </ul>
+                  <div class="flex gap-2">
+                    <div class="relative min-w-0 flex-1">
+                      <Icon
+                        name="link"
+                        size="sm"
+                        class="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400"
+                      />
+                      <input
+                        v-model="urlDraft"
+                        class="media-select pl-10 font-mono text-[13px]"
+                        :placeholder="t('media.form.refURLPlaceholder')"
+                        :disabled="refSlotsLeft <= 0"
+                        @keydown.enter.prevent="addTypedURLs"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      class="btn btn-secondary shrink-0"
+                      :disabled="refSlotsLeft <= 0"
+                      @click="addTypedURLs"
+                    >
+                      {{ t('media.form.refURLAdd') }}
+                    </button>
+                  </div>
+                </template>
               </div>
 
               <!-- 图片参数 -->
@@ -497,13 +564,15 @@ import {
   downgradeTargetOf,
   emptyMediaForm,
   estimateTicks,
-  isPublicImageURL,
   isVideoKind,
   mediaStatusClass,
   modelsForKind,
   needsImageURL,
   needsUpload,
   newClientRequestID,
+  uniquePublicImageURLs,
+  appendRefImages,
+  splitRefImageInput,
   resetMediaFormForKind,
   ticksToUSD,
   validateMediaForm,
@@ -541,6 +610,9 @@ const tasks = ref<MediaTask[]>([])
 const form = ref(emptyMediaForm())
 const files = ref<File[]>([])
 const filePreviews = ref<string[]>([])
+/** 图生视频参考图来源。图生图固定走 upload。 */
+const refSource = ref<'upload' | 'url'>('upload')
+const urlDraft = ref('')
 
 /** 大图预览状态。images 非空即打开。 */
 const preview = ref<{ images: string[]; index: number; caption: string }>({
@@ -580,6 +652,26 @@ const contentFailed = ref<Set<number>>(new Set())
 const selectedKey = computed(() => keys.value.find((k) => k.id === form.value.keyId) ?? null)
 const currentModels = computed(() => modelsForKind(selectedKey.value, form.value.kind))
 const selectedModel = computed(() => currentModels.value.find((m) => m.name === form.value.model) ?? null)
+const typedRefURLs = computed(() => uniquePublicImageURLs(form.value.imageURL, form.value.imageURLs))
+const usingURLRefs = computed(() => form.value.kind === 'i2v' && refSource.value === 'url')
+const refImageCount = computed(() =>
+  usingURLRefs.value ? typedRefURLs.value.length : files.value.length
+)
+const refSlotsLeft = computed(() => Math.max(0, REF_IMAGE_MAX - refImageCount.value))
+const refPickerTitle = computed(() => {
+  if (refSlotsLeft.value <= 0) return t('media.form.refImageFull')
+  if (refImageCount.value) return t('media.form.refImageAdd', { n: refSlotsLeft.value })
+  return t('media.form.refImagePick')
+})
+const refPickerClass = computed(() => {
+  if (refSlotsLeft.value <= 0) {
+    return 'cursor-not-allowed border-gray-200 bg-gray-50/40 opacity-70 dark:border-dark-600 dark:bg-dark-900/20'
+  }
+  if (refImageCount.value) {
+    return 'cursor-pointer border-primary-300 bg-primary-50/30 hover:border-primary-300 hover:bg-primary-50/40 dark:border-primary-700 dark:hover:border-primary-700 dark:hover:bg-primary-900/10'
+  }
+  return 'cursor-pointer border-gray-200 bg-gray-50/60 hover:border-primary-300 hover:bg-primary-50/40 dark:border-dark-600 dark:bg-dark-900/30 dark:hover:border-primary-700 dark:hover:bg-primary-900/10'
+})
 const estimatedTicks = computed(() => estimateTicks(form.value, selectedKey.value))
 const submitLabel = computed(() => {
   if (busy.value) return t('common.loading')
@@ -665,6 +757,8 @@ function switchKind(kind: MediaTaskKind) {
   syncModelDefaults()
   files.value = []
   revokeFilePreviews()
+  refSource.value = 'upload'
+  urlDraft.value = ''
   formError.value = ''
 }
 
@@ -721,13 +815,53 @@ function revokeFilePreviews() {
 }
 
 function onFileChange(e: Event) {
-  revokeFilePreviews()
-  const picked = Array.from((e.target as HTMLInputElement).files ?? [])
-  files.value = picked.slice(0, REF_IMAGE_MAX)
-  filePreviews.value = files.value.map((f) => URL.createObjectURL(f))
-  if (picked.length > REF_IMAGE_MAX) {
+  const input = e.target as HTMLInputElement
+  const picked = Array.from(input.files ?? [])
+  input.value = ''
+  if (!picked.length) return
+
+  const taken = files.value.length
+  const next = appendRefImages(files.value, picked, REF_IMAGE_MAX)
+  const added = next.items.slice(files.value.length)
+  files.value = next.items
+  filePreviews.value = [
+    ...filePreviews.value,
+    ...added.map((f) => URL.createObjectURL(f))
+  ]
+  if (next.overflow) {
     formError.value = t('media.errors.tooManyImages')
+  } else if (taken === 0) {
+    formError.value = ''
   }
+}
+
+function removeFile(index: number) {
+  const preview = filePreviews.value[index]
+  if (preview) URL.revokeObjectURL(preview)
+  files.value = files.value.filter((_, i) => i !== index)
+  filePreviews.value = filePreviews.value.filter((_, i) => i !== index)
+  formError.value = ''
+}
+
+function setTypedURLs(next: string[]) {
+  form.value = { ...form.value, imageURL: next[0] ?? '', imageURLs: next }
+}
+
+function addTypedURLs() {
+  const incoming = splitRefImageInput(urlDraft.value)
+  if (!incoming.length) {
+    formError.value = t('media.errors.badImageURL')
+    return
+  }
+  const next = appendRefImages(typedRefURLs.value, incoming, REF_IMAGE_MAX)
+  setTypedURLs(next.items)
+  urlDraft.value = ''
+  formError.value = next.overflow ? t('media.errors.tooManyImages') : ''
+}
+
+function removeTypedURL(index: number) {
+  setTypedURLs(typedRefURLs.value.filter((_, i) => i !== index))
+  formError.value = ''
 }
 
 function guessImageType(file: File): string {
@@ -805,6 +939,11 @@ function reuseTask(task: MediaTask) {
     syncModelDefaults()
     files.value = []
     revokeFilePreviews()
+    urlDraft.value = ''
+    refSource.value =
+      form.value.kind === 'i2v' && uniquePublicImageURLs(form.value.imageURL, form.value.imageURLs).length
+        ? 'url'
+        : 'upload'
     formError.value = ''
     window.scrollTo({ top: 0, behavior: 'smooth' })
   } catch {
@@ -840,10 +979,17 @@ function onSubmit() {
     formError.value = t(invalid)
     return
   }
-  const reusedURLs = [form.value.imageURL, ...form.value.imageURLs].filter(isPublicImageURL)
-  if (needsUpload(form.value.kind) && !files.value.length && !reusedURLs.length) {
-    formError.value = t('media.errors.missingImage')
-    return
+  if (needsUpload(form.value.kind)) {
+    const hasFiles = files.value.length > 0
+    const hasURLs = typedRefURLs.value.length > 0
+    const missing =
+      form.value.kind === 'i2v'
+        ? usingURLRefs.value ? !hasURLs : !hasFiles
+        : !hasFiles && !hasURLs
+    if (missing) {
+      formError.value = t('media.errors.missingImage')
+      return
+    }
   }
   // 视频提交即扣费且不退款，必须二次确认
   if (isVideoKind(form.value.kind)) {
@@ -867,12 +1013,12 @@ async function doSubmit() {
   // size 模式的模型不认 aspect_ratio。只按模式发一套。
   const byRatio = selectedModel.value?.size_mode === 'aspect_ratio'
   try {
-    let imageURLs: string[] = []
-    if (files.value.length) {
-      imageURLs = await uploadRefsDirect(files.value)
-    } else {
-      imageURLs = [form.value.imageURL, ...form.value.imageURLs].filter(isPublicImageURL)
-    }
+    const imageURLs =
+      usingURLRefs.value
+        ? typedRefURLs.value
+        : files.value.length
+          ? await uploadRefsDirect(files.value)
+          : typedRefURLs.value
     const video = isVideoKind(form.value.kind)
     const result = await generate({
       key_id: form.value.keyId,
