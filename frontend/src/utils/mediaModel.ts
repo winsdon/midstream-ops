@@ -16,6 +16,9 @@ export const VIDEO_MAX_DURATION = 15
 /** 图片张数上限，与后端 mediaMaxImageN 对齐。 */
 export const IMAGE_MAX_N = 4
 
+/** 参考图张数上限（图生图 / 图生视频），与后端 mediaMaxRefImages 对齐。 */
+export const REF_IMAGE_MAX = 4
+
 /** 提示词长度上限，与后端 mediaMaxPromptLen 对齐。 */
 export const PROMPT_MAX_LEN = 2000
 
@@ -106,6 +109,8 @@ export interface MediaFormState {
   resolution: string
   duration: number
   imageURL: string
+  /** 复用任务时带回的参考图地址（含第一张）。新上传走 files。 */
+  imageURLs: string[]
   stream: boolean
 }
 
@@ -124,7 +129,18 @@ export function emptyMediaForm(): MediaFormState {
     resolution: '480p',
     duration: 8,
     imageURL: '',
+    imageURLs: [],
     stream: false
+  }
+}
+
+/** Reset generation options on tab switch while keeping session context. */
+export function resetMediaFormForKind(form: MediaFormState, kind: MediaTaskKind): MediaFormState {
+  return {
+    ...emptyMediaForm(),
+    keyId: form.keyId,
+    prompt: form.prompt,
+    kind
   }
 }
 
@@ -132,10 +148,14 @@ export function emptyMediaForm(): MediaFormState {
 export const isVideoKind = (kind: MediaTaskKind) => kind === 't2v' || kind === 'i2v'
 
 /** 该任务类型是否需要上传参考图文件。 */
-export const needsUpload = (kind: MediaTaskKind) => kind === 'i2i'
+export const needsUpload = (kind: MediaTaskKind) => kind === 'i2i' || kind === 'i2v'
 
-/** 该任务类型是否需要公网参考图 URL。 */
+/** 该任务类型可以把公网 URL 当参考图（选文件优先）。 */
 export const needsImageURL = (kind: MediaTaskKind) => kind === 'i2v'
+
+export function isPublicImageURL(raw: string): boolean {
+  return /^https?:\/\//i.test(raw.trim())
+}
 
 /**
  * 按任务类型返回该 key 可用的模型。
@@ -223,8 +243,11 @@ export function validateMediaForm(form: MediaFormState, key: MediaKey | null): s
     if (form.aspectRatio && !model.aspect_ratios?.includes(form.aspectRatio)) {
       return 'media.errors.badAspectRatio'
     }
-    if (needsImageURL(form.kind) && !/^https?:\/\//i.test(form.imageURL.trim())) {
+    if (form.imageURL.trim() && !isPublicImageURL(form.imageURL)) {
       return 'media.errors.badImageURL'
+    }
+    if (form.imageURLs.filter(Boolean).length > REF_IMAGE_MAX) {
+      return 'media.errors.tooManyImages'
     }
     return ''
   }

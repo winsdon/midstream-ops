@@ -753,15 +753,17 @@ export default {
       refImage: 'Reference image',
       refImagePick: 'Click to choose images',
       refImageSelected: '{n} selected',
-      refImageHint: 'Multiple files supported, 20MB each at most.',
+      refImageHint: 'jpeg / png / webp, up to 4 files, 20MB each. The browser uploads directly to object storage.',
+      refImageHintVideo: 'Image-to-video accepts up to 4 reference images (jpeg / png / webp, 20MB each). Uploaded directly to object storage.',
       refImageURL: 'Reference image URL',
-      refImageURLHint: 'Must be publicly reachable — the upstream fetches it directly. The output aspect ratio follows the reference image, not the selected resolution.',
+      refImageURLHint: 'You can also paste a public image URL. The output aspect ratio follows the reference image, not the selected resolution.',
       estCost: 'Estimated cost',
       estUnknown: 'Priced by group, see your bill',
       estReferenceOnly: 'Could not read this group\'s pricing configuration; the estimate uses standard rates. Your bill is authoritative.',
       videoBillingWarning:
         'Video jobs are charged the moment they are accepted, and are not refunded even if the result is rejected by content moderation.',
-      submit: 'Generate'
+      submit: 'Generate',
+      submitWithCost: 'Generate · ${cost}'
     },
     preview: {
       title: 'View full size',
@@ -801,7 +803,11 @@ export default {
       badDuration: 'Duration must be between 1 and 15 seconds',
       badImageURL: 'Reference image must be a public http(s) URL',
       missingImage: 'Please choose a reference image',
+      tooManyImages: 'At most 4 reference images',
+      uploadFailed: 'Failed to upload the reference image',
       imageTooLarge: 'Reference image exceeds 20MB',
+      storageRequired: 'Reference image upload requires object storage',
+      badImageType: 'Reference image must be jpeg, png, or webp',
       invalidParams: 'Invalid parameters',
       useUploadEndpoint: 'Use the upload endpoint for image-to-image',
       keyNotFound: 'Key not found or disabled',

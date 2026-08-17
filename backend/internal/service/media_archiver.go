@@ -255,6 +255,15 @@ func mediaObjectKey(taskID int64, index int, ext string) string {
 	return fmt.Sprintf("media/%04d/%02d/%d/%d%s", now.Year(), int(now.Month()), taskID, index, ext)
 }
 
+// refObjectKey 参考图对象键：media/refs/{yyyy}/{mm}/{id}{ext}。
+//
+// 与产物键分开：参考图在任务落库之前上传，没有 taskID；也方便以后单独配
+// 生命周期（参考图可以比产物更早清）。
+func refObjectKey(id, ext string) string {
+	now := time.Now().UTC()
+	return fmt.Sprintf("media/refs/%04d/%02d/%s%s", now.Year(), int(now.Month()), id, ext)
+}
+
 // extensionFor 从 MIME 类型推断文件扩展名，未知时用 fallback。
 //
 // 扩展名不影响可用性（浏览器按 Content-Type 渲染），但影响用户下载后的体验：

@@ -173,13 +173,18 @@ func main() {
 			// 「图片 inline、视频经后端代理」的行为，生成本身不受影响。
 			var uploader objectstore.Uploader
 			if cfg.Media.R2.Enabled {
-				uploader = objectstore.NewR2(objectstore.R2Config{
+				r2 := objectstore.NewR2(objectstore.R2Config{
 					AccountID:       cfg.Media.R2.AccountID,
 					Bucket:          cfg.Media.R2.Bucket,
 					AccessKeyID:     cfg.Media.R2.AccessKeyID,
 					SecretAccessKey: cfg.Media.R2.SecretAccessKey,
 					PublicBaseURL:   cfg.Media.R2.PublicBaseURL,
 				})
+				uploader = r2
+				// 浏览器直传参考图依赖桶 CORS；失败不挡启动，只记日志。
+				if err := r2.EnsureBrowserPutCORS(context.Background()); err != nil {
+					log.Printf("[media] 配置对象存储 CORS 失败（前端直传可能被浏览器拦截）: %v", err)
+				}
 				log.Printf("[media] 产物转存已启用，公开域名 %s", cfg.Media.R2.PublicBaseURL)
 			} else {
 				log.Printf("[media] 产物转存未启用：图片刷新后不可见，视频受上游保留期限制")

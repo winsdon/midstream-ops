@@ -535,6 +535,30 @@ func TestValidateVideoParams(t *testing.T) {
 	}
 }
 
+// 图生图同样必须先有公网 URL：本地文件在 Submit 里上传对象存储后再校验。
+func TestValidateImage2ImageRequiresPublicURL(t *testing.T) {
+	base := MediaGenerateParams{
+		Kind: MediaKindImage2Image, Model: "grok-imagine-image",
+		Prompt: "改成赛博朋克", N: 1,
+	}
+	if err := ValidateGenerateParams(base); err == nil {
+		t.Fatal("缺少参考图 URL 应被拒绝")
+	}
+
+	base.ImageURL = "https://example.com/a.jpg"
+	if err := ValidateGenerateParams(base); err != nil {
+		t.Fatalf("合法参考图 URL 不应被拒: %v", err)
+	}
+
+	for _, bad := range []string{"ftp://x/a.jpg", "/local/a.jpg", "data:image/png;base64,xxx"} {
+		p := base
+		p.ImageURL = bad
+		if err := ValidateGenerateParams(p); err == nil {
+			t.Fatalf("非 http(s) 参考图 %q 应被拒绝", bad)
+		}
+	}
+}
+
 // 图生视频的参考图必须是公网可达的 http(s) 地址：
 // 上游要自己去取这张图，multipart 上传会直接 415。
 func TestValidateImage2VideoRequiresPublicURL(t *testing.T) {
@@ -558,6 +582,27 @@ func TestValidateImage2VideoRequiresPublicURL(t *testing.T) {
 		if err := ValidateGenerateParams(p); err == nil {
 			t.Fatalf("非 http(s) 参考图 %q 应被拒绝", bad)
 		}
+	}
+}
+
+func TestValidateImage2VideoAllowsUpToFourRefs(t *testing.T) {
+	base := MediaGenerateParams{
+		Kind: MediaKindImage2Video, Model: "grok-imagine-video",
+		Prompt: "四张参考图", Resolution: "480p", Duration: 8,
+		ImageURLs: []string{
+			"https://example.com/1.jpg",
+			"https://example.com/2.jpg",
+			"https://example.com/3.jpg",
+			"https://example.com/4.jpg",
+		},
+	}
+	base.ImageURL = base.ImageURLs[0]
+	if err := ValidateGenerateParams(base); err != nil {
+		t.Fatalf("4 张参考图应放行: %v", err)
+	}
+	base.ImageURLs = append(base.ImageURLs, "https://example.com/5.jpg")
+	if err := ValidateGenerateParams(base); err == nil {
+		t.Fatal("超过 4 张参考图应被拒绝")
 	}
 }
 

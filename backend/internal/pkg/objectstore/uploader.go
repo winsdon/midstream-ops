@@ -9,6 +9,7 @@ package objectstore
 import (
 	"context"
 	"io"
+	"time"
 )
 
 // Uploader 对象存储上传器。
@@ -23,4 +24,14 @@ type Uploader interface {
 	//
 	// size 为 -1 表示长度未知（流式上传）。实现可据此选择是否走分块编码。
 	Put(ctx context.Context, key string, body io.Reader, size int64, contentType string) (string, error)
+}
+
+// Presigner 签发浏览器直传用的预签名 PUT。
+//
+// 参考图由前端直传对象存储，本站不经手文件字节——否则一张 20MB 的图
+// 会先占满本站带宽再转给 R2。凭据绝不能下发到浏览器，只能下发短时签名 URL。
+type Presigner interface {
+	// PresignPut 返回 (uploadURL, publicURL)。
+	// uploadURL 带 SigV4 查询串，浏览器 PUT 文件体即可；publicURL 是自定义域上的长期地址。
+	PresignPut(key, contentType string, expires time.Duration) (uploadURL, publicURL string, err error)
 }

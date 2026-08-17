@@ -115,6 +115,24 @@ func TestDeleteOwnedIsScopedToUser(t *testing.T) {
 	}
 }
 
+func TestDiscardRemovesTask(t *testing.T) {
+	r := newMediaTestDB(t)
+	ctx := context.Background()
+	task, _, err := r.Create(ctx, mediaParams("u1", "discard-1", MediaKindText2Image))
+	if err != nil {
+		t.Fatalf("创建失败: %v", err)
+	}
+	if err := r.Discard(ctx, task.ID); err != nil {
+		t.Fatalf("Discard 失败: %v", err)
+	}
+	if _, err := r.GetByID(ctx, task.ID); err != ErrNotFound {
+		t.Fatalf("Discard 后应查不到记录，实际 %v", err)
+	}
+	if err := r.Discard(ctx, task.ID); err != ErrNotFound {
+		t.Fatalf("重复 Discard 应返回 ErrNotFound，实际 %v", err)
+	}
+}
+
 // 新任务恒为 pending：终态只能由 MarkSucceeded / MarkFailed 写入。
 func TestCreateStartsPending(t *testing.T) {
 	r := newMediaTestDB(t)

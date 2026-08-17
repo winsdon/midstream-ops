@@ -167,6 +167,14 @@ func (r *MediaTaskRepo) DeleteOwned(ctx context.Context, id int64, userID string
 	return r.exec(ctx, `DELETE FROM media_tasks WHERE id = ? AND sub2api_user_id = ?`, id, userID)
 }
 
+// Discard 删除一条任务记录（不校验归属）。
+//
+// 只给同步图片失败用：先落 pending 再打上游，失败后这条记录没有对账价值，
+// 留成 failed 只会污染列表。视频失败必须走 MarkFailed，钱可能已经扣了。
+func (r *MediaTaskRepo) Discard(ctx context.Context, id int64) error {
+	return r.exec(ctx, `DELETE FROM media_tasks WHERE id = ?`, id)
+}
+
 // GetByClientRequestID 按幂等键查询。
 func (r *MediaTaskRepo) GetByClientRequestID(ctx context.Context, userID, clientRequestID string) (*MediaTask, error) {
 	row := r.db.QueryRowContext(ctx,

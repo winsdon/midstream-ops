@@ -63,7 +63,7 @@
 
 @layer components {
   .media-panel {
-    @apply rounded-2xl border border-gray-100 bg-white shadow-card dark:border-dark-700/50 dark:bg-dark-800/50;
+    @apply flex flex-col rounded-2xl border border-gray-100 bg-white shadow-card dark:border-dark-700/50 dark:bg-dark-800/50;
     color: inherit;
   }
 
@@ -72,6 +72,9 @@
   }
 
   .media-panel-body { @apply bg-white dark:bg-dark-800/50; }
+  .media-panel-footer {
+    @apply border-t border-gray-100 bg-white px-4 py-4 dark:border-dark-700 dark:bg-dark-800/50 sm:px-5;
+  }
   .media-section-kicker { @apply mb-1 text-sm font-medium text-gray-400 dark:text-dark-400; }
   .media-label { @apply mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300; }
   .media-counter, .media-value { @apply text-xs tabular-nums text-gray-400 dark:text-dark-500; }

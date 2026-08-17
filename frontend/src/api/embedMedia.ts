@@ -107,10 +107,10 @@ export interface MediaSubmitResult {
   images: string[]
 }
 
-/** JSON 路径的生成请求（文生图 / 文生视频 / 图生视频）。 */
+/** JSON 路径的生成请求。参考图先直传对象存储，再带公网 URL。 */
 export interface MediaGenerateInput {
   key_id: number
-  kind: Exclude<MediaTaskKind, 'i2i'>
+  kind: MediaTaskKind
   model: string
   prompt: string
   n?: number
@@ -125,8 +125,22 @@ export interface MediaGenerateInput {
   resolution?: string
   duration?: number
   image_url?: string
+  image_urls?: string[]
   stream?: boolean
   client_request_id: string
+}
+
+export interface MediaPrepareUploadInput {
+  filename: string
+  content_type: string
+  size: number
+}
+
+export interface MediaPrepareUploadSlot {
+  upload_url: string
+  public_url: string
+  headers: Record<string, string>
+  content_type: string
 }
 
 export const createSession = (token: string, userId: string) => client.createSession(token, userId)
@@ -136,6 +150,14 @@ export const fetchKeys = () => client.request<{ items: MediaKey[] }>('/keys').th
 export const generate = (input: MediaGenerateInput) =>
   client.request<MediaSubmitResult>('/generate', { method: 'POST', body: JSON.stringify(input) })
 
+export const prepareUploads = (files: MediaPrepareUploadInput[]) =>
+  client
+    .request<{ items: MediaPrepareUploadSlot[] }>('/uploads/prepare', {
+      method: 'POST',
+      body: JSON.stringify({ files })
+    })
+    .then((r) => r.items)
+
 export const fetchTasks = (limit = 30) =>
   client.request<{ items: MediaTask[] }>(`/tasks?limit=${limit}`).then((r) => r.items)
 
@@ -143,7 +165,8 @@ export const deleteTask = (taskId: number) =>
   client.request(`/tasks/${taskId}`, { method: 'DELETE' })
 
 /**
- * 图生图：multipart 上传参考图。
+ * 图生图 / 带本地文件的图生视频：multipart 上传参考图。
+ * 后端先把文件落到对象存储，再带公开 URL 打上游。
  *
  * 不手动设 Content-Type —— embedClient 检测到 FormData 会自动跳过，
  * 交给浏览器带上正确的 multipart boundary。

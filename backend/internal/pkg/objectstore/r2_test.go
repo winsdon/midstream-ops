@@ -237,6 +237,53 @@ func TestPutRedactsCredentialsInErrors(t *testing.T) {
 	}
 }
 
+// 预签名 PUT 的查询串形态：锁定 Content-Type、返回公开域名而非内部 endpoint。
+func TestPresignPutShapeAndDeterminism(t *testing.T) {
+	r := NewR2(R2Config{
+		AccountID: "acc", Bucket: "api",
+		AccessKeyID: testAccessKey, SecretAccessKey: testSecretKey,
+		PublicBaseURL: "https://oss.example.com/",
+	})
+	r.now = func() time.Time { return time.Date(2026, 8, 17, 6, 0, 0, 0, time.UTC) }
+
+	upload, public, err := r.PresignPut("media/refs/a.png", "image/png", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("预签名失败: %v", err)
+	}
+	if public != "https://oss.example.com/media/refs/a.png" {
+		t.Fatalf("公开 URL 错误: %s", public)
+	}
+	if !strings.HasPrefix(upload, "https://acc.r2.cloudflarestorage.com/api/media/refs/a.png?") {
+		t.Fatalf("上传 URL 路径错误: %s", upload)
+	}
+	for _, want := range []string{
+		"X-Amz-Algorithm=AWS4-HMAC-SHA256",
+		"X-Amz-SignedHeaders=content-type%3Bhost",
+		"X-Amz-Expires=300",
+		"X-Amz-Content-Sha256=UNSIGNED-PAYLOAD",
+		"X-Amz-Signature=",
+	} {
+		if !strings.Contains(upload, want) {
+			t.Fatalf("预签名缺少 %s:\n%s", want, upload)
+		}
+	}
+
+	again, _, err := r.PresignPut("media/refs/a.png", "image/png", 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upload != again {
+		t.Fatalf("相同输入的预签名应稳定\n%s\n%s", upload, again)
+	}
+}
+
+func TestPresignPutRejectsEmptyKey(t *testing.T) {
+	r := NewR2(R2Config{AccountID: "acc", Bucket: "b", PublicBaseURL: "https://cdn.example.com"})
+	if _, _, err := r.PresignPut("  ", "image/png", 0); err == nil {
+		t.Fatal("空对象键应被拒绝")
+	}
+}
+
 // 空对象键应在发请求之前就被拒——否则会 PUT 到桶根路径上。
 func TestPutRejectsEmptyKey(t *testing.T) {
 	r := NewR2(R2Config{AccountID: "acc", Bucket: "b", PublicBaseURL: "https://cdn.example.com"})

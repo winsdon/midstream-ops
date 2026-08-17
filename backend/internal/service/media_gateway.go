@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -160,79 +158,77 @@ func (g *MediaGateway) GenerateImage(ctx context.Context, apiKey string, p Media
 	return parseImagesResponse(resp)
 }
 
-// EditImage 图生图（同步，multipart）。
+// EditImage 图生图（同步，JSON）。
 //
-// files 的每一项是一张参考图。OpenAI 格式支持重复 image 字段传多张；
-// Grok 只取第一张。
+// 参考图必须是公网可达的 http(s) URL。本地文件先上传到对象存储，再把
+// 公开地址填进 ImageURL——sub2api 把 multipart 文件转成 data URL 后，
+// xAI 会回 400 Invalid base64-encoded image。
 //
-// 【流式转发，不落盘不全量进内存】用 io.Pipe 把 multipart 编码与上传串起来：
-// 前端上传的文件边读边写给上游。用户可能传几十 MB 的图，全量缓冲在并发下会 OOM。
-func (g *MediaGateway) EditImage(ctx context.Context, apiKey string, p MediaGenerateParams, files []MediaUploadFile) ([]ImageResult, error) {
-	if len(files) == 0 {
+// 字段形状与图生视频相同：嵌套对象 image.url，绝不能写成顶层 image_url。
+func (g *MediaGateway) EditImage(ctx context.Context, apiKey string, p MediaGenerateParams) ([]ImageResult, error) {
+	if !isPublicHTTPURL(p.ImageURL) {
 		return nil, fmt.Errorf("缺少参考图")
 	}
 
-	pr, pw := io.Pipe()
-	mw := multipart.NewWriter(pw)
+	payload := map[string]any{
+		"model":  p.Model,
+		"prompt": p.Prompt,
+		// 与 GenerateImage 同因：xAI CDN 直链国内不可达，必须要 b64。
+		"response_format": "b64_json",
+		"image":           map[string]any{"url": p.ImageURL},
+	}
+	if p.N > 0 {
+		payload["n"] = p.N
+	}
+	applyImageSizeParams(payload, p)
+	if img, images := refImageJSON(p); img != nil {
+		payload["image"] = img
+		if len(images) > 0 {
+			payload["images"] = images
+		}
+	}
 
-	go func() {
-		// 任何一步失败都要 CloseWithError，否则读端会一直阻塞到 context 超时。
-		writeErr := func() error {
-			fields := map[string]any{
-				"model":  p.Model,
-				"prompt": p.Prompt,
-				// 与 GenerateImage 同因：xAI CDN 直链国内不可达，必须要 b64。
-				"response_format": "b64_json",
-			}
-			applyImageSizeParams(fields, p)
-			if p.N > 0 {
-				fields["n"] = strconv.Itoa(p.N)
-			}
-			for k, v := range fields {
-				if err := mw.WriteField(k, fmt.Sprint(v)); err != nil {
-					return err
-				}
-			}
-			for _, f := range files {
-				part, err := mw.CreateFormFile("image", f.Filename)
-				if err != nil {
-					return err
-				}
-				if _, err := io.Copy(part, f.Reader); err != nil {
-					return err
-				}
-			}
-			return mw.Close()
-		}()
-		_ = pw.CloseWithError(writeErr)
-	}()
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, mediaImageTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.baseURL+"/v1/images/edits", pr)
+	resp, err := g.doJSON(ctx, http.MethodPost, "/v1/images/edits", apiKey, body)
 	if err != nil {
 		return nil, err
-	}
-	g.setAuthHeaders(req, apiKey)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-
-	resp, err := g.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("%s", redactError(err.Error(), req))
 	}
 	defer resp.Body.Close()
 
-	if err := checkStatus(resp, req); err != nil {
-		return nil, err
-	}
 	return parseImagesResponse(resp)
 }
 
-// MediaUploadFile 一个待转发的上传文件。
+// refImageJSON 组装上游要的 image / images。
+// 只有一张时只发 image，避免空 images 数组被某些实现当成非法输入。
+func refImageJSON(p MediaGenerateParams) (image map[string]any, images []map[string]any) {
+	urls := allImageURLs(p)
+	if len(urls) == 0 {
+		return nil, nil
+	}
+	image = map[string]any{"url": urls[0]}
+	if len(urls) < 2 {
+		return image, nil
+	}
+	images = make([]map[string]any, 0, len(urls))
+	for _, u := range urls {
+		images = append(images, map[string]any{"url": u})
+	}
+	return image, images
+}
+
+// MediaUploadFile 一张待上传到对象存储的参考图。
 type MediaUploadFile struct {
-	Filename string
-	Reader   io.Reader
+	Filename    string
+	ContentType string
+	Size        int64
+	Reader      io.Reader
 }
 
 // SubmitVideo 提交视频生成任务，返回上游 request_id。
@@ -263,8 +259,13 @@ func (g *MediaGateway) SubmitVideo(ctx context.Context, apiKey string, p MediaGe
 	// docs.x.ai 的 image-to-video 不符），已同步订正。
 	//
 	// 另注：传 multipart 上游返回 415，参考图只能走 JSON URL。
-	if p.ImageURL != "" {
-		payload["image"] = map[string]any{"url": p.ImageURL}
+	// 多张时同时带 image（第一张）和 images（全部），与 sub2api 网关的
+	// prepareGrokMediaForwardBody 一致；图生视频最多 4 张。
+	if img, images := refImageJSON(p); img != nil {
+		payload["image"] = img
+		if len(images) > 0 {
+			payload["images"] = images
+		}
 	}
 
 	body, err := json.Marshal(payload)

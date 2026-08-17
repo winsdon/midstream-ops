@@ -138,6 +138,7 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 				authed := media.Group("")
 				authed.Use(middleware.EmbedSession(h.EmbedSessions))
 				authed.GET("/keys", h.EmbedMedia.Keys)
+				authed.POST("/uploads/prepare", h.EmbedMedia.PrepareUploads)
 				authed.POST("/generate", h.EmbedMedia.Generate)
 				authed.POST("/edits", h.EmbedMedia.Edit)
 				authed.GET("/tasks", h.EmbedMedia.Tasks)

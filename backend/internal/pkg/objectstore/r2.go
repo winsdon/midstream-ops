@@ -261,8 +261,9 @@ func redactR2(msg string, cfg R2Config) error {
 	return fmt.Errorf("%s", msg)
 }
 
-// 编译期断言：R2 必须满足 Uploader。
+// 编译期断言：R2 必须满足 Uploader 与 Presigner。
 var _ Uploader = (*R2)(nil)
+var _ Presigner = (*R2)(nil)
 
 // bytesReaderSize 是给调用方的便利函数：从 []byte 构造带长度的 reader。
 // 图片走这条路径（内容已在内存里），视频走流式路径。

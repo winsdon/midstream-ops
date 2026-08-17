@@ -34,15 +34,13 @@
 
       <div class="grid gap-5 lg:grid-cols-12 lg:items-start lg:gap-6">
         <!-- 左：生成表单（桌面 sticky）
-             【必须限高 + 内部滚动】只写 sticky 时，表单比视口高就会把底部的提交按钮
-             裁在视口外且无法滚到。dvh 而非 vh：移动端地址栏收放时 vh 不变会算错。 -->
+             Tab 钉顶、按钮钉底，只滚中间参数。dvh 而非 vh：移动端地址栏收放时 vh 不变会算错。 -->
         <section
-          class="lg:col-span-5 lg:sticky lg:top-4 lg:self-start
-                 lg:max-h-[calc(100dvh-2rem)] lg:overflow-y-auto lg:overscroll-contain"
+          class="lg:col-span-5 lg:sticky lg:top-4 lg:flex lg:max-h-[calc(100dvh-2rem)] lg:min-h-0 lg:flex-col lg:self-start lg:overflow-hidden"
         >
-          <div class="media-panel overflow-hidden">
-            <!-- 模式切换：分段控件 -->
-            <div class="media-panel-tabs border-b border-gray-100 bg-gray-50/80 px-3 py-3 dark:border-dark-700 dark:bg-dark-900/40 sm:px-4">
+          <div class="media-panel flex min-h-0 flex-1 flex-col overflow-hidden">
+            <!-- 模式切换：分段控件（钉在顶，不参与中间滚动） -->
+            <div class="media-panel-tabs shrink-0 border-b border-gray-100 bg-gray-50/80 px-3 py-3 dark:border-dark-700 dark:bg-dark-900/40 sm:px-4">
               <div class="tabs w-full">
                 <button
                   v-for="k in availableKinds"
@@ -57,7 +55,7 @@
               </div>
             </div>
 
-            <div class="media-panel-body space-y-5 p-4 sm:p-5">
+            <div class="media-panel-body min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-4 sm:p-5">
               <p class="media-section-kicker">{{ t('media.form.parameters') }}</p>
               <!-- Key + 模型 -->
               <div class="space-y-3.5">
@@ -128,9 +126,11 @@
                     <p class="text-sm font-medium text-gray-700 dark:text-dark-200">
                       {{ files.length ? t('media.form.refImageSelected', { n: files.length }) : t('media.form.refImagePick') }}
                     </p>
-                    <p class="mt-0.5 text-xs text-gray-400 dark:text-dark-500">{{ t('media.form.refImageHint') }}</p>
+                    <p class="mt-0.5 text-xs text-gray-400 dark:text-dark-500">
+                      {{ isVideoKind(form.kind) ? t('media.form.refImageHintVideo') : t('media.form.refImageHint') }}
+                    </p>
                   </div>
-                  <input type="file" accept="image/*" class="sr-only" multiple @change="onFileChange" />
+                  <input type="file" accept="image/jpeg,image/png,image/webp" class="sr-only" multiple @change="onFileChange" />
                 </label>
                 <ul v-if="files.length" class="mt-2 space-y-1">
                   <li
@@ -138,14 +138,20 @@
                     :key="`${f.name}-${i}`"
                     class="flex items-center gap-2 rounded-lg bg-gray-50 px-2.5 py-1.5 text-xs text-gray-600 dark:bg-dark-900/50 dark:text-dark-300"
                   >
-                    <Icon name="document" size="xs" class="shrink-0 text-gray-400" />
+                    <img
+                      v-if="filePreviews[i]"
+                      :src="filePreviews[i]"
+                      :alt="f.name"
+                      class="h-8 w-8 shrink-0 rounded object-cover"
+                    />
+                    <Icon v-else name="document" size="xs" class="shrink-0 text-gray-400" />
                     <span class="min-w-0 flex-1 truncate">{{ f.name }}</span>
                     <span class="shrink-0 tabular-nums text-gray-400">{{ formatFileSize(f.size) }}</span>
                   </li>
                 </ul>
               </div>
 
-              <!-- 参考图：图生视频用公网 URL -->
+              <!-- 参考图：图生视频可粘贴公网 URL（复用任务时不必重选文件） -->
               <div v-if="needsImageURL(form.kind)">
                     <label class="media-label">{{ t('media.form.refImageURL') }}</label>
                 <div class="relative">
@@ -250,59 +256,15 @@
                 </div>
               </template>
 
-              <!-- 费用预估：视频提交即扣费不退款，必须在按钮之前显示 -->
-              <div
-                class="rounded-xl border px-3.5 py-3"
-                :class="
-                  isVideoKind(form.kind)
-                    ? 'border-amber-200/80 bg-amber-50/80 dark:border-amber-800/40 dark:bg-amber-950/30'
-                    : 'border-gray-100 bg-gray-50 dark:border-dark-700 dark:bg-dark-900/40'
-                "
-              >
-                <div class="flex items-center justify-between gap-3">
-                  <span
-                    class="text-sm"
-                    :class="
-                      isVideoKind(form.kind)
-                        ? 'text-amber-800 dark:text-amber-200'
-                        : 'text-gray-500 dark:text-dark-400'
-                    "
-                  >
-                    {{ t('media.form.estCost') }}
-                  </span>
-                  <span
-                    class="font-mono text-base font-semibold tabular-nums tracking-tight"
-                    :class="
-                      isVideoKind(form.kind)
-                        ? 'text-amber-900 dark:text-amber-100'
-                        : 'text-gray-900 dark:text-white'
-                    "
-                  >
-                    {{ estimatedTicks > 0 ? `$${ticksToUSD(estimatedTicks)}` : t('media.form.estUnknown') }}
-                  </span>
-                </div>
-                <p
-                  v-if="isVideoKind(form.kind)"
-                  class="mt-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-300/90"
-                >
-                  {{ t('media.form.videoBillingWarning') }}
-                </p>
-                <!-- 拿不到分组定价时预估只是参考值，不能当承诺 -->
-                <p
-                  v-else-if="estimatedTicks > 0 && selectedKey && !selectedKey.pricing_known"
-                  class="mt-1.5 text-xs leading-relaxed text-gray-400 dark:text-dark-500"
-                >
-                  {{ t('media.form.estReferenceOnly') }}
-                </p>
-              </div>
+            </div>
 
+            <div class="media-panel-footer shrink-0">
               <p
                 v-if="formError"
-                class="rounded-xl border border-red-100 bg-red-50 px-3.5 py-2.5 text-sm text-red-600 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-400"
+                class="mb-3 rounded-xl border border-red-100 bg-red-50 px-3.5 py-2.5 text-sm text-red-600 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-400"
               >
                 {{ formError }}
               </p>
-
               <button
                 type="button"
                 class="media-submit w-full gap-2 py-3 text-[15px]"
@@ -311,8 +273,14 @@
               >
                 <Icon v-if="!busy" name="sparkles" size="sm" />
                 <span v-else class="spinner border-white/40 border-t-white" />
-                {{ busy ? t('common.loading') : t('media.form.submit') }}
+                {{ submitLabel }}
               </button>
+              <p
+                v-if="estimatedTicks > 0 && selectedKey && !selectedKey.pricing_known"
+                class="mt-2 text-center text-xs leading-relaxed text-gray-400 dark:text-dark-500"
+              >
+                {{ t('media.form.estReferenceOnly') }}
+              </p>
             </div>
           </div>
         </section>
@@ -521,7 +489,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { createSession, fetchKeys, fetchTasks, generate, edit, fetchContent, deleteTask } from '@/api/embedMedia'
+import { createSession, fetchKeys, fetchTasks, generate, prepareUploads, fetchContent, deleteTask } from '@/api/embedMedia'
 import type { MediaKey, MediaTask, MediaTaskKind } from '@/api/embedMedia'
 import { applyTheme, queryString, resolveLocale, stripTokenFromUrl } from '@/utils/embedQuery'
 import {
@@ -529,17 +497,20 @@ import {
   downgradeTargetOf,
   emptyMediaForm,
   estimateTicks,
+  isPublicImageURL,
   isVideoKind,
   mediaStatusClass,
   modelsForKind,
   needsImageURL,
   needsUpload,
   newClientRequestID,
+  resetMediaFormForKind,
   ticksToUSD,
   validateMediaForm,
   IMAGE_MAX_N,
   IMAGE_SIZE_PRESETS,
   PROMPT_MAX_LEN,
+  REF_IMAGE_MAX,
   VIDEO_MAX_DURATION,
   VIDEO_MIN_DURATION
 } from '@/utils/mediaModel'
@@ -569,6 +540,7 @@ const keys = ref<MediaKey[]>([])
 const tasks = ref<MediaTask[]>([])
 const form = ref(emptyMediaForm())
 const files = ref<File[]>([])
+const filePreviews = ref<string[]>([])
 
 /** 大图预览状态。images 非空即打开。 */
 const preview = ref<{ images: string[]; index: number; caption: string }>({
@@ -609,6 +581,13 @@ const selectedKey = computed(() => keys.value.find((k) => k.id === form.value.ke
 const currentModels = computed(() => modelsForKind(selectedKey.value, form.value.kind))
 const selectedModel = computed(() => currentModels.value.find((m) => m.name === form.value.model) ?? null)
 const estimatedTicks = computed(() => estimateTicks(form.value, selectedKey.value))
+const submitLabel = computed(() => {
+  if (busy.value) return t('common.loading')
+  if (estimatedTicks.value > 0) {
+    return t('media.form.submitWithCost', { cost: ticksToUSD(estimatedTicks.value) })
+  }
+  return t('media.form.submit')
+})
 const downgradeTarget = computed(() => downgradeTargetOf(form.value, selectedKey.value))
 const billingTier = computed(() =>
   selectedModel.value && !isVideoKind(form.value.kind)
@@ -681,9 +660,11 @@ function formatFileSize(bytes: number): string {
 }
 
 function switchKind(kind: MediaTaskKind) {
-  form.value.kind = kind
+  form.value = resetMediaFormForKind(form.value, kind)
   form.value.model = currentModels.value[0]?.name ?? ''
   syncModelDefaults()
+  files.value = []
+  revokeFilePreviews()
   formError.value = ''
 }
 
@@ -734,8 +715,51 @@ function syncModelDefaults() {
   if (!form.value.size) form.value.size = '1024x1024'
 }
 
+function revokeFilePreviews() {
+  filePreviews.value.forEach((url) => URL.revokeObjectURL(url))
+  filePreviews.value = []
+}
+
 function onFileChange(e: Event) {
-  files.value = Array.from((e.target as HTMLInputElement).files ?? [])
+  revokeFilePreviews()
+  const picked = Array.from((e.target as HTMLInputElement).files ?? [])
+  files.value = picked.slice(0, REF_IMAGE_MAX)
+  filePreviews.value = files.value.map((f) => URL.createObjectURL(f))
+  if (picked.length > REF_IMAGE_MAX) {
+    formError.value = t('media.errors.tooManyImages')
+  }
+}
+
+function guessImageType(file: File): string {
+  if (file.type) return file.type
+  const name = file.name.toLowerCase()
+  if (name.endsWith('.png')) return 'image/png'
+  if (name.endsWith('.webp')) return 'image/webp'
+  return 'image/jpeg'
+}
+
+/** 浏览器直传对象存储，返回公开 URL。凭据不下发，只拿短时预签名。 */
+async function uploadRefsDirect(picked: File[]): Promise<string[]> {
+  const slots = await prepareUploads(
+    picked.map((file) => ({
+      filename: file.name,
+      content_type: guessImageType(file),
+      size: file.size
+    }))
+  )
+  await Promise.all(
+    slots.map(async (slot, i) => {
+      const resp = await fetch(slot.upload_url, {
+        method: 'PUT',
+        headers: slot.headers,
+        body: picked[i]
+      })
+      if (!resp.ok) {
+        throw new Error('media.errors.uploadFailed')
+      }
+    })
+  )
+  return slots.map((slot) => slot.public_url)
 }
 
 /** 惰性加载视频产物：带会话凭据 fetch 成 blob URL。 */
@@ -770,11 +794,17 @@ function reuseTask(task: MediaTask) {
       resolution: get('resolution', '480p'),
       duration: get('duration', 8),
       imageURL: get('imageURL', ''),
+      imageURLs: Array.isArray(raw.imageURLs)
+        ? (raw.imageURLs as string[])
+        : Array.isArray(raw.ImageURLs)
+          ? (raw.ImageURLs as string[])
+          : [],
       stream: get('stream', false)
     }
     // 复用的可能是旧格式参数（那时 Grok 还在传 size），收敛到当前模型的合法取值
     syncModelDefaults()
     files.value = []
+    revokeFilePreviews()
     formError.value = ''
     window.scrollTo({ top: 0, behavior: 'smooth' })
   } catch {
@@ -810,7 +840,8 @@ function onSubmit() {
     formError.value = t(invalid)
     return
   }
-  if (needsUpload(form.value.kind) && !files.value.length) {
+  const reusedURLs = [form.value.imageURL, ...form.value.imageURLs].filter(isPublicImageURL)
+  if (needsUpload(form.value.kind) && !files.value.length && !reusedURLs.length) {
     formError.value = t('media.errors.missingImage')
     return
   }
@@ -836,42 +867,30 @@ async function doSubmit() {
   // size 模式的模型不认 aspect_ratio。只按模式发一套。
   const byRatio = selectedModel.value?.size_mode === 'aspect_ratio'
   try {
-    let result
-    if (needsUpload(form.value.kind)) {
-      const fd = new FormData()
-      fd.append('key_id', String(form.value.keyId))
-      fd.append('model', form.value.model)
-      fd.append('prompt', form.value.prompt)
-      fd.append('n', String(form.value.n))
-      if (byRatio) {
-        if (form.value.aspectRatio) fd.append('aspect_ratio', form.value.aspectRatio)
-        if (form.value.imageResolution) fd.append('image_resolution', form.value.imageResolution)
-      } else {
-        if (form.value.size) fd.append('size', form.value.size)
-        if (form.value.quality) fd.append('quality', form.value.quality)
-      }
-      fd.append('client_request_id', clientRequestID)
-      files.value.forEach((f) => fd.append('image', f))
-      result = await edit(fd)
+    let imageURLs: string[] = []
+    if (files.value.length) {
+      imageURLs = await uploadRefsDirect(files.value)
     } else {
-      const video = isVideoKind(form.value.kind)
-      result = await generate({
-        key_id: form.value.keyId,
-        kind: form.value.kind as Exclude<MediaTaskKind, 'i2i'>,
-        model: form.value.model,
-        prompt: form.value.prompt,
-        n: form.value.n,
-        size: !video && !byRatio ? form.value.size || undefined : undefined,
-        quality: !video && !byRatio ? form.value.quality : undefined,
-        aspect_ratio: video || byRatio ? form.value.aspectRatio || undefined : undefined,
-        image_resolution: !video && byRatio ? form.value.imageResolution || undefined : undefined,
-        resolution: form.value.resolution,
-        duration: form.value.duration,
-        image_url: form.value.imageURL || undefined,
-        stream: form.value.stream,
-        client_request_id: clientRequestID
-      })
+      imageURLs = [form.value.imageURL, ...form.value.imageURLs].filter(isPublicImageURL)
     }
+    const video = isVideoKind(form.value.kind)
+    const result = await generate({
+      key_id: form.value.keyId,
+      kind: form.value.kind,
+      model: form.value.model,
+      prompt: form.value.prompt,
+      n: form.value.n,
+      size: !video && !byRatio ? form.value.size || undefined : undefined,
+      quality: !video && !byRatio ? form.value.quality : undefined,
+      aspect_ratio: video || byRatio ? form.value.aspectRatio || undefined : undefined,
+      image_resolution: !video && byRatio ? form.value.imageResolution || undefined : undefined,
+      resolution: form.value.resolution,
+      duration: form.value.duration,
+      image_url: imageURLs[0],
+      image_urls: imageURLs.length ? imageURLs : undefined,
+      stream: form.value.stream,
+      client_request_id: clientRequestID
+    })
     // 图片字节只随这一次响应返回，错过就没有了 —— 立刻挂到任务 ID 上
     if (result.images?.length) {
       inlineImages.value = { ...inlineImages.value, [result.task.id]: result.images }
@@ -943,5 +962,6 @@ onUnmounted(() => {
   if (timer) clearInterval(timer)
   // blob URL 必须显式释放，否则一直占内存
   Object.values(contentURLs.value).forEach((url) => URL.revokeObjectURL(url))
+  revokeFilePreviews()
 })
 </script>

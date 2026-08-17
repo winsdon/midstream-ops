@@ -17,10 +17,12 @@ import (
 
 // 面向调用方的错误。handler 层据此选择 HTTP 状态码与 i18n key。
 var (
-	ErrMediaKeyNotFound   = errors.New("media: key not found")
-	ErrMediaTooManyActive = errors.New("media: too many active video tasks")
-	ErrMediaRateLimited   = errors.New("media: rate limited")
-	ErrMediaNotReady      = errors.New("media: task not ready")
+	ErrMediaKeyNotFound     = errors.New("media: key not found")
+	ErrMediaTooManyActive   = errors.New("media: too many active video tasks")
+	ErrMediaRateLimited     = errors.New("media: rate limited")
+	ErrMediaNotReady        = errors.New("media: task not ready")
+	ErrMediaStorageRequired = errors.New("media: object storage required")
+	ErrMediaBadImageType    = errors.New("media: unsupported image type")
 )
 
 // MediaService 生图 / 生视频编排。
@@ -33,6 +35,7 @@ type MediaService struct {
 	artifacts *repository.MediaArtifactRepo
 	gateway   *MediaGateway
 	archiver  *mediaArchiver
+	uploader  objectstore.Uploader
 
 	maxPendingVideos int
 
@@ -44,7 +47,8 @@ type MediaService struct {
 // NewMediaService 创建 MediaService。maxPendingVideos <= 0 时回退 3。
 //
 // uploader 为 nil 表示未配置对象存储：产物不转存，退化到「图片 inline、
-// 视频经后端代理」的行为，生成本身不受影响。
+// 视频经后端代理」。文生图 / 文生视频不受影响；带本地文件的图生图 /
+// 图生视频会返回 ErrMediaStorageRequired。
 func NewMediaService(pg *repository.PG, tasks *repository.MediaTaskRepo,
 	artifacts *repository.MediaArtifactRepo, gateway *MediaGateway,
 	uploader objectstore.Uploader, maxPendingVideos int) *MediaService {
@@ -57,6 +61,7 @@ func NewMediaService(pg *repository.PG, tasks *repository.MediaTaskRepo,
 		artifacts:        artifacts,
 		gateway:          gateway,
 		archiver:         newMediaArchiver(tasks, artifacts, gateway, uploader),
+		uploader:         uploader,
 		maxPendingVideos: maxPendingVideos,
 		limiter:          newMediaRateLimiter(),
 	}
@@ -156,7 +161,7 @@ type MediaSubmitRequest struct {
 	KeyID           int64
 	Params          MediaGenerateParams
 	ClientRequestID string
-	Files           []MediaUploadFile // 仅图生图
+	Files           []MediaUploadFile // 图生图 / 图生视频的本地参考图，先上传再带 URL 打上游
 }
 
 // MediaSubmitResult 一次提交的结果。
@@ -175,6 +180,14 @@ type MediaSubmitResult struct {
 
 // Submit 提交一次生成。图片同步完成并随响应返回产物，视频落 pending 后由轮询推进。
 func (s *MediaService) Submit(ctx context.Context, userID string, req MediaSubmitRequest) (*MediaSubmitResult, error) {
+	if len(req.Files) > 0 {
+		urls, err := s.uploadRefImages(ctx, req.Files)
+		if err != nil {
+			return nil, err
+		}
+		req.Params.ImageURL = urls[0]
+		req.Params.ImageURLs = urls
+	}
 	if err := ValidateGenerateParams(req.Params); err != nil {
 		return nil, err
 	}
@@ -249,12 +262,14 @@ func (s *MediaService) submitImage(ctx context.Context, apiKey string,
 		err     error
 	)
 	if req.Params.Kind == MediaKindImage2Image {
-		results, err = s.gateway.EditImage(ctx, apiKey, req.Params, req.Files)
+		results, err = s.gateway.EditImage(ctx, apiKey, req.Params)
 	} else {
 		results, err = s.gateway.GenerateImage(ctx, apiKey, req.Params)
 	}
 	if err != nil {
-		s.failTask(ctx, task.ID, err)
+		// 图片是同步调用：失败通常没扣费（参数错误 / 上游 4xx），
+		// 留下 failed 记录只会污染列表。视频失败必须留档对账。
+		s.discardSyncTask(ctx, task.ID, err)
 		return nil, err
 	}
 
@@ -485,6 +500,13 @@ func (s *MediaService) findKey(ctx context.Context, userID string, keyID int64) 
 		}
 	}
 	return nil, ErrMediaKeyNotFound
+}
+
+// discardSyncTask 丢掉同步图片失败时的 pending 记录。
+func (s *MediaService) discardSyncTask(ctx context.Context, id int64, cause error) {
+	if err := s.tasks.Discard(ctx, id); err != nil {
+		log.Printf("[media] 任务 %d 同步失败后清理记录失败: %v (cause: %v)", id, err, cause)
+	}
 }
 
 // failTask 标记任务失败，错误信息已由 gateway 层脱敏。

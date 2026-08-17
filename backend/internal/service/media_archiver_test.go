@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"sub2api-account-monitor/internal/repository"
 )
@@ -59,6 +60,13 @@ func (f *fakeUploader) Put(ctx context.Context, key string, body io.Reader, size
 	f.calls = append(f.calls, fakeUpload{Key: key, ContentType: contentType, Size: size, Data: string(data)})
 	f.mu.Unlock()
 	return "https://cdn.example.com/" + key, nil
+}
+
+func (f *fakeUploader) PresignPut(key, contentType string, expires time.Duration) (string, string, error) {
+	if key == "" {
+		return "", "", fmt.Errorf("对象键不能为空")
+	}
+	return "https://upload.example.com/" + key, "https://cdn.example.com/" + key, nil
 }
 
 func (f *fakeUploader) snapshot() []fakeUpload {

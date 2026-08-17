@@ -374,11 +374,12 @@ type MediaGenerateParams struct {
 	// （1k/2k vs 480p/720p/1080p），复用会让「视频分辨率填了 1k」这类错误
 	// 直到打上游才暴露。
 	ImageResolution string
-	Quality         string // low | medium | high，仅 OpenAI 格式
-	Resolution      string // 480p | 720p | 1080p，仅视频
-	Duration        int    // 1..15 秒
-	ImageURL        string // 图生视频的参考图，须公网可达
-	Stream          bool   // 是否请求流式预览（由上游支持时透传）
+	Quality         string   // low | medium | high，仅 OpenAI 格式
+	Resolution      string   // 480p | 720p | 1080p，仅视频
+	Duration        int      // 1..15 秒
+	ImageURL        string   // 第一张参考图，须公网可达（图生图 / 图生视频）
+	ImageURLs       []string // 全部参考图（含第一张）；图生视频最多 mediaMaxRefImages 张
+	Stream          bool     // 是否请求流式预览（由上游支持时透传）
 }
 
 // 参数边界。均来自上游的硬性约束，越界上游会 400/422。
@@ -387,6 +388,7 @@ const (
 	mediaMinDuration  = 1
 	mediaMaxDuration  = 15
 	mediaMaxImageN    = 4
+	mediaMaxRefImages = 4
 )
 
 // ValidateGenerateParams 在打上游之前做本地校验。
@@ -415,6 +417,11 @@ func ValidateGenerateParams(p MediaGenerateParams) error {
 		if p.N < 1 || p.N > mediaMaxImageN {
 			return fmt.Errorf("生成张数须在 1-%d 之间", mediaMaxImageN)
 		}
+		if p.Kind == MediaKindImage2Image {
+			if err := validateRefImages(p); err != nil {
+				return err
+			}
+		}
 		return validateImageSizeParams(spec, p)
 	case MediaKindText2Video, MediaKindImage2Video:
 		if spec.Capability != MediaCapVideo {
@@ -429,8 +436,10 @@ func ValidateGenerateParams(p MediaGenerateParams) error {
 		if p.AspectRatio != "" && !containsString(grokAspectRatios, p.AspectRatio) {
 			return fmt.Errorf("宽高比 %s 不在支持列表内", p.AspectRatio)
 		}
-		if p.Kind == MediaKindImage2Video && !isPublicHTTPURL(p.ImageURL) {
-			return fmt.Errorf("参考图须为公网可访问的 http(s) 地址")
+		if p.Kind == MediaKindImage2Video {
+			if err := validateRefImages(p); err != nil {
+				return err
+			}
 		}
 		return nil
 	default:
@@ -603,4 +612,37 @@ func containsString(list []string, v string) bool {
 func isPublicHTTPURL(raw string) bool {
 	u := strings.TrimSpace(strings.ToLower(raw))
 	return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
+}
+
+// allImageURLs 按出现顺序去重，只留公网 http(s)。
+func allImageURLs(p MediaGenerateParams) []string {
+	out := make([]string, 0, 1+len(p.ImageURLs))
+	seen := map[string]struct{}{}
+	add := func(raw string) {
+		u := strings.TrimSpace(raw)
+		if !isPublicHTTPURL(u) {
+			return
+		}
+		if _, ok := seen[u]; ok {
+			return
+		}
+		seen[u] = struct{}{}
+		out = append(out, u)
+	}
+	add(p.ImageURL)
+	for _, u := range p.ImageURLs {
+		add(u)
+	}
+	return out
+}
+
+func validateRefImages(p MediaGenerateParams) error {
+	urls := allImageURLs(p)
+	if len(urls) == 0 {
+		return fmt.Errorf("参考图须为公网可访问的 http(s) 地址")
+	}
+	if len(urls) > mediaMaxRefImages {
+		return fmt.Errorf("参考图最多 %d 张", mediaMaxRefImages)
+	}
+	return nil
 }

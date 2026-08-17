@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"sub2api-account-monitor/internal/pkg/response"
 	"sub2api-account-monitor/internal/repository"
@@ -131,23 +132,28 @@ func (h *EmbedMediaHandler) Keys(c *gin.Context) {
 // Grok 图片用后者（前者会被 sub2api 网关删掉），OpenAI 格式图片用前者。
 // 校验在 service 层统一做，handler 只负责如实搬运。
 type mediaGenerateRequest struct {
-	KeyID           int64  `json:"key_id"`
-	Kind            string `json:"kind"`
-	Model           string `json:"model"`
-	Prompt          string `json:"prompt"`
-	N               int    `json:"n"`
-	Size            string `json:"size"`
-	AspectRatio     string `json:"aspect_ratio"`
-	ImageResolution string `json:"image_resolution"`
-	Quality         string `json:"quality"`
-	Resolution      string `json:"resolution"`
-	Duration        int    `json:"duration"`
-	ImageURL        string `json:"image_url"`
-	Stream          bool   `json:"stream"`
-	ClientRequestID string `json:"client_request_id"`
+	KeyID           int64    `json:"key_id"`
+	Kind            string   `json:"kind"`
+	Model           string   `json:"model"`
+	Prompt          string   `json:"prompt"`
+	N               int      `json:"n"`
+	Size            string   `json:"size"`
+	AspectRatio     string   `json:"aspect_ratio"`
+	ImageResolution string   `json:"image_resolution"`
+	Quality         string   `json:"quality"`
+	Resolution      string   `json:"resolution"`
+	Duration        int      `json:"duration"`
+	ImageURL        string   `json:"image_url"`
+	ImageURLs       []string `json:"image_urls"`
+	Stream          bool     `json:"stream"`
+	ClientRequestID string   `json:"client_request_id"`
 }
 
 func (r mediaGenerateRequest) toParams() service.MediaGenerateParams {
+	imageURL := r.ImageURL
+	if imageURL == "" && len(r.ImageURLs) > 0 {
+		imageURL = r.ImageURLs[0]
+	}
 	return service.MediaGenerateParams{
 		Kind:            r.Kind,
 		Model:           r.Model,
@@ -159,7 +165,8 @@ func (r mediaGenerateRequest) toParams() service.MediaGenerateParams {
 		Quality:         r.Quality,
 		Resolution:      r.Resolution,
 		Duration:        r.Duration,
-		ImageURL:        r.ImageURL,
+		ImageURL:        imageURL,
+		ImageURLs:       r.ImageURLs,
 		Stream:          r.Stream,
 	}
 }
@@ -175,17 +182,64 @@ func (h *EmbedMediaHandler) Generate(c *gin.Context) {
 		response.BadRequest(c, "media.errors.invalidParams")
 		return
 	}
-	if req.Kind == service.MediaKindImage2Image {
-		// 图生图必须走 multipart 端点：参考图是文件，JSON 装不下
-		response.BadRequest(c, "media.errors.useUploadEndpoint")
-		return
-	}
-
 	h.submit(c, service.MediaSubmitRequest{
 		KeyID:           req.KeyID,
 		Params:          req.toParams(),
 		ClientRequestID: req.ClientRequestID,
 	})
+}
+
+type mediaPrepareUploadItem struct {
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	Size        int64  `json:"size"`
+}
+
+type mediaPrepareUploadRequest struct {
+	Files []mediaPrepareUploadItem `json:"files"`
+}
+
+type mediaPrepareUploadSlot struct {
+	UploadURL   string            `json:"upload_url"`
+	PublicURL   string            `json:"public_url"`
+	Headers     map[string]string `json:"headers"`
+	ContentType string            `json:"content_type"`
+}
+
+// PrepareUploads POST /api/v1/embed/media/uploads/prepare
+// 签发参考图直传地址。浏览器拿 upload_url PUT 文件，再把 public_url 带回 /generate。
+func (h *EmbedMediaHandler) PrepareUploads(c *gin.Context) {
+	if !h.ready(c) {
+		return
+	}
+	var req mediaPrepareUploadRequest
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.Files) == 0 {
+		response.BadRequest(c, "media.errors.missingImage")
+		return
+	}
+	items := make([]service.RefUploadRequest, 0, len(req.Files))
+	for _, f := range req.Files {
+		items = append(items, service.RefUploadRequest{
+			Filename:    f.Filename,
+			ContentType: f.ContentType,
+			Size:        f.Size,
+		})
+	}
+	slots, err := h.svc.PrepareRefUploads(items)
+	if err != nil {
+		h.writeSubmitError(c, err)
+		return
+	}
+	out := make([]mediaPrepareUploadSlot, 0, len(slots))
+	for _, s := range slots {
+		out = append(out, mediaPrepareUploadSlot{
+			UploadURL:   s.UploadURL,
+			PublicURL:   s.PublicURL,
+			Headers:     s.Headers,
+			ContentType: s.ContentType,
+		})
+	}
+	response.Success(c, gin.H{"items": out})
 }
 
 // maxUploadBytes 单张参考图上限。
@@ -195,7 +249,7 @@ func (h *EmbedMediaHandler) Generate(c *gin.Context) {
 const maxUploadBytes = 20 << 20 // 20MB
 
 // Edit POST /api/v1/embed/media/edits（需嵌入会话，multipart）
-// 图生图：参考图随表单上传，流式转发给上游。
+// 图生图 / 图生视频：参考图先上传对象存储，再带公开 URL 打上游。
 func (h *EmbedMediaHandler) Edit(c *gin.Context) {
 	if !h.ready(c) {
 		return
@@ -223,7 +277,12 @@ func (h *EmbedMediaHandler) Edit(c *gin.Context) {
 			return
 		}
 		defer f.Close()
-		files = append(files, service.MediaUploadFile{Filename: fh.Filename, Reader: f})
+		files = append(files, service.MediaUploadFile{
+			Filename:    fh.Filename,
+			ContentType: fh.Header.Get("Content-Type"),
+			Size:        fh.Size,
+			Reader:      f,
+		})
 	}
 
 	keyID, _ := strconv.ParseInt(c.PostForm("key_id"), 10, 64)
@@ -231,11 +290,20 @@ func (h *EmbedMediaHandler) Edit(c *gin.Context) {
 	if n <= 0 {
 		n = 1
 	}
+	duration, _ := strconv.Atoi(c.PostForm("duration"))
+	kind := c.PostForm("kind")
+	if kind == "" {
+		kind = service.MediaKindImage2Image
+	}
+	if kind != service.MediaKindImage2Image && kind != service.MediaKindImage2Video {
+		response.BadRequest(c, "media.errors.invalidParams")
+		return
+	}
 
 	h.submit(c, service.MediaSubmitRequest{
 		KeyID: keyID,
 		Params: service.MediaGenerateParams{
-			Kind:            service.MediaKindImage2Image,
+			Kind:            kind,
 			Model:           c.PostForm("model"),
 			Prompt:          c.PostForm("prompt"),
 			N:               n,
@@ -243,10 +311,22 @@ func (h *EmbedMediaHandler) Edit(c *gin.Context) {
 			AspectRatio:     c.PostForm("aspect_ratio"),
 			ImageResolution: c.PostForm("image_resolution"),
 			Quality:         c.PostForm("quality"),
+			Resolution:      c.PostForm("resolution"),
+			Duration:        duration,
+			Stream:          parseFormBool(c.PostForm("stream")),
 		},
 		ClientRequestID: c.PostForm("client_request_id"),
 		Files:           files,
 	})
+}
+
+func parseFormBool(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // mediaSubmitDTO 提交响应：任务元数据 + 本次生成的产物。
@@ -290,6 +370,10 @@ func (h *EmbedMediaHandler) writeSubmitError(c *gin.Context, err error) {
 		response.BadRequest(c, "media.errors.tooManyActive")
 	case errors.Is(err, service.ErrMediaRateLimited):
 		response.BadRequest(c, "media.errors.tooFrequent")
+	case errors.Is(err, service.ErrMediaStorageRequired):
+		response.BadRequest(c, "media.errors.storageRequired")
+	case errors.Is(err, service.ErrMediaBadImageType):
+		response.BadRequest(c, "media.errors.badImageType")
 	default:
 		var ge *service.MediaGatewayError
 		if errors.As(err, &ge) {

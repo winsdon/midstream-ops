@@ -212,6 +212,44 @@ func TestSubmitImage2VideoUsesNestedImageObject(t *testing.T) {
 	}
 }
 
+// 图生视频最多 4 张参考图：第一张走 image，全部走 images。
+func TestSubmitImage2VideoSendsAllImages(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_, _ = io.WriteString(w, `{"request_id":"rid"}`)
+	}))
+	defer srv.Close()
+
+	urls := []string{
+		"https://oss.example.com/a.jpg",
+		"https://oss.example.com/b.jpg",
+		"https://oss.example.com/c.jpg",
+		"https://oss.example.com/d.jpg",
+	}
+	if _, err := NewMediaGateway(srv.URL).SubmitVideo(context.Background(), testAPIKey, MediaGenerateParams{
+		Model: "grok-imagine-video", Prompt: "四张参考图",
+		Resolution: "480p", Duration: 8,
+		ImageURL: urls[0], ImageURLs: urls,
+	}); err != nil {
+		t.Fatalf("提交失败: %v", err)
+	}
+	img, ok := gotBody["image"].(map[string]any)
+	if !ok || img["url"] != urls[0] {
+		t.Fatalf("第一张必须在 image.url: %v", gotBody["image"])
+	}
+	raw, ok := gotBody["images"].([]any)
+	if !ok || len(raw) != 4 {
+		t.Fatalf("images 必须含 4 张: %v", gotBody["images"])
+	}
+	for i, item := range raw {
+		m, _ := item.(map[string]any)
+		if m["url"] != urls[i] {
+			t.Fatalf("images[%d] 错误: %v", i, item)
+		}
+	}
+}
+
 // 视频状态三态：202 进行中 / 200 完成 / 400 审核拒绝（终态失败且已扣费）。
 func TestQueryVideoThreeStates(t *testing.T) {
 	t.Run("202 进行中", func(t *testing.T) {
@@ -306,35 +344,18 @@ func TestOpenVideoContentStreams(t *testing.T) {
 	}
 }
 
-// 图生图走 multipart，参考图字段名必须是 image。
+// 图生图走 JSON 的嵌套 image.url，不再转发 multipart。
 //
-// multipart 与 JSON 是两条独立的提交路径，尺寸参数的互斥规则在两边必须一致——
-// 它们过去各写一遍参数装配，正是 size 只在其中一条路径被处理的温床。
-func TestEditImageSendsMultipart(t *testing.T) {
-	var gotContentType, gotModel, gotFilename string
-	var gotAspect, gotResolution, gotSize string
-	var hasSize bool
-	var gotFileBody []byte
+// 本地文件先上传对象存储；把文件直接 multipart 给上游时，sub2api 会编成
+// data URL，xAI 回 400 Invalid base64-encoded image。
+func TestEditImageSendsJSONImageURL(t *testing.T) {
+	var gotContentType, gotPath string
+	var gotBody map[string]any
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotContentType = r.Header.Get("Content-Type")
-		if err := r.ParseMultipartForm(10 << 20); err != nil {
-			t.Errorf("解析 multipart 失败: %v", err)
-			return
-		}
-		gotModel = r.FormValue("model")
-		gotAspect = r.FormValue("aspect_ratio")
-		gotResolution = r.FormValue("resolution")
-		gotSize, hasSize = r.FormValue("size"), len(r.MultipartForm.Value["size"]) > 0
-		file, hdr, err := r.FormFile("image")
-		if err != nil {
-			t.Errorf("缺少 image 字段: %v", err)
-			return
-		}
-		defer file.Close()
-		gotFilename = hdr.Filename
-		gotFileBody, _ = io.ReadAll(file)
-
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		_, _ = io.WriteString(w, `{"data":[{"b64_json":"RURJVA=="}]}`)
 	}))
 	defer srv.Close()
@@ -343,27 +364,34 @@ func TestEditImageSendsMultipart(t *testing.T) {
 		MediaGenerateParams{
 			Model: "grok-imagine-image", Prompt: "赛博朋克", N: 1,
 			AspectRatio: "9:16", ImageResolution: "1k",
-			Size: "3840x2160", // 误填也不该被发出去
-		},
-		[]MediaUploadFile{{Filename: "input.jpg", Reader: strings.NewReader("image-bytes")}})
+			Size:     "3840x2160", // 误填也不该被发出去
+			ImageURL: "https://cdn.example.com/ref.jpg",
+		})
 	if err != nil {
 		t.Fatalf("编辑失败: %v", err)
 	}
 
-	if !strings.HasPrefix(gotContentType, "multipart/form-data") {
-		t.Fatalf("图生图必须用 multipart，实得 %s", gotContentType)
+	if !strings.HasPrefix(gotContentType, "application/json") {
+		t.Fatalf("图生图必须用 JSON，实得 %s", gotContentType)
 	}
-	if gotModel != "grok-imagine-image" {
-		t.Fatalf("model 未透传: %s", gotModel)
+	if gotPath != "/v1/images/edits" {
+		t.Fatalf("路径错误: %s", gotPath)
 	}
-	if gotAspect != "9:16" || gotResolution != "1k" {
-		t.Fatalf("Grok 的 aspect_ratio / resolution 未透传: %q / %q", gotAspect, gotResolution)
+	if gotBody["model"] != "grok-imagine-image" {
+		t.Fatalf("model 未透传: %v", gotBody["model"])
 	}
-	if hasSize && gotSize != "" {
-		t.Fatalf("Grok 的 multipart 请求绝不能带 size，实得 %q", gotSize)
+	if gotBody["aspect_ratio"] != "9:16" || gotBody["resolution"] != "1k" {
+		t.Fatalf("Grok 的 aspect_ratio / resolution 未透传: %v", gotBody)
 	}
-	if gotFilename != "input.jpg" || string(gotFileBody) != "image-bytes" {
-		t.Fatalf("参考图未正确转发: %s / %s", gotFilename, gotFileBody)
+	if _, hasSize := gotBody["size"]; hasSize {
+		t.Fatalf("Grok 的请求绝不能带 size，实得 %v", gotBody["size"])
+	}
+	img, ok := gotBody["image"].(map[string]any)
+	if !ok || img["url"] != "https://cdn.example.com/ref.jpg" {
+		t.Fatalf("参考图必须是嵌套 image.url: %v", gotBody)
+	}
+	if _, bad := gotBody["image_url"]; bad {
+		t.Fatalf("不应发送顶层 image_url: %v", gotBody)
 	}
 	if len(got) != 1 {
 		t.Fatalf("响应解析错误: %v", got)
@@ -422,24 +450,22 @@ func TestImageRequestsBase64NotURL(t *testing.T) {
 	})
 
 	t.Run("图生图", func(t *testing.T) {
-		var gotFormat string
+		var got map[string]any
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if err := r.ParseMultipartForm(1 << 20); err != nil {
-				t.Errorf("解析 multipart 失败: %v", err)
-				return
-			}
-			gotFormat = r.FormValue("response_format")
+			_ = json.NewDecoder(r.Body).Decode(&got)
 			_, _ = io.WriteString(w, `{"data":[{"b64_json":"AAAA"}]}`)
 		}))
 		defer srv.Close()
 
 		if _, err := NewMediaGateway(srv.URL).EditImage(context.Background(), testAPIKey,
-			MediaGenerateParams{Model: "grok-imagine-image", Prompt: "x", N: 1},
-			[]MediaUploadFile{{Filename: "a.jpg", Reader: strings.NewReader("bytes")}}); err != nil {
+			MediaGenerateParams{
+				Model: "grok-imagine-image", Prompt: "x", N: 1,
+				ImageURL: "https://cdn.example.com/a.jpg",
+			}); err != nil {
 			t.Fatalf("编辑失败: %v", err)
 		}
-		if gotFormat != "b64_json" {
-			t.Fatalf("图生图同样必须请求 b64_json，实得 %q", gotFormat)
+		if got["response_format"] != "b64_json" {
+			t.Fatalf("图生图同样必须请求 b64_json，实得 %v", got["response_format"])
 		}
 	})
 }

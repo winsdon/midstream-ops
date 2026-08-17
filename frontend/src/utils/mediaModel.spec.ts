@@ -7,6 +7,7 @@ import {
   billingTierOf,
   downgradeTargetOf,
   emptyMediaForm,
+  resetMediaFormForKind,
   estimateTicks,
   validateMediaForm,
   modelsForKind,
@@ -166,12 +167,14 @@ describe('任务类型判定', () => {
     expect(isVideoKind('i2i')).toBe(false)
   })
 
-  it('只有图生图需要上传文件', () => {
+  it('图生图和图生视频都走本地选图', () => {
     expect(needsUpload('i2i')).toBe(true)
-    expect(needsUpload('i2v')).toBe(false)
+    expect(needsUpload('i2v')).toBe(true)
+    expect(needsUpload('t2i')).toBe(false)
+    expect(needsUpload('t2v')).toBe(false)
   })
 
-  it('只有图生视频需要公网 URL —— multipart 会被上游 415', () => {
+  it('图生视频仍可粘贴公网 URL（复用任务 / 已有地址）', () => {
     expect(needsImageURL('i2v')).toBe(true)
     expect(needsImageURL('i2i')).toBe(false)
   })
@@ -352,7 +355,7 @@ describe('validateMediaForm', () => {
     expect(validateMediaForm({ ...base, size: '4K' }, oai)).toBe('media.errors.badSize')
   })
 
-  it('图生视频必须给公网 http(s) 参考图', () => {
+  it('图生视频：空 URL 留给选图，非法 URL 拒绝，公网 URL 通过', () => {
     const base = {
       ...emptyMediaForm(),
       kind: 'i2v' as const,
@@ -362,9 +365,37 @@ describe('validateMediaForm', () => {
       resolution: '480p',
       duration: 8
     }
-    expect(validateMediaForm(base, key)).toBe('media.errors.badImageURL')
+    expect(validateMediaForm(base, key)).toBe('')
     expect(validateMediaForm({ ...base, imageURL: '/local.jpg' }, key)).toBe('media.errors.badImageURL')
     expect(validateMediaForm({ ...base, imageURL: 'https://x.com/a.jpg' }, key)).toBe('')
+  })
+})
+
+describe('resetMediaFormForKind', () => {
+  it('keeps the prompt and selected key while restoring generation defaults', () => {
+    const current = {
+      ...emptyMediaForm(),
+      kind: 'i2v' as const,
+      keyId: 42,
+      model: 'old-model',
+      prompt: '保留这段提示词',
+      n: 4,
+      size: '3840x2160',
+      aspectRatio: '9:16',
+      imageResolution: '2k',
+      quality: 'low',
+      resolution: '1080p',
+      duration: 15,
+      imageURL: 'https://example.com/image.jpg',
+      stream: true
+    }
+
+    expect(resetMediaFormForKind(current, 't2v')).toEqual({
+      ...emptyMediaForm(),
+      keyId: 42,
+      kind: 't2v',
+      prompt: '保留这段提示词'
+    })
   })
 })
 
