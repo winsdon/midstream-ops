@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -100,9 +101,12 @@ func (s *CostSyncService) SyncOne(
 			KeyName:       k.Name,
 			Status:        k.Status,
 		}
-		if k.Group != nil && p.Platform != "new-api" {
-			rate := k.Group.RateMultiplier
-			m.RateMultiplier = &rate
+		if k.Group != nil {
+			m.GroupName = strings.TrimSpace(k.Group.Name)
+			if p.Platform != "new-api" {
+				rate := k.Group.RateMultiplier
+				m.RateMultiplier = &rate
+			}
 		}
 		// 按 api_key 明文指纹匹配本站账号；明文不落库、不外传
 		var fp string
@@ -268,30 +272,46 @@ func (s *CostSyncService) backfillNewAPIHistory(
 	return nil
 }
 
+// fetchKeys 只拉上游 key 列表（分组归集用，不打用量接口）。
+func (s *CostSyncService) fetchKeys(ctx context.Context, p *repository.Provider) ([]ProviderAPIKey, error) {
+	if p.Platform == "new-api" {
+		keys, _, err := s.fetchNewAPIKeysAndUsage(ctx, p)
+		return keys, err
+	}
+	sess, err := s.tokens.ensure(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := s.client.GetAPIKeys(ctx, p.BaseURL, sess.AccessToken)
+	if err != nil {
+		if !IsUnauthorized(err) {
+			return nil, err
+		}
+		if sess, err = s.tokens.refresh(ctx, p); err != nil {
+			return nil, err
+		}
+		if keys, err = s.client.GetAPIKeys(ctx, p.BaseURL, sess.AccessToken); err != nil {
+			return nil, err
+		}
+	}
+	return keys, nil
+}
+
 // fetchKeysAndUsage 拉取 key 列表与今日用量，含一次 401 重登。
 func (s *CostSyncService) fetchKeysAndUsage(ctx context.Context, p *repository.Provider) ([]ProviderAPIKey, map[int64]APIKeyUsage, error) {
 	if p.Platform == "new-api" {
 		return s.fetchNewAPIKeysAndUsage(ctx, p)
 	}
-	sess, err := s.tokens.ensure(ctx, p)
+	keys, err := s.fetchKeys(ctx, p)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	keys, err := s.client.GetAPIKeys(ctx, p.BaseURL, sess.AccessToken)
-	if err != nil {
-		if !IsUnauthorized(err) {
-			return nil, nil, err
-		}
-		if sess, err = s.tokens.refresh(ctx, p); err != nil {
-			return nil, nil, err
-		}
-		if keys, err = s.client.GetAPIKeys(ctx, p.BaseURL, sess.AccessToken); err != nil {
-			return nil, nil, err
-		}
-	}
 	if len(keys) == 0 {
 		return keys, map[int64]APIKeyUsage{}, nil
+	}
+	sess, err := s.tokens.ensure(ctx, p)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	ids := make([]int64, 0, len(keys))
@@ -452,6 +472,158 @@ func matchCostAccount(
 		return account, true
 	}
 	return repository.AccountKeyFingerprint{}, false
+}
+
+// KeyGroupHit 上游分组下用 key 指纹（与成本明细同一套规则）匹配到的本站账号。
+type KeyGroupHit struct {
+	AccountID   int64
+	AccountName string
+}
+
+// groupAccountsByKeys 按上游 key 所属分组归集本站账号。
+// 匹配规则与成本明细完全一致：优先 sha256(api_key)，失败才回退唯一别名。
+func groupAccountsByKeys(keys []ProviderAPIKey, fingerprints map[string]repository.AccountKeyFingerprint) map[string][]KeyGroupHit {
+	out := map[string][]KeyGroupHit{}
+	seen := map[string]map[int64]struct{}{}
+	for _, k := range keys {
+		group := ""
+		if k.Group != nil {
+			group = strings.TrimSpace(k.Group.Name)
+		}
+		if group == "" {
+			continue
+		}
+		fp := ""
+		if k.Key != "" {
+			fp = keyidentity.Fingerprint(k.Key)
+		}
+		acc, ok := matchCostAccount(fp, k.Name, group, fingerprints)
+		if !ok {
+			continue
+		}
+		if seen[group] == nil {
+			seen[group] = map[int64]struct{}{}
+		}
+		if _, dup := seen[group][acc.AccountID]; dup {
+			continue
+		}
+		seen[group][acc.AccountID] = struct{}{}
+		out[group] = append(out[group], KeyGroupHit{AccountID: acc.AccountID, AccountName: acc.AccountName})
+	}
+	return out
+}
+
+// GroupLinkedAccount 分组弹窗里展示的本站账号（不含密钥）。
+type GroupLinkedAccount struct {
+	ID             int64    `json:"id"`
+	Name           string   `json:"name"`
+	Platform       string   `json:"platform"`
+	Status         string   `json:"status"`
+	RateMultiplier float64  `json:"rate_multiplier"`
+	Groups         []string `json:"groups"`
+}
+
+// GroupAccountBucket 一个上游分组下匹配到的本站账号。
+type GroupAccountBucket struct {
+	Group    string               `json:"group"`
+	Accounts []GroupLinkedAccount `json:"accounts"`
+}
+
+// GroupAccountsResult 按上游 key 归组的本站账号。
+type GroupAccountsResult struct {
+	Items  []GroupAccountBucket `json:"items"`
+	Source string               `json:"source"` // live_keys | stored_map
+	Error  string               `json:"error,omitempty"`
+}
+
+// AccountsByUpstreamGroup 按成本明细同一套 key 匹配，给出每个上游分组对应哪些本站账号。
+// 优先打上游拉 key 列表；凭据不齐或拉取失败时，回退到上次成本同步写入的映射。
+func (s *CostSyncService) AccountsByUpstreamGroup(ctx context.Context, providerID int64) (GroupAccountsResult, error) {
+	p, err := s.providerRepo.GetByID(ctx, providerID)
+	if err != nil {
+		return GroupAccountsResult{}, err
+	}
+
+	var hits map[string][]KeyGroupHit
+	source := "stored_map"
+	fetchErr := ""
+
+	if p.CredentialsReady() {
+		if keys, kErr := s.fetchKeys(ctx, p); kErr != nil {
+			fetchErr = kErr.Error()
+		} else {
+			fps, fErr := s.accountFingerprints(ctx)
+			if fErr != nil {
+				return GroupAccountsResult{}, fErr
+			}
+			hits = groupAccountsByKeys(keys, fps)
+			source = "live_keys"
+		}
+	} else {
+		fetchErr = "站点凭据未配置，无法拉取上游 key"
+	}
+
+	if source != "live_keys" {
+		stored, sErr := s.costRepo.MappedAccountsByGroup(ctx, providerID)
+		if sErr != nil {
+			return GroupAccountsResult{}, sErr
+		}
+		hits = map[string][]KeyGroupHit{}
+		for g, list := range stored {
+			for _, h := range list {
+				hits[g] = append(hits[g], KeyGroupHit{AccountID: h.AccountID, AccountName: h.AccountName})
+			}
+		}
+		source = "stored_map"
+	}
+
+	hydrated, err := s.hydrateGroupHits(ctx, hits)
+	if err != nil {
+		return GroupAccountsResult{}, err
+	}
+	return GroupAccountsResult{Items: hydrated, Source: source, Error: fetchErr}, nil
+}
+
+func (s *CostSyncService) hydrateGroupHits(ctx context.Context, hits map[string][]KeyGroupHit) ([]GroupAccountBucket, error) {
+	names := make([]string, 0, len(hits))
+	for g := range hits {
+		names = append(names, g)
+	}
+	sort.Strings(names)
+
+	byID := map[int64]repository.PGAccount{}
+	groupMap := map[int64][]string{}
+	if s.pg != nil && s.pg.Available() {
+		if accs, err := s.pg.ListActiveAccounts(ctx); err == nil {
+			for _, a := range accs {
+				byID[a.ID] = a
+			}
+		}
+		if gm, err := s.pg.AccountGroups(ctx); err == nil {
+			groupMap = gm
+		}
+	}
+
+	out := make([]GroupAccountBucket, 0, len(names))
+	for _, g := range names {
+		accs := make([]GroupLinkedAccount, 0, len(hits[g]))
+		for _, h := range hits[g] {
+			row := GroupLinkedAccount{ID: h.AccountID, Name: h.AccountName, Groups: []string{}}
+			if a, ok := byID[h.AccountID]; ok {
+				row.Name = a.Name
+				row.Platform = a.Platform
+				row.Status = a.Status
+				row.RateMultiplier = a.RateMultiplier
+				row.Groups = groupMap[a.ID]
+				if row.Groups == nil {
+					row.Groups = []string{}
+				}
+			}
+			accs = append(accs, row)
+		}
+		out = append(out, GroupAccountBucket{Group: g, Accounts: accs})
+	}
+	return out, nil
 }
 
 // costAccountAlias 去掉账号名的【】前缀，得到与上游 key 名比对用的别名。

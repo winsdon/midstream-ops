@@ -689,6 +689,29 @@ func (h *ProviderHandler) BalanceHistory(c *gin.Context) {
 	response.Success(c, gin.H{"items": out, "total": len(out)})
 }
 
+// GroupAccounts GET /providers/:id/group-accounts
+// 按成本明细同一套 key 指纹匹配，返回每个上游分组对应的本站账号。
+func (h *ProviderHandler) GroupAccounts(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	if _, err := h.svc.Repo().GetByID(c.Request.Context(), id); err != nil {
+		response.NotFound(c, "供应商不存在")
+		return
+	}
+	if h.costSvc == nil {
+		response.InternalError(c, "成本服务未就绪")
+		return
+	}
+	res, err := h.costSvc.AccountsByUpstreamGroup(c.Request.Context(), id)
+	if err != nil {
+		response.InternalError(c, "查询失败: "+err.Error())
+		return
+	}
+	response.Success(c, res)
+}
+
 // KeyCosts GET /providers/:id/costs?start=&end=
 // 返回该供应商 per-key 的上游实扣明细（只读本地库）。
 func (h *ProviderHandler) KeyCosts(c *gin.Context) {

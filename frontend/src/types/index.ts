@@ -144,6 +144,47 @@ export interface LocalGroupOption {
   id: number
   name: string
   rate: number
+  platform?: string
+}
+
+export interface GroupLinkedAccount {
+  id: number
+  name: string
+  platform: string
+  status: string
+  rate_multiplier: number
+  groups?: string[] | null
+}
+
+export interface GroupAccountBucket {
+  group: string
+  accounts: GroupLinkedAccount[]
+}
+
+export interface GroupAccountsResult {
+  items: GroupAccountBucket[]
+  source: 'live_keys' | 'stored_map' | string
+  error?: string
+}
+
+/** 上游 key ↔ 本站账号的对接记录（/provision/connections）。 */
+export interface UpstreamConnection {
+  id: number
+  provider_id: number
+  upstream_group: string
+  upstream_group_id: number
+  upstream_key_id: number
+  upstream_key_name: string
+  local_account_id: number
+  local_account_name: string
+  local_group_ids: number[]
+  group_platform: string
+  mode: string
+  operation_id: string
+  status: string
+  error?: string | null
+  created_at: string
+  updated_at: string
 }
 
 // ---- 系统设置 ----
@@ -194,6 +235,8 @@ export interface ProviderAccount {
   schedulable: boolean
   rate_multiplier: number
   groups?: string[] | null
+  /** 转发地址，不是密钥 */
+  base_url?: string
 }
 
 export interface ScanItem {

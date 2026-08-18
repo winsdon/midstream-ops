@@ -145,6 +145,61 @@ func TestMatchCostAccountFallsBackOnlyWhenNameIsUnique(t *testing.T) {
 	}
 }
 
+func TestGroupAccountsByKeysUsesFingerprintNotName(t *testing.T) {
+	fp := keyidentity.Fingerprint("sk-walk-kiro")
+	fingerprints := map[string]repository.AccountKeyFingerprint{
+		fp: {AccountID: 57, AccountName: "【walk】kiro 高缓 0.055", Fingerprint: fp},
+	}
+	keys := []ProviderAPIKey{
+		{
+			ID:   1,
+			Name: "some-random-key-label",
+			Key:  "sk-walk-kiro",
+			Group: &struct {
+				Name           string  `json:"name"`
+				RateMultiplier float64 `json:"rate_multiplier"`
+			}{Name: "Kiro - 中缓", RateMultiplier: 0.06},
+		},
+		{
+			ID:   2,
+			Name: "unmatched",
+			Key:  "sk-other",
+			Group: &struct {
+				Name           string  `json:"name"`
+				RateMultiplier float64 `json:"rate_multiplier"`
+			}{Name: "Claude Max", RateMultiplier: 0.85},
+		},
+	}
+
+	got := groupAccountsByKeys(keys, fingerprints)
+	hits := got["Kiro - 中缓"]
+	if len(hits) != 1 || hits[0].AccountID != 57 {
+		t.Fatalf("应按指纹归到 Kiro - 中缓，实际 %#v", got)
+	}
+	if _, ok := got["Claude Max"]; ok {
+		t.Fatal("未匹配上的 key 不该出现在任何分组")
+	}
+}
+
+func TestGroupAccountsByKeysDedupesSameAccount(t *testing.T) {
+	fp := keyidentity.Fingerprint("sk-shared")
+	fingerprints := map[string]repository.AccountKeyFingerprint{
+		fp: {AccountID: 9, AccountName: "acc", Fingerprint: fp},
+	}
+	g := &struct {
+		Name           string  `json:"name"`
+		RateMultiplier float64 `json:"rate_multiplier"`
+	}{Name: "default"}
+	keys := []ProviderAPIKey{
+		{ID: 1, Name: "a", Key: "sk-shared", Group: g},
+		{ID: 2, Name: "b", Key: "sk-shared", Group: g},
+	}
+	got := groupAccountsByKeys(keys, fingerprints)
+	if len(got["default"]) != 1 {
+		t.Fatalf("同一账号在同一分组只应出现一次，实际 %#v", got["default"])
+	}
+}
+
 func TestSub2APIFingerprintMatchRegression(t *testing.T) {
 	fp := keyidentity.Fingerprint("sub2-key")
 	accounts := map[string]repository.AccountKeyFingerprint{

@@ -1,0 +1,1 @@
+ALTER TABLE upstream_key_map ADD COLUMN IF NOT EXISTS group_name TEXT NOT NULL DEFAULT '';

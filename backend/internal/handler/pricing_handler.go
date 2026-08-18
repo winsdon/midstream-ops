@@ -58,14 +58,14 @@ func (h *PricingHandler) LocalGroups(c *gin.Context) {
 		response.ServiceUnavailable(c, "线上数据库暂不可用")
 		return
 	}
-	groups, err := h.pg.ListGroupRates(c.Request.Context())
+	groups, err := h.pg.ListGroups(c.Request.Context())
 	if err != nil {
 		response.InternalError(c, "查询失败: "+err.Error())
 		return
 	}
 	out := make([]gin.H, 0, len(groups))
 	for _, g := range groups {
-		out = append(out, gin.H{"id": g.ID, "name": g.Name, "rate": g.Rate})
+		out = append(out, gin.H{"id": g.ID, "name": g.Name, "rate": g.RateMultiplier, "platform": g.Platform})
 	}
 	response.Success(c, gin.H{"items": out})
 }

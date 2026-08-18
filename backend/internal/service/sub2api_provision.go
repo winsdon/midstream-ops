@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
+	"strconv"
 	"strings"
 )
 
@@ -130,14 +132,6 @@ func decodeAdminAccountPage(raw json.RawMessage) ([]AdminAccount, int64, error) 
 	return list, 0, nil
 }
 
-// 平台名前缀：账号命名用，便于在本站列表里按类型辨识来源。
-var platformPrefix = map[string]string{
-	"openai":      "A",
-	"anthropic":   "B",
-	"gemini":      "C",
-	"antigravity": "D",
-}
-
 // platformConcurrency 各平台的默认并发上限（沿用 transit-hub 的实测值）。
 var platformConcurrency = map[string]int{
 	"openai":      1000,
@@ -146,14 +140,55 @@ var platformConcurrency = map[string]int{
 	"antigravity": 10,
 }
 
-// AccountName 生成本站账号名：{前缀}-【上游站名】-{倍率}。
-// 与本项目「账号名【】前缀即供应商名」的既有约定一致，使新建账号自动归属到对应供应商。
-func AccountName(platform, providerName string, rate float64) string {
-	prefix, ok := platformPrefix[platform]
-	if !ok {
-		prefix = "X"
+// SelfKeyBrand 上游 key 名称里的本站品牌前缀。self 站点在库里叫 __self__，不能当品牌。
+const SelfKeyBrand = "kaola"
+
+// FormatRate 整数原样，否则去尾零（与前端 formatRate 同构）。
+func FormatRate(rate float64) string {
+	if rate == 0 {
+		return "0"
 	}
-	return fmt.Sprintf("%s-【%s】-%gx", prefix, providerName, rate)
+	s := strconv.FormatFloat(rate, 'f', 4, 64)
+	s = strings.TrimRight(s, "0")
+	s = strings.TrimRight(s, ".")
+	if s == "" || s == "-0" {
+		return "0"
+	}
+	return s
+}
+
+// UpstreamKeyName 上游 key：【kaola】{分组}-{倍率}。
+func UpstreamKeyName(group string, rate float64) string {
+	return "【" + SelfKeyBrand + "】" + group + "-" + FormatRate(rate)
+}
+
+// LocalAccountName 本站账号：【{上游名}】{分组}-{倍率}。
+func LocalAccountName(provider, group string, rate float64) string {
+	return "【" + provider + "】" + group + "-" + FormatRate(rate)
+}
+
+// PickAccountBaseURL 从子账号 URL 里随机取一条（去空白、去重）。空则返回空串。
+func PickAccountBaseURL(urls []string) string {
+	seen := map[string]struct{}{}
+	uniq := make([]string, 0, len(urls))
+	for _, raw := range urls {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		uniq = append(uniq, s)
+	}
+	if len(uniq) == 0 {
+		return ""
+	}
+	if len(uniq) == 1 {
+		return uniq[0]
+	}
+	return uniq[rand.Intn(len(uniq))]
 }
 
 // BuildAccountPayload 组装本站建账号的请求体。

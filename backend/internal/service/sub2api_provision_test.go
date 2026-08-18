@@ -102,27 +102,54 @@ func TestBuildAccountPayloadNilGroupIDs(t *testing.T) {
 	}
 }
 
-func TestAccountName(t *testing.T) {
+func TestFormatRate(t *testing.T) {
 	cases := []struct {
-		platform string
-		provider string
-		rate     float64
-		wantPre  string
+		rate float64
+		want string
 	}{
-		{"openai", "walk", 1.5, "A-"},
-		{"anthropic", "walk", 0.6, "B-"},
-		{"gemini", "pet", 1, "C-"},
-		{"antigravity", "pet", 2.25, "D-"},
-		{"weird", "pet", 1, "X-"}, // 未知平台兜底
+		{1, "1"},
+		{1.0, "1"},
+		{0.5, "0.5"},
+		{2.25, "2.25"},
+		{0, "0"},
 	}
 	for _, c := range cases {
-		got := AccountName(c.platform, c.provider, c.rate)
-		if !strings.HasPrefix(got, c.wantPre) {
-			t.Errorf("%s 应以 %s 开头，实际 %s", c.platform, c.wantPre, got)
+		if got := FormatRate(c.rate); got != c.want {
+			t.Errorf("FormatRate(%v) = %q, want %q", c.rate, got, c.want)
 		}
-		// 必须含【供应商名】—— 本项目靠该前缀把账号归属到供应商
-		if !strings.Contains(got, "【"+c.provider+"】") {
-			t.Errorf("账号名应含【%s】，实际 %s", c.provider, got)
-		}
+	}
+}
+
+func TestUpstreamKeyName(t *testing.T) {
+	if got := UpstreamKeyName("default", 0.5); got != "【kaola】default-0.5" {
+		t.Errorf("got %q", got)
+	}
+	if got := UpstreamKeyName("gpt", 1); got != "【kaola】gpt-1" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestLocalAccountName(t *testing.T) {
+	if got := LocalAccountName("walk", "default", 0.5); got != "【walk】default-0.5" {
+		t.Errorf("got %q", got)
+	}
+	if !strings.Contains(LocalAccountName("tongba", "claude", 2.25), "【tongba】") {
+		t.Error("账号名必须含【上游名】")
+	}
+}
+
+func TestPickAccountBaseURL(t *testing.T) {
+	if got := PickAccountBaseURL(nil); got != "" {
+		t.Errorf("空列表应返回空串，实际 %q", got)
+	}
+	if got := PickAccountBaseURL([]string{"", "  "}); got != "" {
+		t.Errorf("全空应返回空串，实际 %q", got)
+	}
+	if got := PickAccountBaseURL([]string{"https://only.example/"}); got != "https://only.example/" {
+		t.Errorf("单元素应原样返回，实际 %q", got)
+	}
+	got := PickAccountBaseURL([]string{"https://a.example", "", "https://b.example", "https://a.example"})
+	if got != "https://a.example" && got != "https://b.example" {
+		t.Errorf("多元素应落在去重后的集合里，实际 %q", got)
 	}
 }

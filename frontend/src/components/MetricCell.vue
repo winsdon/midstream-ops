@@ -1,11 +1,17 @@
 <template>
   <div class="flex flex-col items-center justify-center rounded-xl border border-gray-100 bg-gray-50/60 p-3 dark:border-dark-800 dark:bg-dark-800/40">
     <p class="mb-1 text-xs text-gray-500 dark:text-dark-400">{{ label }}</p>
-    <!-- 有有效充值倍率时 CNY 主显、USD 副显；否则 USD 升为主显 -->
-    <span v-if="cny !== null" class="text-center text-sm font-bold" :class="mainTone">{{ cny }}</span>
-    <span :class="[cny !== null ? ['mt-0.5 text-[10px] font-medium', subTone] : ['text-sm font-bold', mainTone], 'text-center']">
-      {{ usdText }}
-    </span>
+    <!-- usdOnly：卡片只要 USD，省掉 CNY 双显占的高度 -->
+    <template v-if="usdOnly">
+      <span class="text-center text-sm font-bold" :class="mainTone">{{ usdText }}</span>
+    </template>
+    <template v-else>
+      <!-- 有有效充值倍率时 CNY 主显、USD 副显；否则 USD 升为主显 -->
+      <span v-if="cny !== null" class="text-center text-sm font-bold" :class="mainTone">{{ cny }}</span>
+      <span :class="[cny !== null ? ['mt-0.5 text-[10px] font-medium', subTone] : ['text-sm font-bold', mainTone], 'text-center']">
+        {{ usdText }}
+      </span>
+    </template>
   </div>
 </template>
 
@@ -20,8 +26,10 @@ const props = withDefaults(
     /** 充值倍率：USD × rate = CNY；<= 0 视为无效 */
     rate: number
     tone?: 'primary' | 'warning' | 'muted'
+    /** 只显示 USD（上游卡片用，腾出空间放子账号/成本入口） */
+    usdOnly?: boolean
   }>(),
-  { tone: 'primary' }
+  { tone: 'primary', usdOnly: false }
 )
 
 // 必须写完整字面量：Tailwind 扫描源码文本提取类名

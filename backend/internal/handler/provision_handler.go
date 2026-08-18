@@ -47,6 +47,9 @@ type connectRequest struct {
 	UpstreamGroup string  `json:"upstream_group" binding:"required"`
 	LocalGroupIDs []int64 `json:"local_group_ids" binding:"required"`
 	OperationID   string  `json:"operation_id"`
+	KeyName       string  `json:"key_name"`
+	AccountName   string  `json:"account_name"`
+	BaseURL       string  `json:"base_url"`
 }
 
 // Connect POST /provision/connect —— 自动建号（上游建 key + 本站建账号）。
@@ -61,6 +64,9 @@ func (h *ProvisionHandler) Connect(c *gin.Context) {
 		UpstreamGroup: req.UpstreamGroup,
 		LocalGroupIDs: req.LocalGroupIDs,
 		OperationID:   req.OperationID,
+		KeyName:       req.KeyName,
+		AccountName:   req.AccountName,
+		BaseURL:       req.BaseURL,
 	})
 	if err != nil {
 		// 建号失败是业务结果而非系统错误：返回 200 + ok=false，前端展示明细

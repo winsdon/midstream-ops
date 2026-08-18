@@ -34,11 +34,20 @@
       </div>
     </div>
 
-    <!-- 三指标格：主显 CNY、副显 USD；充值倍率无效时降级为 USD 主显 -->
+    <!-- 三指标：只要 USD，把高度让给子账号/分组入口 -->
     <div class="mt-4 grid grid-cols-3 gap-3">
-      <MetricCell :label="t('provider.balance')" :usd="provider.last_balance" :rate="rechargeRate" tone="primary" />
-      <MetricCell :label="t('provider.todayCost')" :usd="provider.today_cost" :rate="rechargeRate" tone="warning" />
-      <MetricCell :label="t('provider.totalCost')" :usd="provider.total_cost" :rate="rechargeRate" tone="muted" />
+      <MetricCell :label="t('provider.balance')" :usd="provider.last_balance" :rate="rechargeRate" tone="primary" usd-only />
+      <MetricCell :label="t('provider.todayCost')" :usd="provider.today_cost" :rate="rechargeRate" tone="warning" usd-only />
+      <MetricCell :label="t('provider.totalCost')" :usd="provider.total_cost" :rate="rechargeRate" tone="muted" usd-only />
+    </div>
+
+    <div class="mt-3 flex flex-wrap items-center gap-2">
+      <button type="button" class="info-chip" @click="$emit('accounts', provider)">
+        {{ t('provider.accountChip', { n: provider.account_count }) }}
+      </button>
+      <button type="button" class="info-chip" @click="$emit('groups', provider)">
+        {{ t('provider.groupsChip') }}
+      </button>
     </div>
 
     <!-- 错误提示 -->
@@ -56,11 +65,6 @@
       {{ t('provider.loginCooldown', { time: provider.login_cooldown_until }) }}
     </div>
 
-    <!-- 查看可用分组 -->
-    <button class="btn btn-secondary mt-4 w-full text-sm" @click="$emit('groups', provider)">
-      {{ t('provider.viewGroups') }}
-    </button>
-
     <!-- 底部：更新时间 + 操作 -->
     <div class="mt-4 flex items-end justify-between border-t border-gray-100 pt-3 dark:border-dark-800">
       <div>
@@ -77,6 +81,13 @@
         >
           <Icon name="refresh" size="sm" :class="refreshing ? 'animate-spin' : ''" />
         </button>
+        <button
+          v-if="provider.balance_type === 'sub2api'"
+          class="icon-btn" :title="t('cost.keyDetail')"
+          @click="$emit('costs', provider)"
+        >
+          <Icon name="dollar" size="sm" />
+        </button>
         <!-- 运营成本仅自营站可录：非自营站成本已由上游实扣完整表达 -->
         <button
           v-if="provider.self_operated"
@@ -84,6 +95,9 @@
           @click="$emit('opcost', provider)"
         >
           <Icon name="creditCard" size="sm" />
+        </button>
+        <button class="icon-btn" :title="t('provider.accounts')" @click="$emit('accounts', provider)">
+          <Icon name="users" size="sm" />
         </button>
         <button class="icon-btn" :title="t('provider.siteSettings')" @click="$emit('settings', provider)">
           <Icon name="cog" size="sm" />
@@ -129,6 +143,8 @@ defineEmits<{
   edit: [p: Provider]
   delete: [p: Provider]
   groups: [p: Provider]
+  accounts: [p: Provider]
+  costs: [p: Provider]
   /** 打开运营成本弹窗（仅自营站会触发） */
   opcost: [p: Provider]
 }>()
@@ -181,5 +197,10 @@ const statusLabel = computed(() => t(STATUS_LABELS[status.value]))
 .icon-btn-danger {
   @apply hover:border-red-400 hover:bg-red-50 hover:text-red-600;
   @apply dark:hover:border-red-500 dark:hover:bg-red-900/20 dark:hover:text-red-400;
+}
+.info-chip {
+  @apply rounded-lg border border-gray-200 px-2.5 py-1 text-xs text-gray-600 transition-colors;
+  @apply hover:border-primary-400 hover:text-primary-600;
+  @apply dark:border-dark-700 dark:text-dark-300 dark:hover:border-primary-500 dark:hover:text-primary-400;
 }
 </style>

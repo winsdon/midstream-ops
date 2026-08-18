@@ -27,9 +27,11 @@ import type {
   RateSnapshotItem,
   ScanItem,
   URLGroupItem,
+  GroupAccountsResult,
   ProviderLink,
   ImportItem,
   SelfInfo,
+  UpstreamConnection,
   StatsGroupRow,
   StatsProviderRow,
   StrategySettings,
@@ -142,6 +144,9 @@ export const providerApi = {
     unwrap<{ items: ProviderAccount[]; provider: string; total: number }>(
       http.get<ApiResponse<{ items: ProviderAccount[]; provider: string; total: number }>>(`/providers/${id}/accounts`)
     ),
+  /** 按成本明细同一套 key 指纹，归集每个上游分组对应的本站账号 */
+  groupAccounts: (id: number) =>
+    unwrap<GroupAccountsResult>(http.get<ApiResponse<GroupAccountsResult>>(`/providers/${id}/group-accounts`)),
   refreshBalance: (id: number) => unwrap<Provider>(http.post<ApiResponse<Provider>>(`/providers/${id}/balance/refresh`)),
   // 一键刷新全部上游站点；后端并发受限，登录冷却中的站点跳过。
   // 单独放宽超时：N 个站点分批采集，总耗时远超默认 120s，超时会让前端误报失败而后端仍在跑。
@@ -324,6 +329,33 @@ export const pricingApi = {
     ),
   // 已对接的上游分组集合（key = "providerID:group"）
   mapped: () => unwrap<{ keys: string[] }>(http.get<ApiResponse<{ keys: string[] }>>('/pricing/mapped'))
+}
+
+export interface ProvisionConnectPayload {
+  provider_id: number
+  upstream_group: string
+  local_group_ids: number[]
+  operation_id?: string
+  key_name?: string
+  account_name?: string
+  base_url?: string
+}
+
+export interface ProvisionConnectResult {
+  ok: boolean
+  error?: string
+  connection?: UpstreamConnection
+}
+
+export const provisionApi = {
+  list: (includeFailed = false) =>
+    unwrap<{ items: UpstreamConnection[] | null; total: number }>(
+      http.get<ApiResponse<{ items: UpstreamConnection[] | null; total: number }>>('/provision/connections', {
+        params: { include_failed: includeFailed ? 'true' : undefined }
+      })
+    ),
+  connect: (payload: ProvisionConnectPayload) =>
+    unwrap<ProvisionConnectResult>(http.post<ApiResponse<ProvisionConnectResult>>('/provision/connect', payload))
 }
 
 // ---- Stability ----

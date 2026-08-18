@@ -2,16 +2,21 @@
   <div class="space-y-5">
     <!-- 顶栏：搜索 + 计数 / 视图切换 + 刷新 + 新增 -->
     <div class="flex flex-wrap items-start justify-between gap-3">
-      <div>
+      <div class="flex min-w-0 flex-wrap items-center gap-2">
         <div class="relative">
           <Icon name="search" size="sm" class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
             v-model.trim="search"
-            class="input !w-full !py-2 !pl-9 text-sm sm:!w-80"
+            class="input !w-full !py-2 !pl-9 text-sm sm:!w-64"
             :placeholder="t('provider.searchPlaceholder')"
           />
         </div>
-        <p class="mt-1.5 text-xs text-gray-500 dark:text-dark-400">
+        <ProviderToolbar
+          :platform-opts="platformOpts" :status-opts="statusOpts" :balance-type-opts="balanceTypeOpts"
+          v-model:platform="platformFilter" v-model:status="statusFilter"
+          v-model:balance-type="balanceTypeFilter" v-model:sort-key="sortKey"
+        />
+        <p class="text-xs text-gray-500 dark:text-dark-400">
           {{ t('provider.summary', { connected: connectedCount, total: providers.length }) }}
         </p>
       </div>
@@ -62,13 +67,6 @@
       </div>
     </div>
 
-    <!-- 筛选与排序 -->
-    <ProviderToolbar
-      :platform-opts="platformOpts" :status-opts="statusOpts" :balance-type-opts="balanceTypeOpts"
-      v-model:platform="platformFilter" v-model:status="statusFilter"
-      v-model:balance-type="balanceTypeFilter" v-model:sort-key="sortKey"
-    />
-
     <!-- 卡片视图 -->
     <div v-if="viewMode === 'card'">
       <LoadingState v-if="loading && !providers.length" />
@@ -80,6 +78,7 @@
           :default-balance-threshold="defaultBalanceThreshold"
           @refresh="refreshBalance" @settings="openSiteSettings" @edit="openEdit"
           @delete="onDelete" @groups="openGroups" @link="openLinks"
+          @accounts="openAccounts" @costs="openCosts"
           @opcost="openOpCosts"
         />
       </div>
@@ -208,6 +207,13 @@
                   >
                     <Icon name="users" size="sm" />
                     <span class="text-xs">{{ t('provider.accounts') }}</span>
+                  </button>
+                  <button
+                    @click="openGroups(p)"
+                    class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400"
+                  >
+                    <Icon name="sort" size="sm" />
+                    <span class="text-xs">{{ t('provider.groupsChip') }}</span>
                   </button>
                   <button
                     @click="openLinks(p)"
@@ -727,41 +733,12 @@
       </template>
     </BaseDialog>
 
-    <!-- 可用分组 -->
-    <BaseDialog :show="showGroups" :title="t('provider.viewGroups')" width="wide" @close="showGroups = false">
-      <p class="mb-3 text-sm text-gray-500 dark:text-dark-400">{{ currentProvider?.name }}</p>
-      <LoadingState v-if="groupsLoading" />
-      <EmptyState v-else-if="!upstreamGroups.length" icon="sort" :title="t('provider.noGroups')" />
-      <div v-else class="max-h-[60vh] space-y-5 overflow-y-auto">
-        <div v-for="sec in groupedGroups" :key="sec.platform" class="space-y-2">
-          <h4
-            v-if="showPlatformSections"
-            class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-dark-400"
-          >
-            <span class="h-1.5 w-1.5 rounded-full bg-primary-500"></span>
-            {{ sec.label }}
-            <span class="font-normal normal-case tracking-normal">({{ sec.groups.length }})</span>
-          </h4>
-          <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <div
-              v-for="g in sec.groups" :key="g.id"
-              class="rounded-xl border border-gray-200 p-3 text-center dark:border-dark-700"
-              :class="{ 'opacity-50': g.deleted }"
-            >
-              <p class="truncate text-sm font-medium text-gray-900 dark:text-white" :title="g.entity_name">
-                {{ g.entity_name }}
-              </p>
-              <p class="mt-1 inline-block rounded-md bg-primary-50 px-2 py-0.5 text-xs font-semibold text-primary-700 dark:bg-primary-900/30 dark:text-primary-300">
-                ×{{ fmtRate(g.rate) }}
-              </p>
-              <p v-if="currentProvider && currentProvider.recharge_rate > 0" class="mt-1 text-[10px] text-gray-400">
-                ≈ ×{{ (g.rate * currentProvider.recharge_rate).toFixed(2) }} CNY
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </BaseDialog>
+    <ProviderGroupsDialog
+      :show="showGroups"
+      :provider="currentProvider"
+      @close="showGroups = false"
+      @created="load"
+    />
 
     <!-- 删除确认 -->
     <ConfirmDialog
@@ -810,7 +787,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { providerApi, rateApi, settingsApi, type KeyCostsResult, type ProviderPayload, type RefreshAllFailure, type TestConnectionPayload } from '@/api'
+import { providerApi, settingsApi, type KeyCostsResult, type ProviderPayload, type RefreshAllFailure, type TestConnectionPayload } from '@/api'
 import { errorMessage } from '@/api/client'
 import { fmtDateTime, fmtMoney, fmtNum, todayStr } from '@/utils/format'
 import { useAppStore } from '@/stores/app'
@@ -827,15 +804,15 @@ import ToggleSwitch from '@/components/common/ToggleSwitch.vue'
 import ProviderCard from '@/components/ProviderCard.vue'
 import ProviderToolbar from '@/components/ProviderToolbar.vue'
 import ProviderLinkDialog from '@/components/provider/ProviderLinkDialog.vue'
+import ProviderGroupsDialog from '@/components/provider/ProviderGroupsDialog.vue'
 import OperatingCostDialog from '@/components/provider/OperatingCostDialog.vue'
 import Select from '@/components/common/Select.vue'
-import { platformLabel } from '@/utils/plazaModel'
 import {
   searchProviders, filterProviders, sortProviders, providerStatus, isLowBalance,
   platformOptions, statusOptions, balanceTypeOptions,
   type ProviderSortKey, type ProviderStatus
 } from '@/utils/providerModel'
-import type { Provider, ProviderAccount, ScanItem, URLGroupItem, BalanceHistoryItem, RateSnapshotItem } from '@/types'
+import type { Provider, ProviderAccount, ScanItem, URLGroupItem, BalanceHistoryItem } from '@/types'
 
 const { t } = useI18n()
 const app = useAppStore()
@@ -1419,62 +1396,12 @@ async function saveSiteSettings() {
   }
 }
 
-// ---- 可用分组（读上游倍率快照）----
 const showGroups = ref(false)
-const groupsLoading = ref(false)
-const upstreamGroups = ref<RateSnapshotItem[]>([])
 
-async function openGroups(p: Provider) {
+function openGroups(p: Provider) {
   currentProvider.value = p
   showGroups.value = true
-  groupsLoading.value = true
-  upstreamGroups.value = []
-  try {
-    const res = await rateApi.current({ scope: 'upstream', provider_id: p.id })
-    upstreamGroups.value = res.items || []
-  } catch (e) {
-    app.showError(errorMessage(e))
-  } finally {
-    groupsLoading.value = false
-  }
 }
-
-function fmtRate(v: number): string {
-  return Number.isInteger(v) ? String(v) : v.toFixed(4).replace(/\.?0+$/, '')
-}
-
-// 主流平台优先展示，其余按字典序，未分类恒定垫底
-const PLATFORM_ORDER = ['anthropic', 'openai', 'gemini', 'antigravity']
-
-// groupedGroups 按 platform 动态分桶。
-// 不用常量映射表：上游新增平台时自动出现新分节，无需改前端。
-const groupedGroups = computed(() => {
-  const buckets = upstreamGroups.value.reduce<Record<string, RateSnapshotItem[]>>((acc, g) => {
-    const key = g.platform || ''
-    ;(acc[key] ||= []).push(g)
-    return acc
-  }, {})
-  return Object.keys(buckets)
-    .sort((a, b) => {
-      // 空串（未分类）永远最后，与已知平台的次序无关
-      if (!a !== !b) return a ? -1 : 1
-      const ia = PLATFORM_ORDER.indexOf(a)
-      const ib = PLATFORM_ORDER.indexOf(b)
-      if (ia !== ib) return (ia < 0 ? PLATFORM_ORDER.length : ia) - (ib < 0 ? PLATFORM_ORDER.length : ib)
-      return a.localeCompare(b)
-    })
-    .map(platform => ({
-      platform,
-      label: platform ? platformLabel(platform) : t('provider.uncategorizedPlatform'),
-      groups: buckets[platform]
-    }))
-})
-
-// showPlatformSections 只要上游给出过任一平台归属就分节展示。
-//
-// 不能用「桶数 > 1」当判据：整站分组同属一个平台（如纯 Claude 中转）时桶数为 1，
-// 标题会被隐藏，看起来就是没分类。反之全站都没平台归属时，一个「未分类」标题纯属噪音。
-const showPlatformSections = computed(() => groupedGroups.value.some(s => s.platform !== ''))
 
 function openManual(p: Provider) {
   currentProvider.value = p

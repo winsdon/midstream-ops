@@ -1,29 +1,15 @@
 <template>
-  <div v-if="groups.length" class="flex flex-wrap items-center gap-x-4 gap-y-2">
-    <!-- 每组一条 pill tab；只有一个取值的维度不渲染（无筛选意义，纯噪音） -->
-    <div v-for="g in groups" :key="g.key" role="tablist" class="flex rounded-lg bg-gray-100 p-0.5 dark:bg-dark-800">
-      <button
-        type="button" role="tab"
-        :aria-selected="g.selected === null"
-        :class="pillClass(g.selected === null)"
-        @click="g.onSelect(null)"
-      >
-        {{ t('provider.filterAll') }}
-      </button>
-      <button
-        v-for="opt in g.options" :key="opt.value"
-        type="button" role="tab"
-        :aria-selected="g.selected === opt.value"
-        :class="pillClass(g.selected === opt.value)"
-        @click="g.onSelect(opt.value)"
-      >
-        {{ g.label(opt.value) }}
-        <span class="ml-1 text-xs opacity-60">{{ opt.count }}</span>
-      </button>
-    </div>
-
+  <div class="flex flex-wrap items-center gap-2">
     <Select
-      class="!w-auto"
+      v-for="g in groups" :key="g.key"
+      class="!w-36"
+      :model-value="g.selected ?? ''"
+      :options="g.selectOptions"
+      :searchable="false"
+      @update:model-value="g.onSelect($event === '' || $event == null ? null : String($event))"
+    />
+    <Select
+      class="!w-36"
       :model-value="sortKey"
       :options="sortOptions"
       :searchable="false"
@@ -105,15 +91,17 @@ const groups = computed(() =>
       label: (v: string) => t(BALANCE_TYPE_LABELS[v] ?? v),
       onSelect: (v: string | null) => emit('update:balanceType', v)
     }
-  ].filter((g) => g.options.length > 1)
+  ]
+    .filter((g) => g.options.length > 1)
+    .map((g) => ({
+      ...g,
+      selectOptions: [
+        { value: '', label: t('provider.filterAll') },
+        ...g.options.map((opt) => ({
+          value: opt.value,
+          label: `${g.label(opt.value)} (${opt.count})`
+        }))
+      ]
+    }))
 )
-
-// 与广场页/统计页一致的 pill 样式；必须写完整字面量供 Tailwind 扫描。
-const PILL_BASE = 'flex items-center rounded-md px-3 py-1.5 text-sm font-medium transition-colors'
-const PILL_ACTIVE = 'bg-white text-primary-700 shadow-sm dark:bg-dark-700 dark:text-primary-300'
-const PILL_IDLE = 'text-gray-500 hover:text-gray-700 dark:text-dark-400 dark:hover:text-dark-200'
-
-function pillClass(active: boolean): string {
-  return `${PILL_BASE} ${active ? PILL_ACTIVE : PILL_IDLE}`
-}
 </script>

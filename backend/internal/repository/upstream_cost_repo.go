@@ -30,6 +30,7 @@ type UpstreamKeyMapping struct {
 	AccountName    string
 	RateMultiplier *float64
 	Status         string
+	GroupName      string
 }
 
 // CostSyncState 供应商成本同步状态。
@@ -101,8 +102,8 @@ func (r *UpstreamCostRepo) UpsertMappings(ctx context.Context, maps []UpstreamKe
 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO upstream_key_map
-			(provider_id, upstream_key_id, key_name, key_fingerprint, account_id, account_name, rate_multiplier, status, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?)
+			(provider_id, upstream_key_id, key_name, key_fingerprint, account_id, account_name, rate_multiplier, status, group_name, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(provider_id, upstream_key_id) DO UPDATE SET
 			key_name        = excluded.key_name,
 			key_fingerprint = excluded.key_fingerprint,
@@ -110,6 +111,7 @@ func (r *UpstreamCostRepo) UpsertMappings(ctx context.Context, maps []UpstreamKe
 			account_name    = excluded.account_name,
 			rate_multiplier = excluded.rate_multiplier,
 			status          = excluded.status,
+			group_name      = excluded.group_name,
 			updated_at      = excluded.updated_at`)
 	if err != nil {
 		return err
@@ -119,7 +121,7 @@ func (r *UpstreamCostRepo) UpsertMappings(ctx context.Context, maps []UpstreamKe
 	now := nowUTC()
 	for _, m := range maps {
 		if _, err := stmt.ExecContext(ctx, m.ProviderID, m.UpstreamKeyID, m.KeyName, m.KeyFingerprint,
-			m.AccountID, m.AccountName, m.RateMultiplier, m.Status, now); err != nil {
+			m.AccountID, m.AccountName, m.RateMultiplier, m.Status, m.GroupName, now); err != nil {
 			return err
 		}
 	}
@@ -284,7 +286,45 @@ func (r *UpstreamCostRepo) KeyCosts(ctx context.Context, providerID int64, start
 	return out, rows.Err()
 }
 
-// SaveSyncState 幂等写入同步状态（backfilledAt 为 nil 时保留原值）。
+// MappedGroupHit 成本映射里「已匹配到本站账号」的一行。
+type MappedGroupHit struct {
+	AccountID   int64
+	AccountName string
+}
+
+// MappedAccountsByGroup 上次成本同步留下的「上游分组 → 本站账号」。
+// 只认有 group_name 且已匹配到账号的行；旧数据没分组名的不会出现。
+func (r *UpstreamCostRepo) MappedAccountsByGroup(ctx context.Context, providerID int64) (map[string][]MappedGroupHit, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT group_name, account_id, COALESCE(account_name,'')
+		FROM upstream_key_map
+		WHERE provider_id = ? AND account_id IS NOT NULL AND COALESCE(group_name,'') <> ''
+		ORDER BY group_name, account_id`, providerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]MappedGroupHit{}
+	seen := map[string]map[int64]struct{}{}
+	for rows.Next() {
+		var group string
+		var accID int64
+		var accName string
+		if err := rows.Scan(&group, &accID, &accName); err != nil {
+			return nil, err
+		}
+		if seen[group] == nil {
+			seen[group] = map[int64]struct{}{}
+		}
+		if _, ok := seen[group][accID]; ok {
+			continue
+		}
+		seen[group][accID] = struct{}{}
+		out[group] = append(out[group], MappedGroupHit{AccountID: accID, AccountName: accName})
+	}
+	return out, rows.Err()
+}
+
 func (r *UpstreamCostRepo) SaveSyncState(ctx context.Context, st CostSyncState) error {
 	var syncedAt any
 	if st.LastSyncedAt != nil {

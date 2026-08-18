@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 
 	"sub2api-account-monitor/internal/repository"
 )
@@ -21,6 +22,8 @@ import (
 type ProvisionService struct {
 	providerRepo *repository.ProviderRepo
 	connRepo     *repository.ConnectionRepo
+	linkRepo     *repository.ProviderAccountRepo
+	pg           *repository.PG
 	client       *Sub2apiClient
 	tokens       *providerTokenManager
 }
@@ -29,11 +32,15 @@ type ProvisionService struct {
 func NewProvisionService(
 	providerRepo *repository.ProviderRepo,
 	connRepo *repository.ConnectionRepo,
+	linkRepo *repository.ProviderAccountRepo,
+	pg *repository.PG,
 	balanceSvc *BalanceService,
 ) *ProvisionService {
 	return &ProvisionService{
 		providerRepo: providerRepo,
 		connRepo:     connRepo,
+		linkRepo:     linkRepo,
+		pg:           pg,
 		client:       balanceSvc.Client(),
 		tokens:       balanceSvc.Tokens(),
 	}
@@ -48,6 +55,9 @@ type ConnectRequest struct {
 	UpstreamGroup string  // 上游分组名
 	LocalGroupIDs []int64 // 本站分组 id（admin API 口径）
 	OperationID   string  // 幂等键
+	KeyName       string  // 空则 【kaola】{分组}-{倍率}
+	AccountName   string  // 空则 【{上游}】{分组}-{倍率}
+	BaseURL       string  // 空则随机取该站子账号 URL，再退站点地址
 }
 
 // selfSession 取本站 admin 会话。
@@ -75,10 +85,7 @@ func (s *ProvisionService) Connect(ctx context.Context, req ConnectRequest) (*re
 			return existing, nil
 		}
 	}
-	// 防重：同一上游分组已有 active 连接
-	if existing, err := s.connRepo.GetActiveByUpstream(ctx, req.ProviderID, req.UpstreamGroup); err == nil {
-		return nil, fmt.Errorf("该上游分组已对接（账号 %s），如需重建请先取消对接", existing.LocalAccountName)
-	}
+	// 同一上游分组允许多个本站账号（备份/分流）；防手抖只靠 operation_id。
 	if len(req.LocalGroupIDs) == 0 {
 		return nil, errors.New("至少选择一个本站分组")
 	}
@@ -134,19 +141,33 @@ func (s *ProvisionService) Connect(ctx context.Context, req ConnectRequest) (*re
 		return nil, fmt.Errorf("创建对接记录失败: %w", err)
 	}
 
-	accountName := AccountName(group.Platform, up.Name, group.Rate)
+	keyName := strings.TrimSpace(req.KeyName)
+	if keyName == "" {
+		keyName = UpstreamKeyName(group.Name, group.Rate)
+	}
+	accountName := strings.TrimSpace(req.AccountName)
+	if accountName == "" {
+		accountName = LocalAccountName(up.Name, group.Name, group.Rate)
+	}
+	baseURL := strings.TrimSpace(req.BaseURL)
+	if baseURL == "" {
+		baseURL = s.pickProviderAccountURL(ctx, req.ProviderID)
+	}
+	if baseURL == "" {
+		baseURL = up.BaseURL
+	}
 
 	// ② 上游建 key
-	keyID, apiKey, err := s.client.CreateAPIKey(ctx, up.BaseURL, upSess.AccessToken, accountName, group.ID)
+	keyID, apiKey, err := s.client.CreateAPIKey(ctx, up.BaseURL, upSess.AccessToken, keyName, group.ID)
 	if err != nil {
 		msg := truncate(fmt.Sprintf("上游建 key 失败: %v", err), 500)
 		_ = s.connRepo.SetFailed(ctx, connID, msg)
 		return nil, errors.New(msg)
 	}
-	_ = s.connRepo.SetKeyCreated(ctx, connID, keyID, accountName)
+	_ = s.connRepo.SetKeyCreated(ctx, connID, keyID, keyName)
 
 	// ③ 本站建账号（失败则补偿删除上游 key）
-	payload := BuildAccountPayload(group.Platform, up.BaseURL, apiKey, accountName, req.LocalGroupIDs)
+	payload := BuildAccountPayload(group.Platform, baseURL, apiKey, accountName, req.LocalGroupIDs)
 	accountID, err := s.client.CreateAdminAccount(ctx, self.BaseURL, selfToken, payload)
 	if err != nil {
 		msg := truncate(fmt.Sprintf("本站建账号失败: %v", err), 500)
@@ -165,9 +186,46 @@ func (s *ProvisionService) Connect(ctx context.Context, req ConnectRequest) (*re
 	if err := s.connRepo.SetActive(ctx, connID, accountID, accountName); err != nil {
 		return nil, fmt.Errorf("对接已完成但状态写入失败: %w", err)
 	}
+	// 归属只认 provider_accounts：不写的话新账号会掉进「未归属」，卡片计数也不涨。
+	// 关联失败不回滚远端资源，事后可在「关联账号」里补。
+	if s.linkRepo != nil && accountID > 0 {
+		if lerr := s.linkRepo.LinkMany(ctx, []repository.ProviderAccount{{
+			ProviderID:  req.ProviderID,
+			AccountID:   accountID,
+			AccountName: accountName,
+		}}); lerr != nil {
+			log.Printf("[provision] 建号成功但写入归属失败 provider=%d account=%d: %v", req.ProviderID, accountID, lerr)
+		}
+	}
 	log.Printf("[provision] 建号成功 上游=%s/%s key=#%d → 本站账号 %s(#%d)",
 		up.Name, req.UpstreamGroup, keyID, accountName, accountID)
 	return s.connRepo.GetByID(ctx, connID)
+}
+
+// pickProviderAccountURL 从该站已关联子账号的转发地址里随机取一条。
+func (s *ProvisionService) pickProviderAccountURL(ctx context.Context, providerID int64) string {
+	if s.pg == nil || !s.pg.Available() || s.linkRepo == nil {
+		return ""
+	}
+	links, err := s.linkRepo.ListByProvider(ctx, providerID)
+	if err != nil || len(links) == 0 {
+		return ""
+	}
+	accs, err := s.pg.ListActiveAccounts(ctx)
+	if err != nil {
+		return ""
+	}
+	byID := make(map[int64]repository.PGAccount, len(accs))
+	for _, a := range accs {
+		byID[a.ID] = a
+	}
+	urls := make([]string, 0, len(links))
+	for _, l := range links {
+		if a, ok := byID[l.AccountID]; ok {
+			urls = append(urls, a.BaseURL)
+		}
+	}
+	return PickAccountBaseURL(urls)
 }
 
 // BindRequest 关联已有资源（不创建任何远端资源）。

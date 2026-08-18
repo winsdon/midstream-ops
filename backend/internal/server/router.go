@@ -174,6 +174,7 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 				auth.GET("/providers/scan-urls", h.Provider.ScanURLs)
 				auth.POST("/providers/import", h.Provider.Import)
 				auth.GET("/providers/:id/accounts", h.Provider.Accounts)
+				auth.GET("/providers/:id/group-accounts", h.Provider.GroupAccounts)
 				auth.GET("/providers/:id/links", h.Provider.ListLinks)
 				auth.PUT("/providers/:id/links", h.Provider.SaveLinks)
 				auth.POST("/providers/balance/refresh-all", h.Provider.RefreshAllBalance)

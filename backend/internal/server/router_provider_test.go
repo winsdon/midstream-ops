@@ -40,6 +40,7 @@ func TestRefreshAllRouteCoexistsWithIDRoutes(t *testing.T) {
 		{"单站点刷新", http.MethodPost, "/api/v1/providers/1/balance/refresh"},
 		{"手动录入余额", http.MethodPut, "/api/v1/providers/1/balance"},
 		{"余额历史", http.MethodGet, "/api/v1/providers/1/balance/history"},
+		{"分组账号", http.MethodGet, "/api/v1/providers/1/group-accounts"},
 	}
 
 	for _, c := range cases {

@@ -91,7 +91,7 @@ func main() {
 	pricingRepo := repository.NewPricingRepo(store)
 	pricingSvc := service.NewPricingService(providerRepo, pricingRepo, rateRepo, balanceSvc, pg)
 	connRepo := repository.NewConnectionRepo(store)
-	provisionSvc := service.NewProvisionService(providerRepo, connRepo, balanceSvc)
+	provisionSvc := service.NewProvisionService(providerRepo, connRepo, linkRepo, pg, balanceSvc)
 
 	// 系统设置（策略/通知，monitor 库持久化 + 热更新）
 	settingsSvc, err := service.NewSettingsService(settingsRepo)

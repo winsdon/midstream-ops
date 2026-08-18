@@ -41,6 +41,7 @@ type SubAccount struct {
 	Schedulable    bool     `json:"schedulable"`
 	RateMultiplier float64  `json:"rate_multiplier"`
 	Groups         []string `json:"groups"`
+	BaseURL        string   `json:"base_url"` // 转发地址，不是密钥
 }
 
 // AccountsOf 返回供应商显式关联的子账号（provider_accounts 为唯一真相）。
@@ -83,6 +84,7 @@ func (s *ProviderService) AccountsOf(ctx context.Context, providerID int64) ([]S
 			Schedulable:    a.Schedulable,
 			RateMultiplier: a.RateMultiplier,
 			Groups:         groupMap[a.ID],
+			BaseURL:        a.BaseURL,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
