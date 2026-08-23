@@ -210,3 +210,70 @@ func TestSub2APIFingerprintMatchRegression(t *testing.T) {
 		t.Fatalf("sub2api fingerprint regression: %+v/%v", acc, ok)
 	}
 }
+
+func TestResolveUpstreamKeyRate(t *testing.T) {
+	group := func(name string, rate float64) *struct {
+		Name           string  `json:"name"`
+		RateMultiplier float64 `json:"rate_multiplier"`
+	} {
+		return &struct {
+			Name           string  `json:"name"`
+			RateMultiplier float64 `json:"rate_multiplier"`
+		}{Name: name, RateMultiplier: rate}
+	}
+
+	tests := []struct {
+		name      string
+		key       ProviderAPIKey
+		overrides map[string]float64
+		want      *float64
+	}{
+		{
+			name: "只有分组倍率",
+			key:  ProviderAPIKey{Group: group("Claude Max", 0.85)},
+			want: floatPtr(0.85),
+		},
+		{
+			name: "key 顶层倍率优先于分组默认",
+			key:  ProviderAPIKey{RateMultiplier: 0.06, Group: group("Kiro", 1)},
+			want: floatPtr(0.06),
+		},
+		{
+			name:      "专属覆盖优先于分组默认",
+			key:       ProviderAPIKey{Group: group("Kiro", 1)},
+			overrides: map[string]float64{"Kiro": 0.06},
+			want:      floatPtr(0.06),
+		},
+		{
+			name: "无分组无顶层",
+			key:  ProviderAPIKey{},
+			want: nil,
+		},
+		{
+			name:      "new-api 仅有分组名时用覆盖",
+			key:       ProviderAPIKey{Group: group("vip", 0)},
+			overrides: map[string]float64{"vip": 1.5},
+			want:      floatPtr(1.5),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveUpstreamKeyRate(tt.key, tt.overrides)
+			if tt.want == nil {
+				if got != nil {
+					t.Fatalf("got %v, want nil", *got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("got nil, want %v", *tt.want)
+			}
+			if *got != *tt.want {
+				t.Fatalf("got %v, want %v", *got, *tt.want)
+			}
+		})
+	}
+}
+
+func floatPtr(v float64) *float64 { return &v }

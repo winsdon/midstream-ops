@@ -284,3 +284,215 @@ func TestEnsureNewAPIUserKey(t *testing.T) {
 		t.Errorf("user_key 模式不该打上游：refresh=%d login=%d", stub.refreshHits.Load(), stub.loginHits.Load())
 	}
 }
+
+// ---- sub2api 密码会话 ----
+
+// sub2apiStub 模拟 sub2api 登录/续期端点，按端点计数。
+type sub2apiStub struct {
+	url         string
+	refreshHits atomic.Int64
+	loginHits   atomic.Int64
+}
+
+// newSub2apiStub 起一个桩站点。refreshStatus / loginStatus 在构造时固定。
+func newSub2apiStub(t *testing.T, refreshStatus, loginStatus int) *sub2apiStub {
+	t.Helper()
+	s := &sub2apiStub{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
+		s.loginHits.Add(1)
+		if loginStatus != http.StatusOK {
+			w.WriteHeader(loginStatus)
+			_, _ = w.Write([]byte(`{"code":1,"message":"rate limited"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"at-login","refresh_token":"rt-login","expires_in":3600}}`))
+	})
+	mux.HandleFunc("/api/v1/auth/refresh", func(w http.ResponseWriter, r *http.Request) {
+		s.refreshHits.Add(1)
+		if refreshStatus != http.StatusOK {
+			w.WriteHeader(refreshStatus)
+			_, _ = w.Write([]byte(`{"code":1,"message":"refresh failed"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"at-new","refresh_token":"rt-new","expires_in":3600}}`))
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	s.url = srv.URL
+	return s
+}
+
+func newTestSub2apiProvider(t *testing.T, repo *repository.ProviderRepo, baseURL string) *repository.Provider {
+	t.Helper()
+	p, err := repo.Create(context.Background(), repository.CreateParams{
+		Name:          "mie",
+		BalanceType:   "sub2api",
+		Platform:      "sub2api",
+		AuthMode:      "password",
+		BaseURL:       baseURL,
+		LoginEmail:    "u@example.com",
+		LoginPassword: "pw",
+		RechargeRate:  1,
+	})
+	if err != nil {
+		t.Fatalf("创建供应商失败: %v", err)
+	}
+	return p
+}
+
+func giveExpiredSub2apiPair(t *testing.T, repo *repository.ProviderRepo, id int64) {
+	t.Helper()
+	past := time.Now().Add(-time.Hour)
+	if err := repo.UpdateTokenPair(context.Background(), id, "at-old", "rt-old", &past); err != nil {
+		t.Fatalf("写入过期 token 对失败: %v", err)
+	}
+}
+
+// TestEnsureSub2apiLoginPersistsRefreshToken 密码登录必须把 refresh_token 落库。
+func TestEnsureSub2apiLoginPersistsRefreshToken(t *testing.T) {
+	stub := newSub2apiStub(t, http.StatusOK, http.StatusOK)
+	repo := newTestProviderRepo(t)
+	p := newTestSub2apiProvider(t, repo, stub.url)
+	m := newTokenManager(repo, NewSub2apiClient(3*time.Second), nil)
+
+	sess, err := m.ensureSub2api(context.Background(), mustGetProvider(t, repo, p.ID))
+	if err != nil {
+		t.Fatalf("ensureSub2api: %v", err)
+	}
+	if sess.AccessToken != "at-login" {
+		t.Errorf("AccessToken = %q, want at-login", sess.AccessToken)
+	}
+	if got := stub.loginHits.Load(); got != 1 {
+		t.Errorf("登录端点被打了 %d 次，期望 1 次", got)
+	}
+
+	fresh := mustGetProvider(t, repo, p.ID)
+	if fresh.AccessToken != "at-login" || fresh.RefreshToken != "rt-login" {
+		t.Errorf("落库凭据 = %q/%q，期望 at-login/rt-login", fresh.AccessToken, fresh.RefreshToken)
+	}
+}
+
+// TestEnsureSub2apiRefreshSkipsLogin token 过期时走续期，不再密码登录。
+func TestEnsureSub2apiRefreshSkipsLogin(t *testing.T) {
+	stub := newSub2apiStub(t, http.StatusOK, http.StatusOK)
+	repo := newTestProviderRepo(t)
+	p := newTestSub2apiProvider(t, repo, stub.url)
+	giveExpiredSub2apiPair(t, repo, p.ID)
+	m := newTokenManager(repo, NewSub2apiClient(3*time.Second), nil)
+
+	sess, err := m.ensureSub2api(context.Background(), mustGetProvider(t, repo, p.ID))
+	if err != nil {
+		t.Fatalf("ensureSub2api: %v", err)
+	}
+	if sess.AccessToken != "at-new" {
+		t.Errorf("AccessToken = %q, want at-new", sess.AccessToken)
+	}
+	if got := stub.refreshHits.Load(); got != 1 {
+		t.Errorf("续期端点被打了 %d 次，期望 1 次", got)
+	}
+	if got := stub.loginHits.Load(); got != 0 {
+		t.Errorf("登录端点被打了 %d 次，期望 0 次（有 refresh 就不该撞登录）", got)
+	}
+
+	fresh := mustGetProvider(t, repo, p.ID)
+	if fresh.AccessToken != "at-new" || fresh.RefreshToken != "rt-new" {
+		t.Errorf("落库凭据 = %q/%q，期望 at-new/rt-new", fresh.AccessToken, fresh.RefreshToken)
+	}
+}
+
+// TestEnsureSub2apiRefreshFallbackToLogin 续期失败才密码重登，且不进冷却。
+func TestEnsureSub2apiRefreshFallbackToLogin(t *testing.T) {
+	stub := newSub2apiStub(t, http.StatusUnauthorized, http.StatusOK)
+	repo := newTestProviderRepo(t)
+	p := newTestSub2apiProvider(t, repo, stub.url)
+	giveExpiredSub2apiPair(t, repo, p.ID)
+	m := newTokenManager(repo, NewSub2apiClient(3*time.Second), nil)
+
+	sess, err := m.ensureSub2api(context.Background(), mustGetProvider(t, repo, p.ID))
+	if err != nil {
+		t.Fatalf("ensureSub2api: %v", err)
+	}
+	if sess.AccessToken != "at-login" {
+		t.Errorf("AccessToken = %q, want at-login（降级重登）", sess.AccessToken)
+	}
+	if got := stub.refreshHits.Load(); got != 1 {
+		t.Errorf("续期端点被打了 %d 次，期望 1 次", got)
+	}
+	if got := stub.loginHits.Load(); got != 1 {
+		t.Errorf("登录端点被打了 %d 次，期望 1 次", got)
+	}
+
+	fresh := mustGetProvider(t, repo, p.ID)
+	if fresh.AccessToken != "at-login" || fresh.RefreshToken != "rt-login" {
+		t.Errorf("重登后凭据 = %q/%q，期望 at-login/rt-login", fresh.AccessToken, fresh.RefreshToken)
+	}
+	if fresh.LoginFailures != 0 || fresh.LoginCooldownUntil != nil {
+		t.Errorf("续期失败被误计为登录被拒：failures=%d cooldown=%v",
+			fresh.LoginFailures, fresh.LoginCooldownUntil)
+	}
+}
+
+// TestLogin429IsNotRejected 登录 429 是限流，不进登录冷却阶梯。
+func TestLogin429IsNotRejected(t *testing.T) {
+	stub := newSub2apiStub(t, http.StatusOK, http.StatusTooManyRequests)
+	repo := newTestProviderRepo(t)
+	p := newTestSub2apiProvider(t, repo, stub.url)
+	m := newTokenManager(repo, NewSub2apiClient(3*time.Second), nil)
+
+	_, err := m.ensureSub2api(context.Background(), mustGetProvider(t, repo, p.ID))
+	if err == nil {
+		t.Fatal("429 时应返回错误")
+	}
+	if IsLoginRejected(err) {
+		t.Errorf("429 不该视为登录被拒: %v", err)
+	}
+
+	fresh := mustGetProvider(t, repo, p.ID)
+	if fresh.LoginFailures != 0 || fresh.LoginCooldownUntil != nil {
+		t.Errorf("429 被误计为登录被拒：failures=%d cooldown=%v",
+			fresh.LoginFailures, fresh.LoginCooldownUntil)
+	}
+}
+
+// TestEnsureSub2apiRefreshIsSingleFlight 并发续期必须单飞。
+func TestEnsureSub2apiRefreshIsSingleFlight(t *testing.T) {
+	stub := newSub2apiStub(t, http.StatusOK, http.StatusOK)
+	repo := newTestProviderRepo(t)
+	p := newTestSub2apiProvider(t, repo, stub.url)
+	giveExpiredSub2apiPair(t, repo, p.ID)
+	m := newTokenManager(repo, NewSub2apiClient(3*time.Second), nil)
+
+	const n = 10
+	sessions := make([]*providerSession, n)
+	errs := make([]error, n)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int, pp *repository.Provider) {
+			defer wg.Done()
+			<-start
+			sessions[i], errs[i] = m.ensureSub2api(context.Background(), pp)
+		}(i, mustGetProvider(t, repo, p.ID))
+	}
+	close(start)
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("goroutine %d: ensureSub2api: %v", i, errs[i])
+		}
+		if sessions[i].AccessToken != "at-new" {
+			t.Errorf("goroutine %d 拿到 %q，期望续期后的 at-new", i, sessions[i].AccessToken)
+		}
+	}
+	if got := stub.refreshHits.Load(); got != 1 {
+		t.Errorf("续期端点被打了 %d 次，期望 1 次（单飞失效会反复撞上游）", got)
+	}
+	if got := stub.loginHits.Load(); got != 0 {
+		t.Errorf("登录端点被打了 %d 次，期望 0 次", got)
+	}
+}

@@ -92,24 +92,46 @@ func (m *providerTokenManager) refresh(ctx context.Context, p *repository.Provid
 		return m.ensureNewAPI(ctx, p)
 	}
 
+	if p.RefreshToken != "" {
+		p.TokenExpiresAt = nil
+		sess, err := m.refreshSub2apiToken(ctx, p)
+		if err == nil {
+			return sess, nil
+		}
+		if errors.Is(err, ErrRateLimited) || p.AuthMode == "token" {
+			return nil, err
+		}
+		_ = m.repo.UpdateTokenPair(ctx, p.ID, "", "", nil)
+		p.AccessToken, p.RefreshToken, p.TokenExpiresAt = "", "", nil
+		return m.loginSub2api(ctx, p)
+	}
 	if p.AuthMode == "token" {
-		// token 模式：强制走 refresh_token 换新
 		p.TokenExpiresAt = nil
 		return m.ensureSub2api(ctx, p)
 	}
 	_ = m.repo.ClearToken(ctx, p.ID)
 	p.AccessToken = ""
 	p.TokenExpiresAt = nil
-	return m.ensureSub2api(ctx, p)
+	return m.loginSub2api(ctx, p)
 }
 
 // ---- sub2api ----
 
 // ensureSub2api password 模式登录 / token 模式按需刷新。
+// 有 refresh_token 时先续期，避免密码登录撞上游限流；续期失败才降级重登。
 func (m *providerTokenManager) ensureSub2api(ctx context.Context, p *repository.Provider) (*providerSession, error) {
-	// 缓存有效直接用
-	if p.AccessToken != "" && p.TokenExpiresAt != nil && time.Now().Before(p.TokenExpiresAt.Add(-tokenLeeway)) {
+	if sub2apiTokenValid(p) {
 		return &providerSession{AccessToken: p.AccessToken}, nil
+	}
+
+	if p.RefreshToken != "" {
+		sess, err := m.refreshSub2apiToken(ctx, p)
+		if err == nil {
+			return sess, nil
+		}
+		if errors.Is(err, ErrRateLimited) || p.AuthMode == "token" {
+			return nil, err
+		}
 	}
 
 	if p.AuthMode == "token" {
@@ -118,22 +140,35 @@ func (m *providerTokenManager) ensureSub2api(ctx context.Context, p *repository.
 	return m.loginSub2api(ctx, p)
 }
 
-// refreshSub2apiToken token 模式：用 refresh_token 换新（无 refresh_token 时直接用现有 access_token）。
+// sub2apiTokenValid access token 是否仍在有效期内（含 tokenLeeway 提前量）。
+func sub2apiTokenValid(p *repository.Provider) bool {
+	return p.AccessToken != "" && p.TokenExpiresAt != nil &&
+		time.Now().Before(p.TokenExpiresAt.Add(-tokenLeeway))
+}
+
+// refreshSub2apiToken 用 refresh_token 换新。无 refresh_token 时沿用现有 access_token。
+// 同一站点必须单飞：refresh token 可能轮换，并发续期等于自己把自己踢下线。
 func (m *providerTokenManager) refreshSub2apiToken(ctx context.Context, p *repository.Provider) (*providerSession, error) {
 	if p.RefreshToken == "" {
 		if p.AccessToken == "" {
 			return nil, errors.New("token 模式下缺少 access_token / refresh_token")
 		}
-		// 只有 access_token：直接使用，过期由 401 → refresh 上抛
 		return &providerSession{AccessToken: p.AccessToken}, nil
 	}
-	if err := m.checkCooldown(p); err != nil {
-		return nil, err
+
+	mu := m.perProviderMu(p.ID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if fresh, err := m.repo.GetByID(ctx, p.ID); err == nil &&
+		sub2apiTokenValid(fresh) && fresh.AccessToken != p.AccessToken {
+		p.AccessToken, p.RefreshToken, p.TokenExpiresAt = fresh.AccessToken, fresh.RefreshToken, fresh.TokenExpiresAt
+		return &providerSession{AccessToken: p.AccessToken}, nil
 	}
 
 	rr, err := m.client.RefreshToken(ctx, p.BaseURL, p.RefreshToken)
 	if err != nil {
-		m.recordRejected(ctx, p, err)
+		// 续期失败不是登录被拒，不进冷却阶梯。
 		return nil, err
 	}
 	m.clearRejected(ctx, p)
@@ -171,8 +206,10 @@ func (m *providerTokenManager) loginSub2api(ctx context.Context, p *repository.P
 		ttl = time.Duration(lr.ExpiresIn) * time.Second
 	}
 	expiresAt := time.Now().Add(ttl)
-	_ = m.repo.UpdateToken(ctx, p.ID, lr.AccessToken, &expiresAt)
+	// 一律写 token 对：登录没带回 refresh 时清掉旧值，避免下次再拿已失败的 refresh 去撞。
+	_ = m.repo.UpdateTokenPair(ctx, p.ID, lr.AccessToken, lr.RefreshToken, &expiresAt)
 	p.AccessToken = lr.AccessToken
+	p.RefreshToken = lr.RefreshToken
 	p.TokenExpiresAt = &expiresAt
 	return &providerSession{AccessToken: lr.AccessToken, Balance: lr.Balance}, nil
 }

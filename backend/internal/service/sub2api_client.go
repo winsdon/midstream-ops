@@ -45,9 +45,10 @@ type apiEnvelope struct {
 
 // ProviderLoginResult 供应商站点登录结果。
 type ProviderLoginResult struct {
-	AccessToken string
-	ExpiresIn   int64
-	Balance     *float64
+	AccessToken  string
+	RefreshToken string
+	ExpiresIn    int64
+	Balance      *float64
 }
 
 // loginResponse sub2api 登录响应 data 段。
@@ -84,6 +85,9 @@ func (c *Sub2apiClient) Login(ctx context.Context, baseURL, email, password stri
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
 		err := fmt.Errorf("登录失败 HTTP %d: %s", resp.StatusCode, briefBody(raw))
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return nil, fmt.Errorf("%w: %w", ErrRateLimited, err)
+		}
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			// 4xx 视为被拒（密码错误 / Turnstile / 风控），调用方据此进入登录冷却
 			return nil, fmt.Errorf("%w: %w", ErrLoginRejected, err)
@@ -107,7 +111,12 @@ func (c *Sub2apiClient) Login(ctx context.Context, baseURL, email, password stri
 	if lr.AccessToken == "" {
 		return nil, fmt.Errorf("登录响应缺少 access_token")
 	}
-	return &ProviderLoginResult{AccessToken: lr.AccessToken, ExpiresIn: lr.ExpiresIn, Balance: lr.User.Balance}, nil
+	return &ProviderLoginResult{
+		AccessToken:  lr.AccessToken,
+		RefreshToken: lr.RefreshToken,
+		ExpiresIn:    lr.ExpiresIn,
+		Balance:      lr.User.Balance,
+	}, nil
 }
 
 // RefreshTokenResult 刷新令牌结果。
@@ -140,6 +149,9 @@ func (c *Sub2apiClient) RefreshToken(ctx context.Context, baseURL, refreshToken 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
 		err := fmt.Errorf("刷新令牌失败 HTTP %d: %s", resp.StatusCode, briefBody(raw))
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return nil, fmt.Errorf("%w: %w", ErrRateLimited, err)
+		}
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			return nil, fmt.Errorf("%w: %w", ErrLoginRejected, err)
 		}
@@ -213,17 +225,21 @@ var errUnauthorized = errors.New("unauthorized")
 // 与网络错误区分：被拒说明凭据或风控问题，重试无意义且可能触发 WAF 拉黑，须进入冷却。
 var ErrLoginRejected = errors.New("login rejected")
 
+// ErrRateLimited 上游返回 429。瞬时限流，不是凭据错误，不得记入登录冷却。
+var ErrRateLimited = errors.New("rate limited")
+
 // IsLoginRejected 判断是否为登录被拒。
 func IsLoginRejected(err error) bool { return errors.Is(err, ErrLoginRejected) }
 
 // ProviderAPIKey 供应商站点的一个 API key（对应本站一个账号）。
 // Key 为明文，仅用于与本站 accounts.credentials->>'api_key' 做指纹匹配，绝不出后端。
 type ProviderAPIKey struct {
-	ID     int64  `json:"id"`
-	Name   string `json:"name"`
-	Key    string `json:"key"`
-	Status string `json:"status"`
-	Group  *struct {
+	ID             int64   `json:"id"`
+	Name           string  `json:"name"`
+	Key            string  `json:"key"`
+	Status         string  `json:"status"`
+	RateMultiplier float64 `json:"rate_multiplier"`
+	Group          *struct {
 		Name           string  `json:"name"`
 		RateMultiplier float64 `json:"rate_multiplier"`
 	} `json:"group"`

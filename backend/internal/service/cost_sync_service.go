@@ -88,6 +88,7 @@ func (s *CostSyncService) SyncOne(
 		_ = s.costRepo.SaveSyncState(ctx, state)
 		return err
 	}
+	overrides := s.groupRateOverrides(ctx, p)
 
 	mappings := make([]repository.UpstreamKeyMapping, 0, len(keys))
 	costs := make([]repository.UpstreamKeyCost, 0, len(keys))
@@ -103,10 +104,9 @@ func (s *CostSyncService) SyncOne(
 		}
 		if k.Group != nil {
 			m.GroupName = strings.TrimSpace(k.Group.Name)
-			if p.Platform != "new-api" {
-				rate := k.Group.RateMultiplier
-				m.RateMultiplier = &rate
-			}
+		}
+		if rate := resolveUpstreamKeyRate(k, overrides); rate != nil {
+			m.RateMultiplier = rate
 		}
 		// 按 api_key 明文指纹匹配本站账号；明文不落库、不外传
 		var fp string
@@ -394,6 +394,61 @@ func (s *CostSyncService) NeedsBackfillFor(ctx context.Context, providerID int64
 		return false
 	}
 	return m[providerID]
+}
+
+// groupRateOverrides 拉该站当前用户的有效分组倍率。失败返回空表，不阻断成本同步。
+func (s *CostSyncService) groupRateOverrides(ctx context.Context, p *repository.Provider) map[string]float64 {
+	out := map[string]float64{}
+	sess, err := s.tokens.ensure(ctx, p)
+	if err != nil {
+		return out
+	}
+	if p.Platform == "new-api" {
+		rates, err := s.newapiClient.GetGroupRates(ctx, p.BaseURL, sess.NewAPI)
+		if err != nil {
+			return out
+		}
+		for _, r := range rates {
+			if r.Ratio > 0 {
+				out[r.Name] = r.Ratio
+			}
+		}
+		return out
+	}
+	rates, err := s.client.GetGroupRates(ctx, p.BaseURL, sess.AccessToken)
+	if err != nil {
+		return out
+	}
+	for _, r := range rates {
+		if r.Rate > 0 {
+			out[r.Name] = r.Rate
+		}
+	}
+	return out
+}
+
+// resolveUpstreamKeyRate 取该上游 key 的有效计费倍率。
+// 优先 key 顶层字段，其次专属/有效分组倍率，再退回 key.group 默认倍率。
+func resolveUpstreamKeyRate(key ProviderAPIKey, groupOverrides map[string]float64) *float64 {
+	if key.RateMultiplier > 0 {
+		rate := key.RateMultiplier
+		return &rate
+	}
+	groupName := ""
+	var groupRate float64
+	if key.Group != nil {
+		groupName = strings.TrimSpace(key.Group.Name)
+		groupRate = key.Group.RateMultiplier
+	}
+	if groupName != "" {
+		if override := groupOverrides[groupName]; override > 0 {
+			return &override
+		}
+	}
+	if groupRate > 0 {
+		return &groupRate
+	}
+	return nil
 }
 
 // KeyCosts 返回某供应商在闭区间内的 per-key 成本明细（供应商详情页用）。
