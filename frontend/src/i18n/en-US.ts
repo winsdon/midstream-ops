@@ -139,7 +139,7 @@ export default {
     lowBalance: 'Low Balance Threshold',
     lowBalanceAlert: 'Low balance',
     rechargeRate: 'Recharge Rate',
-    rechargeRateHint: 'balance × rate = CNY, used by balance alerts',
+    rechargeRateHint: 'CNY per one upstream unit, used by balance alerts and cost conversion. Upstream "1 CNY buys 10 U" → enter 0.1; already priced in CNY → enter 1',
     ignoreBalanceAlert: 'Ignore Balance Alerts',
     ignoreBalanceAlertHint: 'Mute balance alerts for this site only; collection continues',
     selfOperated: 'Self-run',
@@ -271,10 +271,10 @@ export default {
     range7: 'Last 7 days',
     range30: 'Last 30 days'
   },
-  // Cost basis: actual = upstream rate-discounted charge (real spend, drives profit); official = list price (reference only)
+  // Cost basis: actual = upstream rate-discounted charge (real spend, drives profit); official = undiscounted upstream cost (reference only)
   cost: {
     actual: 'Actual Cost',
-    official: 'List Price',
+    official: 'Upstream Cost',
     actualHint: 'Rate-discounted amount charged per key by upstream sub2api — the real money paid to the provider',
     profitOverstated: 'Some accounts have no matching upstream key — cost is understated and profit overstated',
     upperBound: '⚠ Upper bound (cost incomplete)',

@@ -139,7 +139,7 @@ export default {
     lowBalance: '低余额阈值',
     lowBalanceAlert: '余额不足',
     rechargeRate: '充值倍率',
-    rechargeRateHint: '余额 × 倍率 = 折合人民币，用于余额预警',
+    rechargeRateHint: '1 个上游计价单位折合多少人民币，用于余额预警与成本折算。上游「1 元充 10 U」填 0.1；本就按人民币计价填 1',
     ignoreBalanceAlert: '忽略余额告警',
     ignoreBalanceAlertHint: '仅静音本站的余额预警通知，余额采集照常',
     selfOperated: '自营',
@@ -271,10 +271,10 @@ export default {
     range7: '近 7 天',
     range30: '近 30 天'
   },
-  // 成本口径：actual = 上游倍率折后实扣（真实付出，参与利润）；official = 原始官价（仅对照）
+  // 成本口径：actual = 上游倍率折后实扣（真实付出，参与利润）；official = 上游未打折对照成本（仅对照）
   cost: {
     actual: '实扣成本',
-    official: '官价',
+    official: '上游成本',
     actualHint: '上游 sub2api 按 key 记录的倍率折后实扣金额，即真实付给供应商的钱',
     profitOverstated: '部分账号未匹配到上游 key，成本偏低、利润被高估',
     upperBound: '⚠ 利润上限值（成本不完整）',

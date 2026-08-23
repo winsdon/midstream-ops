@@ -108,12 +108,14 @@ func (r *OperatingCostRepo) GetByID(ctx context.Context, id int64) (*OperatingCo
 
 // Create 写入一笔运营成本。
 //
-// 币种恒为 USD：必须与上游实扣同币种才能直接相加。前端按 recharge_rate 折 CNY 展示。
+// 币种恒为 CNY：这笔钱是人工按实付人民币记的（买号花了多少就填多少），而上游实扣
+// 已在查询层按 recharge_rate 折成 CNY（见 upstream_cost_repo.actualCostExpr），
+// 两者同币种才能直接相加进利润。
 func (r *OperatingCostRepo) Create(ctx context.Context, p OperatingCostParams) (*OperatingCost, error) {
 	var id int64
 	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO provider_operating_costs (provider_id, category, amount, currency, occurred_on, note, operator)
-		VALUES (?,?,?,'USD',?,?,?) RETURNING id`,
+		VALUES (?,?,?,'CNY',?,?,?) RETURNING id`,
 		p.ProviderID, p.Category, p.Amount, p.OccurredOn, p.Note, p.Operator).Scan(&id)
 	if err != nil {
 		return nil, err

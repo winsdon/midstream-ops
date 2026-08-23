@@ -128,14 +128,29 @@ func (r *UpstreamCostRepo) UpsertMappings(ctx context.Context, maps []UpstreamKe
 	return tx.Commit()
 }
 
-// actualCostExpr 自营站剔除后的实扣求和表达式（三个聚合函数共用，口径必须一致）。
+// rateExpr 折 CNY 的倍率，非正值兜底为 1。
+//
+// 上游实扣以各站自己的计价单位入库（有的站 1R:10U，有的直接就是人民币），
+// 而收益取自 usage_logs 恒为 CNY。不折算就是拿两种币种直接相减 —— 一个
+// 1R:10U 的站会让成本虚高 10 倍，利润符号都能翻转。
+//
+// 兜底不用 COALESCE：列是 NOT NULL DEFAULT 1，真正的风险是被手工改成 0 或负数，
+// 那会把成本整个抹平、利润凭空变好看，比报错更危险。
+const rateExpr = `CASE WHEN p.recharge_rate > 0 THEN p.recharge_rate ELSE 1 END`
+
+// actualCostExpr 自营站剔除 + 折 CNY 后的实扣求和表达式（三个聚合函数共用，口径必须一致）。
 //
 // 自营站的上游实扣是左手倒右手，不是真实支出，故置 0。用 CASE 置零而非 WHERE
 // 过滤行：过滤会让账号从结果 map 里消失，StatsService 随即判成 CostMatched=false，
 // 触发前端「成本不完整、利润被高估 ⚠」告警。自营站成本为 0 是有意为之，不是数据缺失。
+const actualCostExpr = `COALESCE(SUM(CASE WHEN p.self_operated THEN 0
+	ELSE c.actual_cost * (` + rateExpr + `) END),0)`
+
+// officialCostExpr 折 CNY 后的官价求和表达式。
 //
-// official_cost 不做剔除：它是官价对照口径，与「这笔钱付给了谁」无关。
-const actualCostExpr = `COALESCE(SUM(CASE WHEN p.self_operated THEN 0 ELSE c.actual_cost END),0)`
+// 官价不做自营剔除（它是对照口径，与「钱付给了谁」无关），但必须与实扣同币种
+// 折算——两者要在同一张图上比较，混着单位画出来的「省了多少」是假的。
+const officialCostExpr = `COALESCE(SUM(c.official_cost * (` + rateExpr + `)),0)`
 
 // AccountCost 账号在查询区间内的真实成本汇总。
 type AccountCost struct {
@@ -149,7 +164,7 @@ type AccountCost struct {
 func (r *UpstreamCostRepo) CostByAccount(ctx context.Context, startDate, endDate string) (map[int64]AccountCost, error) {
 	// JOIN 而非 LEFT JOIN：provider_id 有 FK CASCADE，孤儿行不存在
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT c.account_id, `+actualCostExpr+`, COALESCE(SUM(c.official_cost),0)
+		SELECT c.account_id, `+actualCostExpr+`, `+officialCostExpr+`
 		FROM upstream_key_costs c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.account_id IS NOT NULL AND c.usage_date >= ? AND c.usage_date <= ?
@@ -180,7 +195,7 @@ type DailyCost struct {
 // 自营站实扣计 0，见 actualCostExpr。
 func (r *UpstreamCostRepo) CostByDay(ctx context.Context, startDate, endDate string) (map[string]DailyCost, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT c.usage_date, `+actualCostExpr+`, COALESCE(SUM(c.official_cost),0)
+		SELECT c.usage_date, `+actualCostExpr+`, `+officialCostExpr+`
 		FROM upstream_key_costs c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.usage_date >= ? AND c.usage_date <= ?
@@ -215,7 +230,7 @@ type ProviderCost struct {
 // 自营站实扣计 0，见 actualCostExpr。
 func (r *UpstreamCostRepo) CostByProvider(ctx context.Context, startDate, endDate string) (map[int64]ProviderCost, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT c.provider_id, `+actualCostExpr+`, COALESCE(SUM(c.official_cost),0)
+		SELECT c.provider_id, `+actualCostExpr+`, `+officialCostExpr+`
 		FROM upstream_key_costs c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.usage_date >= ? AND c.usage_date <= ?
@@ -248,12 +263,17 @@ type KeyCostRow struct {
 }
 
 // KeyCosts 返回某供应商在区间内的 per-key 成本明细（按实扣降序）。
+//
+// 同样折 CNY：明细之和要能对上统计页的站点合计，两处口径必须一致。
+// 这里不做自营剔除——本视图是「这个站的 key 各花了多少」，自营站也要看得见明细。
 func (r *UpstreamCostRepo) KeyCosts(ctx context.Context, providerID int64, startDate, endDate string) ([]KeyCostRow, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT c.upstream_key_id, c.key_name, c.account_id,
 		       COALESCE(m.account_name,''), m.rate_multiplier,
-		       COALESCE(SUM(c.actual_cost),0), COALESCE(SUM(c.official_cost),0)
+		       COALESCE(SUM(c.actual_cost * (`+rateExpr+`)),0),
+		       `+officialCostExpr+`
 		FROM upstream_key_costs c
+		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN upstream_key_map m
 		       ON m.provider_id = c.provider_id AND m.upstream_key_id = c.upstream_key_id
 		WHERE c.provider_id = ? AND c.usage_date >= ? AND c.usage_date <= ?

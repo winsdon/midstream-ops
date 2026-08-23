@@ -124,9 +124,10 @@ func TestCreateValidatesInput(t *testing.T) {
 			if got.Amount != tt.wantAmount {
 				t.Errorf("amount = %v, want %v", got.Amount, tt.wantAmount)
 			}
-			// 币种恒为 USD：必须与上游实扣同币种才能直接相加
-			if got.Currency != "USD" {
-				t.Errorf("currency = %q, want USD", got.Currency)
+			// 币种恒为 CNY：上游实扣已按 recharge_rate 折成人民币，
+			// 运营成本是人工记的人民币开支，两者同轴才能直接相加进 Profit
+			if got.Currency != "CNY" {
+				t.Errorf("currency = %q, want CNY", got.Currency)
 			}
 		})
 	}

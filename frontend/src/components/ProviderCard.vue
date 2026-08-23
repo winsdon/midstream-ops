@@ -34,18 +34,21 @@
       </div>
     </div>
 
-    <!-- 三指标：只要 USD，把高度让给子账号/分组入口 -->
+    <!-- 三指标：CNY 主显、上游原值副显。全站金额口径统一为人民币，
+         上游原值仍保留一行，便于跟供应商后台对账 -->
     <div class="mt-4 grid grid-cols-3 gap-3">
-      <MetricCell :label="t('provider.balance')" :usd="provider.last_balance" :rate="rechargeRate" tone="primary" usd-only />
-      <MetricCell :label="t('provider.todayCost')" :usd="provider.today_cost" :rate="rechargeRate" tone="warning" usd-only />
-      <MetricCell :label="t('provider.totalCost')" :usd="provider.total_cost" :rate="rechargeRate" tone="muted" usd-only />
+      <MetricCell :label="t('provider.balance')" :usd="provider.last_balance" :rate="rechargeRate" tone="primary" />
+      <MetricCell :label="t('provider.todayCost')" :usd="provider.today_cost" :rate="rechargeRate" tone="warning" />
+      <MetricCell :label="t('provider.totalCost')" :usd="provider.total_cost" :rate="rechargeRate" tone="muted" />
     </div>
 
     <div class="mt-3 flex flex-wrap items-center gap-2">
       <button type="button" class="info-chip" @click="$emit('accounts', provider)">
+        <Icon name="users" size="xs" />
         {{ t('provider.accountChip', { n: provider.account_count }) }}
       </button>
       <button type="button" class="info-chip" @click="$emit('groups', provider)">
+        <Icon name="folder" size="xs" />
         {{ t('provider.groupsChip') }}
       </button>
     </div>
@@ -95,9 +98,6 @@
           @click="$emit('opcost', provider)"
         >
           <Icon name="creditCard" size="sm" />
-        </button>
-        <button class="icon-btn" :title="t('provider.accounts')" @click="$emit('accounts', provider)">
-          <Icon name="users" size="sm" />
         </button>
         <button class="icon-btn" :title="t('provider.siteSettings')" @click="$emit('settings', provider)">
           <Icon name="cog" size="sm" />
@@ -199,7 +199,7 @@ const statusLabel = computed(() => t(STATUS_LABELS[status.value]))
   @apply dark:hover:border-red-500 dark:hover:bg-red-900/20 dark:hover:text-red-400;
 }
 .info-chip {
-  @apply rounded-lg border border-gray-200 px-2.5 py-1 text-xs text-gray-600 transition-colors;
+  @apply inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1 text-xs text-gray-600 transition-colors;
   @apply hover:border-primary-400 hover:text-primary-600;
   @apply dark:border-dark-700 dark:text-dark-300 dark:hover:border-primary-500 dark:hover:text-primary-400;
 }

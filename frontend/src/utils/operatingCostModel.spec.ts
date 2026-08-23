@@ -16,7 +16,7 @@ function entry(category: string, amount: number): OperatingCost {
     provider_id: 1,
     category: category as OperatingCost['category'],
     amount,
-    currency: 'USD',
+    currency: 'CNY',
     occurred_on: '2026-07-15',
     note: '',
     operator: '',
