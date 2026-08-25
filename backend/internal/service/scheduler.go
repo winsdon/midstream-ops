@@ -29,13 +29,19 @@ type Scheduler struct {
 	//
 	// 用 setter 注入而非构造参数：NewScheduler 已有 9 个参数，再加一个可空依赖
 	// 会让「必需」与「可选」在签名里混为一谈。
-	mediaSvc *MediaService
+	mediaSvc  *MediaService
+	creditSvc *CreditService
 }
 
 // SetMediaService 注入生图服务，使每日清理覆盖 media_tasks。
 // 未调用时该清理项自动跳过。
 func (s *Scheduler) SetMediaService(svc *MediaService) {
 	s.mediaSvc = svc
+}
+
+// SetCreditService 注入授信服务，用于周期扫描客户线上余额。
+func (s *Scheduler) SetCreditService(svc *CreditService) {
+	s.creditSvc = svc
 }
 
 // NewScheduler 创建调度器。
@@ -94,8 +100,16 @@ func (s *Scheduler) Start() error {
 		return err
 	}
 
+	if s.creditSvc != nil {
+		if _, err := s.cron.AddFunc("@every 5m", func() {
+			s.withPG("credit-balance", func(ctx context.Context) { s.creditSvc.WatchUserBalances(ctx) })
+		}); err != nil {
+			return err
+		}
+	}
+
 	s.cron.Start()
-	log.Printf("[scheduler] 已启动 probe=%s rate=%s cleanup=03:30（供应商 sync 由 SyncScheduler 调度）",
+	log.Printf("[scheduler] 已启动 probe=%s rate=%s credit-balance=5m cleanup=03:30（供应商 sync 由 SyncScheduler 调度）",
 		probeEvery, rateEvery)
 	return nil
 }

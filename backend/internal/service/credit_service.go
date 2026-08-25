@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +33,22 @@ var ErrInvalidInput = errors.New("入参不合法")
 // 定义在使用方而非实现方，避免 service 包内产生循环依赖，也让测试可传 nil。
 type CreditAlertNotifier interface {
 	HandleCreditAlert(ev CreditAlertEvent)
+	HandleUserBalanceAlert(ev UserBalanceAlertEvent)
+}
+
+// UserBalanceSource 线上 users.balance 批量读取（由 repository.PG 实现）。
+type UserBalanceSource interface {
+	BalancesByIDs(ctx context.Context, ids []int64) (map[int64]float64, error)
+}
+
+// UserBalanceAlertEvent 一次客户线上余额告警。
+type UserBalanceAlertEvent struct {
+	CustomerID   int64
+	CustomerName string
+	UserID       string
+	Balance      float64
+	Threshold    float64
+	Reminder     bool
 }
 
 // CreditService 授信台账编排。
@@ -38,13 +56,21 @@ type CreditAlertNotifier interface {
 // 职责边界：枚举与金额校验的单一收口点 + 写入后触发告警评估。
 // 【本模块永不写上游】充值动作由人在 sub2api 后台手动执行，见 012_credit_kyc.sql 注释。
 type CreditService struct {
-	repo   *repository.CreditRepo
-	alerts CreditAlertNotifier // 可为 nil（未配置通知时）
+	repo     *repository.CreditRepo
+	alerts   CreditAlertNotifier // 可为 nil（未配置通知时）
+	balances UserBalanceSource   // 可为 nil（未装配扫描时 Watch 直接返回）
+	settings *SettingsService
 }
 
 // NewCreditService 创建 CreditService。
 func NewCreditService(repo *repository.CreditRepo, alerts CreditAlertNotifier) *CreditService {
 	return &CreditService{repo: repo, alerts: alerts}
+}
+
+// SetUserBalanceSource 注入线上余额读取与策略。src 为 nil 时 WatchUserBalances 为空操作。
+func (s *CreditService) SetUserBalanceSource(src UserBalanceSource, settings *SettingsService) {
+	s.balances = src
+	s.settings = settings
 }
 
 // roundAmount 金额归一到分（两位小数），消除前端浮点输入的尾数噪声。
@@ -78,6 +104,10 @@ func validateCustomerParams(p *repository.CustomerParams) error {
 		return fmt.Errorf("%w: credit_limit 不能为负", ErrInvalidInput)
 	}
 	p.CreditLimit = roundAmount(p.CreditLimit)
+	if p.LowBalanceThreshold < 0 {
+		return fmt.Errorf("%w: low_balance_threshold 不能为负", ErrInvalidInput)
+	}
+	p.LowBalanceThreshold = roundAmount(p.LowBalanceThreshold)
 	return nil
 }
 
@@ -348,5 +378,104 @@ func (s *CreditService) evaluateAlert(ctx context.Context, c *repository.Custome
 		Outstanding:  c.Outstanding,
 		Available:    c.Available(),
 		Band:         band,
+	})
+}
+
+// userBalanceAlertCooldown 持续偏低时的补催间隔。与上游站点余额预警一致。
+const userBalanceAlertCooldown = time.Hour
+
+// WatchUserBalances 扫描生效客户的线上余额：始终写缓存，按状态机决定是否通知。
+func (s *CreditService) WatchUserBalances(ctx context.Context) {
+	if s.balances == nil {
+		return
+	}
+	customers, err := s.repo.ListActiveCustomers(ctx)
+	if err != nil {
+		log.Printf("[credit] 列出生效客户失败: %v", err)
+		return
+	}
+	var userIDs []int64
+	byUser := make(map[int64]*repository.Customer, len(customers))
+	for _, c := range customers {
+		uid, err := strconv.ParseInt(c.Sub2apiUserID, 10, 64)
+		if err != nil {
+			log.Printf("[credit] 跳过非数字 user_id %q", c.Sub2apiUserID)
+			continue
+		}
+		userIDs = append(userIDs, uid)
+		byUser[uid] = c
+	}
+	if len(userIDs) == 0 {
+		return
+	}
+	bals, err := s.balances.BalancesByIDs(ctx, userIDs)
+	if err != nil {
+		log.Printf("[credit] 读取线上余额失败: %v", err)
+		return
+	}
+	for uid, c := range byUser {
+		bal, ok := bals[uid]
+		if !ok {
+			log.Printf("[credit] 线上无此用户 %s，保留缓存", c.Sub2apiUserID)
+			continue
+		}
+		s.applyUserBalance(ctx, c, bal)
+	}
+}
+
+func (s *CreditService) applyUserBalance(ctx context.Context, c *repository.Customer, balance float64) {
+	balance = roundAmount(balance)
+	st := StrategySettings{}
+	if s.settings != nil {
+		st = s.settings.Strategy()
+	}
+	evaluate := st.UserBalanceAlertEnabled && len(st.UserBalanceNotifyChannels) > 0
+	th := roundAmount(c.EffectiveLowBalanceThreshold(st.DefaultUserBalanceThreshold))
+
+	level := c.UserBalanceAlertLevel
+	var firedAt *time.Time
+	fire := false
+	reminder := false
+
+	if evaluate && th > 0 {
+		below := balance < th
+		switch {
+		case !below:
+			if level != 0 {
+				level = 0
+			}
+		case level == 0:
+			now := time.Now()
+			firedAt = &now
+			level = 1
+			fire = true
+		case c.UserBalanceAlertAt == nil || time.Since(*c.UserBalanceAlertAt) >= userBalanceAlertCooldown:
+			now := time.Now()
+			firedAt = &now
+			level = 1
+			fire = true
+			reminder = true
+		}
+	}
+
+	if err := s.repo.SaveUserBalanceWatch(ctx, c.ID, balance, level, firedAt); err != nil {
+		log.Printf("[credit] 写入余额缓存失败 customer=%d: %v", c.ID, err)
+		return
+	}
+
+	if !fire || s.alerts == nil {
+		return
+	}
+	name := c.DisplayName
+	if name == "" {
+		name = c.Sub2apiUserID
+	}
+	s.alerts.HandleUserBalanceAlert(UserBalanceAlertEvent{
+		CustomerID:   c.ID,
+		CustomerName: name,
+		UserID:       c.Sub2apiUserID,
+		Balance:      balance,
+		Threshold:    th,
+		Reminder:     reminder,
 	})
 }

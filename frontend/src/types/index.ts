@@ -202,6 +202,10 @@ export interface StrategySettings {
   credit_alert_enabled: boolean
   credit_notify_channels: string[]
   credit_template: string
+  user_balance_alert_enabled: boolean
+  default_user_balance_threshold: number
+  user_balance_notify_channels: string[]
+  user_balance_template: string
 }
 
 // GET /settings/strategy 的响应：策略本体 + 后端下发的默认模板与可用渠道
@@ -210,6 +214,7 @@ export interface StrategySettingsResult {
   default_balance_template: string
   default_rate_template: string
   default_credit_template: string
+  default_user_balance_template: string
   available_channels: string[]
 }
 

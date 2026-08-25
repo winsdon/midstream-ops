@@ -14,13 +14,14 @@ import (
 
 // CreditHandler 授信台账处理器（管理端）。
 type CreditHandler struct {
-	svc *service.CreditService
-	pg  *repository.PG // 仅为建档下拉读线上 users 表
+	svc      *service.CreditService
+	pg       *repository.PG // 仅为建档下拉读线上 users 表
+	settings *service.SettingsService
 }
 
 // NewCreditHandler 创建 CreditHandler。
-func NewCreditHandler(svc *service.CreditService, pg *repository.PG) *CreditHandler {
-	return &CreditHandler{svc: svc, pg: pg}
+func NewCreditHandler(svc *service.CreditService, pg *repository.PG, settings *service.SettingsService) *CreditHandler {
+	return &CreditHandler{svc: svc, pg: pg, settings: settings}
 }
 
 // customerDTO 客户输出（管理端）。
@@ -43,6 +44,11 @@ type customerDTO struct {
 	LastEntryAt   *string `json:"last_entry_at"`
 	CreatedAt     string  `json:"created_at"`
 	UpdatedAt     string  `json:"updated_at"`
+
+	LowBalanceThreshold   float64  `json:"low_balance_threshold"`
+	UserBalance           *float64 `json:"user_balance"`
+	UserBalanceAt         *string  `json:"user_balance_at"`
+	BelowBalanceThreshold bool     `json:"below_balance_threshold"`
 }
 
 // ledgerEntryDTO 台账分录输出。
@@ -68,25 +74,37 @@ func fmtTimePtr(t *time.Time) *string {
 	return &s
 }
 
-func toCustomerDTO(c *repository.Customer) customerDTO {
+func toCustomerDTO(c *repository.Customer, globalTh float64) customerDTO {
 	return customerDTO{
-		ID:            c.ID,
-		Sub2apiUserID: c.Sub2apiUserID,
-		DisplayName:   c.DisplayName,
-		Email:         c.Email,
-		Note:          c.Note,
-		AdminNote:     c.AdminNote,
-		CreditLimit:   c.CreditLimit,
-		Outstanding:   c.Outstanding,
-		Available:     c.Available(),
-		UsageRatio:    c.UsageRatio(),
-		Status:        c.Status,
-		AlertLevel:    c.AlertLevel,
-		AlertAt:       fmtTimePtr(c.AlertAt),
-		LastEntryAt:   fmtTimePtr(c.LastEntryAt),
-		CreatedAt:     c.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt:     c.UpdatedAt.UTC().Format(time.RFC3339),
+		ID:                    c.ID,
+		Sub2apiUserID:         c.Sub2apiUserID,
+		DisplayName:           c.DisplayName,
+		Email:                 c.Email,
+		Note:                  c.Note,
+		AdminNote:             c.AdminNote,
+		CreditLimit:           c.CreditLimit,
+		Outstanding:           c.Outstanding,
+		Available:             c.Available(),
+		UsageRatio:            c.UsageRatio(),
+		Status:                c.Status,
+		AlertLevel:            c.AlertLevel,
+		AlertAt:               fmtTimePtr(c.AlertAt),
+		LastEntryAt:           fmtTimePtr(c.LastEntryAt),
+		CreatedAt:             c.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:             c.UpdatedAt.UTC().Format(time.RFC3339),
+		LowBalanceThreshold:   c.LowBalanceThreshold,
+		UserBalance:           c.UserBalance,
+		UserBalanceAt:         fmtTimePtr(c.UserBalanceAt),
+		BelowBalanceThreshold: c.BelowUserBalance(globalTh),
 	}
+}
+
+func (h *CreditHandler) dto(c *repository.Customer) customerDTO {
+	th := 0.0
+	if h.settings != nil {
+		th = h.settings.Strategy().DefaultUserBalanceThreshold
+	}
+	return toCustomerDTO(c, th)
 }
 
 func toLedgerDTO(e *repository.LedgerEntry) ledgerEntryDTO {
@@ -195,7 +213,7 @@ func (h *CreditHandler) ListCustomers(c *gin.Context) {
 	}
 	out := make([]customerDTO, 0, len(items))
 	for _, it := range items {
-		out = append(out, toCustomerDTO(it))
+		out = append(out, h.dto(it))
 	}
 	response.Paginated(c, out, total, page, pageSize)
 }
@@ -211,29 +229,31 @@ func (h *CreditHandler) GetCustomer(c *gin.Context) {
 		respondCreditErr(c, err)
 		return
 	}
-	response.Success(c, toCustomerDTO(cust))
+	response.Success(c, h.dto(cust))
 }
 
 // customerReq 新建/编辑客户请求体。
 type customerReq struct {
-	Sub2apiUserID string  `json:"sub2api_user_id"`
-	DisplayName   string  `json:"display_name"`
-	Email         string  `json:"email"`
-	Note          string  `json:"note"`
-	AdminNote     string  `json:"admin_note"`
-	CreditLimit   float64 `json:"credit_limit"`
-	Status        string  `json:"status"`
+	Sub2apiUserID       string  `json:"sub2api_user_id"`
+	DisplayName         string  `json:"display_name"`
+	Email               string  `json:"email"`
+	Note                string  `json:"note"`
+	AdminNote           string  `json:"admin_note"`
+	CreditLimit         float64 `json:"credit_limit"`
+	LowBalanceThreshold float64 `json:"low_balance_threshold"`
+	Status              string  `json:"status"`
 }
 
 func (r customerReq) toParams() repository.CustomerParams {
 	return repository.CustomerParams{
-		Sub2apiUserID: r.Sub2apiUserID,
-		DisplayName:   r.DisplayName,
-		Email:         r.Email,
-		Note:          r.Note,
-		AdminNote:     r.AdminNote,
-		CreditLimit:   r.CreditLimit,
-		Status:        r.Status,
+		Sub2apiUserID:       r.Sub2apiUserID,
+		DisplayName:         r.DisplayName,
+		Email:               r.Email,
+		Note:                r.Note,
+		AdminNote:           r.AdminNote,
+		CreditLimit:         r.CreditLimit,
+		LowBalanceThreshold: r.LowBalanceThreshold,
+		Status:              r.Status,
 	}
 }
 
@@ -249,7 +269,7 @@ func (h *CreditHandler) CreateCustomer(c *gin.Context) {
 		respondCreditErr(c, err)
 		return
 	}
-	response.Success(c, toCustomerDTO(cust))
+	response.Success(c, h.dto(cust))
 }
 
 // UpdateCustomer PUT /credit/customers/:id
@@ -268,7 +288,7 @@ func (h *CreditHandler) UpdateCustomer(c *gin.Context) {
 		respondCreditErr(c, err)
 		return
 	}
-	response.Success(c, toCustomerDTO(cust))
+	response.Success(c, h.dto(cust))
 }
 
 // ArchiveCustomer DELETE /credit/customers/:id（归档，不物理删除）
@@ -295,7 +315,7 @@ func (h *CreditHandler) Recalc(c *gin.Context) {
 		respondCreditErr(c, err)
 		return
 	}
-	response.Success(c, toCustomerDTO(cust))
+	response.Success(c, h.dto(cust))
 }
 
 // RecalcAll POST /credit/recalc
@@ -369,7 +389,7 @@ func (h *CreditHandler) AppendEntry(c *gin.Context) {
 		respondCreditErr(c, err)
 		return
 	}
-	response.Success(c, toCustomerDTO(cust))
+	response.Success(c, h.dto(cust))
 }
 
 // ReverseEntry POST /credit/ledger/:id/reverse
@@ -383,5 +403,5 @@ func (h *CreditHandler) ReverseEntry(c *gin.Context) {
 		respondCreditErr(c, err)
 		return
 	}
-	response.Success(c, toCustomerDTO(cust))
+	response.Success(c, h.dto(cust))
 }

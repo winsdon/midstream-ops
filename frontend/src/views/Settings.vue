@@ -264,6 +264,88 @@
           </div>
         </div>
       </div>
+
+      <!-- 客户线上余额预警 -->
+      <div class="card p-5">
+        <div class="flex items-center justify-between gap-4">
+          <div class="flex items-start gap-3">
+            <div class="mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-300">
+              <Icon name="exclamationTriangle" size="md" />
+            </div>
+            <div>
+              <p class="font-medium text-gray-900 dark:text-white">{{ t('settings.userBalanceAlertTitle') }}</p>
+              <p class="mt-0.5 text-xs text-gray-500 dark:text-dark-400">{{ t('settings.userBalanceAlertDesc') }}</p>
+            </div>
+          </div>
+          <ToggleSwitch v-model="strategy.user_balance_alert_enabled" />
+        </div>
+
+        <div v-if="strategy.user_balance_alert_enabled" class="mt-4 space-y-4 border-t border-gray-100 pl-12 pt-4 dark:border-dark-800">
+          <p class="flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+            <Icon name="infoCircle" size="sm" class="mt-px flex-shrink-0" />
+            <span>{{ t('settings.userBalanceAlertHint') }}</span>
+          </p>
+
+          <div>
+            <label class="input-label">{{ t('settings.userBalanceTriggerAmount') }}</label>
+            <div class="relative max-w-xs">
+              <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
+              <input
+                v-model.number="strategy.default_user_balance_threshold"
+                type="number" min="0" step="0.01"
+                class="input !pl-7"
+              />
+            </div>
+            <p class="mt-1 text-xs text-gray-400">{{ t('settings.userBalanceTriggerHint') }}</p>
+          </div>
+
+          <div>
+            <label class="input-label">
+              {{ t('settings.notifyChannels') }}
+              <span class="text-red-500">*</span>
+            </label>
+            <p v-if="!availableChannels.length" class="py-1 text-sm italic text-gray-400">
+              {{ t('settings.noChannelsConfigured') }}
+            </p>
+            <div v-else class="flex flex-wrap gap-2">
+              <button
+                v-for="ch in availableChannels" :key="ch"
+                type="button"
+                class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
+                :class="strategy.user_balance_notify_channels.includes(ch)
+                  ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
+                  : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100 dark:border-dark-700 dark:bg-dark-800 dark:text-dark-400'"
+                @click="toggleChannel('userBalance', ch)"
+              >
+                <Icon name="chat" size="sm" />
+                {{ channelLabel(ch) }}
+              </button>
+            </div>
+            <p v-if="availableChannels.length && !strategy.user_balance_notify_channels.length"
+               class="mt-1 text-xs text-red-500">{{ t('settings.mustSelectChannel') }}</p>
+          </div>
+
+          <div>
+            <label class="input-label">{{ t('settings.customTemplate') }}</label>
+            <div class="mb-1.5 flex flex-wrap items-center gap-1.5">
+              <button
+                v-for="v in userBalanceVars" :key="v.key"
+                type="button"
+                class="rounded bg-primary-50 px-1.5 py-0.5 font-mono text-xs text-primary-700 transition-colors hover:bg-primary-100 dark:bg-primary-900/30 dark:text-primary-300"
+                :title="t('settings.clickToInsert')"
+                @click="insertVar('userBalance', v.key)"
+              >{{ v.key }}</button>
+            </div>
+            <textarea
+              ref="userBalanceTemplateRef"
+              v-model="strategy.user_balance_template"
+              rows="2"
+              :placeholder="defaultUserBalanceTemplate"
+              class="input resize-none font-mono !text-xs"
+            ></textarea>
+          </div>
+        </div>
+      </div>
     </template>
 
     <!-- ===== 通知与渠道 ===== -->
@@ -391,13 +473,18 @@ const strategy = ref<StrategySettings>({
   rate_template: '',
   credit_alert_enabled: false,
   credit_notify_channels: [],
-  credit_template: ''
+  credit_template: '',
+  user_balance_alert_enabled: false,
+  default_user_balance_threshold: 10,
+  user_balance_notify_channels: [],
+  user_balance_template: ''
 })
 
 // 后端下发的默认模板与可用渠道（默认模板只在后端定义一份，避免前后端漂移）
 const defaultBalanceTemplate = ref('')
 const defaultRateTemplate = ref('')
 const defaultCreditTemplate = ref('')
+const defaultUserBalanceTemplate = ref('')
 const availableChannels = ref<string[]>([])
 
 const balanceVars = [
@@ -418,26 +505,34 @@ const creditVars = [
   { key: '{limit}' },
   { key: '{available}' }
 ]
+const userBalanceVars = [
+  { key: '{customerName}' },
+  { key: '{userId}' },
+  { key: '{balance}' },
+  { key: '{threshold}' }
+]
 
 const balanceTemplateRef = ref<HTMLTextAreaElement | null>(null)
 const rateTemplateRef = ref<HTMLTextAreaElement | null>(null)
 const creditTemplateRef = ref<HTMLTextAreaElement | null>(null)
+const userBalanceTemplateRef = ref<HTMLTextAreaElement | null>(null)
 
 /**
  * 三类告警的字段名与 textarea ref 集中在一张表里。
  * 早先是 kind === 'balance' ? ... : ... 的二元三目，加第三种告警要改两处分支；
  * 查表后再加第四种只需在这里补一行。
  */
-type AlertKind = 'balance' | 'rate' | 'credit'
+type AlertKind = 'balance' | 'rate' | 'credit' | 'userBalance'
 const ALERT_FIELDS: Record<
   AlertKind,
-  { channels: 'balance_notify_channels' | 'rate_notify_channels' | 'credit_notify_channels'
-    template: 'balance_template' | 'rate_template' | 'credit_template'
+  { channels: 'balance_notify_channels' | 'rate_notify_channels' | 'credit_notify_channels' | 'user_balance_notify_channels'
+    template: 'balance_template' | 'rate_template' | 'credit_template' | 'user_balance_template'
     ref: typeof balanceTemplateRef }
 > = {
   balance: { channels: 'balance_notify_channels', template: 'balance_template', ref: balanceTemplateRef },
   rate: { channels: 'rate_notify_channels', template: 'rate_template', ref: rateTemplateRef },
-  credit: { channels: 'credit_notify_channels', template: 'credit_template', ref: creditTemplateRef }
+  credit: { channels: 'credit_notify_channels', template: 'credit_template', ref: creditTemplateRef },
+  userBalance: { channels: 'user_balance_notify_channels', template: 'user_balance_template', ref: userBalanceTemplateRef }
 }
 
 const CHANNEL_LABELS: Record<string, string> = {
@@ -505,11 +600,14 @@ async function load(): Promise<void> {
       ...st.strategy,
       balance_notify_channels: st.strategy.balance_notify_channels || [],
       rate_notify_channels: st.strategy.rate_notify_channels || [],
-      credit_notify_channels: st.strategy.credit_notify_channels || []
+      credit_notify_channels: st.strategy.credit_notify_channels || [],
+      user_balance_notify_channels: st.strategy.user_balance_notify_channels || [],
+      default_user_balance_threshold: st.strategy.default_user_balance_threshold || 10
     }
     defaultBalanceTemplate.value = st.default_balance_template
     defaultRateTemplate.value = st.default_rate_template
     defaultCreditTemplate.value = st.default_credit_template
+    defaultUserBalanceTemplate.value = st.default_user_balance_template
     availableChannels.value = st.available_channels || []
     notify.value = nf
     channels.value = {

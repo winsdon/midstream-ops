@@ -64,6 +64,11 @@
                 sort-key="available" :active-key="sortKey" :order="sortOrder" @sort="sortBy"
                 :label="t('credit.available')"
               />
+              <SortableTh
+                class="text-right" align="right"
+                sort-key="user_balance" :active-key="sortKey" :order="sortOrder" @sort="sortBy"
+                :label="t('credit.userBalance')"
+              />
               <th class="min-w-[9rem]">{{ t('credit.usage') }}</th>
               <SortableTh
                 sort-key="last_entry" :active-key="sortKey" :order="sortOrder" @sort="sortBy"
@@ -76,7 +81,7 @@
             <TableState
               :loading="loading"
               :empty="!customers.length"
-              :colspan="7"
+              :colspan="8"
               icon="creditCard"
               :title="t('credit.emptyTitle')"
               :description="t('credit.emptyDesc')"
@@ -99,6 +104,13 @@
               <td class="text-right font-semibold">{{ displayMoney(c.outstanding) }}</td>
               <td class="text-right font-semibold" :class="displayMoneyClass(c.available)">
                 {{ displayMoney(c.available) }}
+              </td>
+              <td
+                class="text-right font-semibold"
+                :class="c.below_balance_threshold ? 'text-red-600 dark:text-red-400' : ''"
+                :title="c.user_balance_at ? t('credit.userBalanceAt', { time: fmtDateTime(c.user_balance_at) }) : ''"
+              >
+                {{ displayMoney(c.user_balance) }}
               </td>
               <td>
                 <CreditUsageBar :ratio="c.usage_ratio" :limit="c.credit_limit" />
@@ -224,6 +236,11 @@
           </div>
         </div>
         <div>
+          <label class="input-label">{{ t('credit.lowBalanceThreshold') }} (USD)</label>
+          <input v-model.number="form.low_balance_threshold" type="number" step="0.01" min="0" class="input" />
+          <p class="mt-1 text-xs text-gray-400">{{ t('credit.lowBalanceThresholdHint') }}</p>
+        </div>
+        <div>
           <label class="input-label">{{ t('credit.note') }}</label>
           <input v-model.trim="form.note" class="input" />
         </div>
@@ -272,7 +289,7 @@ import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { creditApi } from '@/api/credit'
 import { errorMessage } from '@/api/client'
-import { minutesSince } from '@/utils/format'
+import { minutesSince, fmtDateTime } from '@/utils/format'
 import { usePrivacyMoney } from '@/composables/usePrivacyMoney'
 import { useAppStore } from '@/stores/app'
 import type { SortOrder } from '@/utils/tableSort'
@@ -349,6 +366,7 @@ const form = reactive({
   note: '',
   admin_note: '',
   credit_limit: 0,
+  low_balance_threshold: 0,
   status: 'active' as CustomerStatus
 })
 
@@ -509,6 +527,7 @@ function openCreate() {
     note: '',
     admin_note: '',
     credit_limit: 0,
+    low_balance_threshold: 0,
     status: 'active' as CustomerStatus
   })
   showForm.value = true
@@ -525,6 +544,7 @@ function openEdit(c: CreditCustomer) {
     note: c.note,
     admin_note: c.admin_note,
     credit_limit: c.credit_limit,
+    low_balance_threshold: c.low_balance_threshold,
     status: c.status
   })
   showForm.value = true

@@ -42,3 +42,28 @@ func (p *PG) ListUsers(ctx context.Context) ([]PGUser, error) {
 	}
 	return out, rows.Err()
 }
+
+// BalancesByIDs 按 users.id 批量读取线上余额。查不到的 id 不出现在结果里。
+func (p *PG) BalancesByIDs(ctx context.Context, ids []int64) (map[int64]float64, error) {
+	out := make(map[int64]float64, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT id, COALESCE(balance, 0)
+		FROM users
+		WHERE deleted_at IS NULL AND id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var bal float64
+		if err := rows.Scan(&id, &bal); err != nil {
+			return nil, err
+		}
+		out[id] = bal
+	}
+	return out, rows.Err()
+}

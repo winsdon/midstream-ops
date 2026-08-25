@@ -29,6 +29,9 @@ const DefaultRateTemplate = "【倍率变更】{entityName} 倍率由 {oldRate} 
 // DefaultCreditTemplate 授信额度预警默认文案。
 const DefaultCreditTemplate = "【授信预警】客户 {customerName} 已用额度达 {band}%，当前敞口 ${outstanding} / 授信 ${limit}，剩余可垫付 ${available}。"
 
+// DefaultUserBalanceTemplate 授信客户线上余额预警默认文案。
+const DefaultUserBalanceTemplate = "【客户余额预警】{customerName}（#{userId}）线上余额 ${balance}，已低于阈值 ${threshold}。请及时垫付。"
+
 // StrategySettings 自动化与策略配置。
 type StrategySettings struct {
 	// 数据刷新频率（供应商 sync：余额+成本+分组倍率）
@@ -54,6 +57,13 @@ type StrategySettings struct {
 	CreditNotifyChannels []string `json:"credit_notify_channels"`
 	// CreditTemplate 支持 {customerName} {band} {outstanding} {limit} {available}；空则用默认模板
 	CreditTemplate string `json:"credit_template"`
+
+	// 授信客户线上余额提前告警：只读扫描 users.balance，跌破阈值通知运营垫付
+	UserBalanceAlertEnabled     bool     `json:"user_balance_alert_enabled"`
+	DefaultUserBalanceThreshold float64  `json:"default_user_balance_threshold"`
+	UserBalanceNotifyChannels   []string `json:"user_balance_notify_channels"`
+	// UserBalanceTemplate 支持 {customerName} {userId} {balance} {threshold}；空则用默认模板
+	UserBalanceTemplate string `json:"user_balance_template"`
 }
 
 // normalize 填充默认值并夹紧下限。
@@ -73,6 +83,12 @@ func (s *StrategySettings) normalize() {
 	if s.CreditNotifyChannels == nil {
 		s.CreditNotifyChannels = []string{}
 	}
+	if s.DefaultUserBalanceThreshold < 0 {
+		s.DefaultUserBalanceThreshold = 0
+	}
+	if s.UserBalanceNotifyChannels == nil {
+		s.UserBalanceNotifyChannels = []string{}
+	}
 }
 
 // defaultStrategy 缺省策略。
@@ -80,12 +96,14 @@ func (s *StrategySettings) normalize() {
 // 预警默认关闭（需先配置通知渠道）。
 func defaultStrategy() StrategySettings {
 	return StrategySettings{
-		RefreshEnabled:          true,
-		RefreshIntervalSeconds:  600,
-		DefaultBalanceThreshold: 10,
-		BalanceNotifyChannels:   []string{},
-		RateNotifyChannels:      []string{},
-		CreditNotifyChannels:    []string{},
+		RefreshEnabled:              true,
+		RefreshIntervalSeconds:      600,
+		DefaultBalanceThreshold:     10,
+		BalanceNotifyChannels:       []string{},
+		RateNotifyChannels:          []string{},
+		CreditNotifyChannels:        []string{},
+		DefaultUserBalanceThreshold: 10,
+		UserBalanceNotifyChannels:   []string{},
 	}
 }
 

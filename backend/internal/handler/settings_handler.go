@@ -26,11 +26,12 @@ func NewSettingsHandler(svc *service.SettingsService, notifier *notify.Manager) 
 // 附带默认模板与当前可用渠道，供前端展示占位与多选项（默认模板只在后端定义一份）。
 func (h *SettingsHandler) GetStrategy(c *gin.Context) {
 	response.Success(c, gin.H{
-		"strategy":                 h.svc.Strategy(),
-		"default_balance_template": service.DefaultBalanceTemplate,
-		"default_rate_template":    service.DefaultRateTemplate,
-		"default_credit_template":  service.DefaultCreditTemplate,
-		"available_channels":       h.notifier.EnabledNames(),
+		"strategy":                      h.svc.Strategy(),
+		"default_balance_template":      service.DefaultBalanceTemplate,
+		"default_rate_template":         service.DefaultRateTemplate,
+		"default_credit_template":       service.DefaultCreditTemplate,
+		"default_user_balance_template": service.DefaultUserBalanceTemplate,
+		"available_channels":            h.notifier.EnabledNames(),
 	})
 }
 

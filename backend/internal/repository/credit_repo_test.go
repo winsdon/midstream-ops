@@ -116,6 +116,42 @@ func TestCustomerColsScanContract(t *testing.T) {
 	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
 		t.Errorf("时间戳未解析: created=%v updated=%v", got.CreatedAt, got.UpdatedAt)
 	}
+
+	balFired := time.Date(2026, 7, 8, 9, 10, 11, 0, time.UTC)
+	if _, err := repo.UpdateCustomer(ctx, created.ID, CustomerParams{
+		Sub2apiUserID:       "uid-777",
+		DisplayName:         "显示名",
+		Email:               "a@example.com",
+		Note:                "客户可见备注",
+		AdminNote:           "内部备注",
+		CreditLimit:         1234.56,
+		LowBalanceThreshold: 42.5,
+		Status:              "active",
+	}); err != nil {
+		t.Fatalf("写覆盖阈值失败: %v", err)
+	}
+	if err := repo.SaveUserBalanceWatch(ctx, created.ID, 7.77, 1, &balFired); err != nil {
+		t.Fatalf("写余额缓存失败: %v", err)
+	}
+	got, err = repo.GetCustomer(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("再读客户失败: %v", err)
+	}
+	if got.LowBalanceThreshold != 42.5 {
+		t.Errorf("low_balance_threshold 错位: %v", got.LowBalanceThreshold)
+	}
+	if got.UserBalance == nil || *got.UserBalance != 7.77 {
+		t.Errorf("user_balance 错位: %v", got.UserBalance)
+	}
+	if got.UserBalanceAt == nil {
+		t.Error("user_balance_at 应非空")
+	}
+	if got.UserBalanceAlertLevel != 1 {
+		t.Errorf("user_balance_alert_level 错位: %v", got.UserBalanceAlertLevel)
+	}
+	if got.UserBalanceAlertAt == nil || !got.UserBalanceAlertAt.Equal(balFired) {
+		t.Errorf("user_balance_alert_at 错位: %v", got.UserBalanceAlertAt)
+	}
 }
 
 // TestLedgerColsScanContract 台账 cols/scan 契约，同上。
@@ -580,4 +616,160 @@ func TestSetAlertLevelKeepsAlertAtOnDowngrade(t *testing.T) {
 	if got.AlertAt == nil || !got.AlertAt.Equal(fired) {
 		t.Fatalf("alert_at 应保留上次告警时刻，实际 %v", got.AlertAt)
 	}
+}
+
+func TestEffectiveLowBalanceThreshold(t *testing.T) {
+	c := &Customer{LowBalanceThreshold: 0}
+	if got := c.EffectiveLowBalanceThreshold(10); got != 10 {
+		t.Fatalf("0 应跟随全局，实际 %v", got)
+	}
+	c.LowBalanceThreshold = 50
+	if got := c.EffectiveLowBalanceThreshold(10); got != 50 {
+		t.Fatalf("客户覆盖应优先，实际 %v", got)
+	}
+}
+
+func TestBelowUserBalance(t *testing.T) {
+	bal := 5.0
+	c := &Customer{UserBalance: &bal, LowBalanceThreshold: 0}
+	if !c.BelowUserBalance(10) {
+		t.Fatal("5 < 10 应判定偏低")
+	}
+	if c.BelowUserBalance(5) {
+		t.Fatal("5 >= 5 不应判定偏低")
+	}
+	c.UserBalance = nil
+	if c.BelowUserBalance(10) {
+		t.Fatal("尚未扫描不应判定偏低")
+	}
+	c.UserBalance = &bal
+	if c.BelowUserBalance(0) {
+		t.Fatal("有效阈值为 0 时不告警")
+	}
+}
+
+func TestLowBalanceThresholdPersists(t *testing.T) {
+	repo := newTestCreditRepo(t)
+	ctx := context.Background()
+	c, err := repo.CreateCustomer(ctx, CustomerParams{
+		Sub2apiUserID:       "uid-th",
+		CreditLimit:         100,
+		LowBalanceThreshold: 25.5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.LowBalanceThreshold != 25.5 {
+		t.Fatalf("建档阈值错: %v", c.LowBalanceThreshold)
+	}
+	got, err := repo.UpdateCustomer(ctx, c.ID, CustomerParams{
+		Sub2apiUserID:       "uid-th",
+		CreditLimit:         100,
+		LowBalanceThreshold: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LowBalanceThreshold != 8 {
+		t.Fatalf("更新阈值错: %v", got.LowBalanceThreshold)
+	}
+}
+
+func TestListActiveCustomersSkipsArchived(t *testing.T) {
+	repo := newTestCreditRepo(t)
+	ctx := context.Background()
+	mustCustomer(t, repo, "uid-a", 100)
+	arch := mustCustomer(t, repo, "uid-b", 100)
+	if err := repo.ArchiveCustomer(ctx, arch.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.ListActiveCustomers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Sub2apiUserID != "uid-a" {
+		t.Fatalf("只应返回生效客户，实际 %+v", got)
+	}
+}
+
+func TestSaveUserBalanceWatchCachesAndKeepsAlertAtOnReArm(t *testing.T) {
+	repo := newTestCreditRepo(t)
+	ctx := context.Background()
+	c := mustCustomer(t, repo, "uid-watch", 100)
+	before := c.UpdatedAt
+
+	fired := time.Date(2026, 8, 1, 2, 3, 4, 0, time.UTC)
+	if err := repo.SaveUserBalanceWatch(ctx, c.ID, 3.21, 1, &fired); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetCustomer(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UserBalance == nil || *got.UserBalance != 3.21 {
+		t.Fatalf("余额缓存错: %v", got.UserBalance)
+	}
+	if got.UserBalanceAt == nil {
+		t.Fatal("user_balance_at 应写入扫描时刻")
+	}
+	if got.UserBalanceAlertLevel != 1 {
+		t.Fatalf("闩锁应为 1，实际 %d", got.UserBalanceAlertLevel)
+	}
+	if got.UserBalanceAlertAt == nil || !got.UserBalanceAlertAt.Equal(fired) {
+		t.Fatalf("alert_at 错: %v", got.UserBalanceAlertAt)
+	}
+	if !got.UpdatedAt.Equal(before) {
+		t.Fatalf("扫描不得改 updated_at: before=%v after=%v", before, got.UpdatedAt)
+	}
+
+	// 回升武装：level 归零，alert_at 保留
+	if err := repo.SaveUserBalanceWatch(ctx, c.ID, 99, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err = repo.GetCustomer(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UserBalance == nil || *got.UserBalance != 99 {
+		t.Fatalf("回升后余额缓存错: %v", got.UserBalance)
+	}
+	if got.UserBalanceAlertLevel != 0 {
+		t.Fatalf("武装后档位应归零，实际 %d", got.UserBalanceAlertLevel)
+	}
+	if got.UserBalanceAlertAt == nil || !got.UserBalanceAlertAt.Equal(fired) {
+		t.Fatalf("武装不得覆盖 alert_at，实际 %v", got.UserBalanceAlertAt)
+	}
+}
+
+func TestListCustomersUserBalanceNullsLast(t *testing.T) {
+	repo := newTestCreditRepo(t)
+	ctx := context.Background()
+	scanned := mustCustomer(t, repo, "uid-has", 100)
+	mustCustomer(t, repo, "uid-nil", 100)
+	if err := repo.SaveUserBalanceWatch(ctx, scanned.ID, 1, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	desc, _, err := repo.ListCustomers(ctx, CustomerFilter{Sort: "user_balance", Order: "desc", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(desc) != 2 || desc[0].Sub2apiUserID != "uid-has" || desc[1].Sub2apiUserID != "uid-nil" {
+		t.Fatalf("降序空值应在末尾，实际 %s %s", nameOr(desc, 0), nameOr(desc, 1))
+	}
+
+	asc, _, err := repo.ListCustomers(ctx, CustomerFilter{Sort: "user_balance", Order: "asc", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(asc) != 2 || asc[0].Sub2apiUserID != "uid-has" || asc[1].Sub2apiUserID != "uid-nil" {
+		t.Fatalf("升序空值应在末尾，实际 %s %s", nameOr(asc, 0), nameOr(asc, 1))
+	}
+}
+
+func nameOr(cs []*Customer, i int) string {
+	if i < 0 || i >= len(cs) {
+		return "?"
+	}
+	return cs[i].Sub2apiUserID
 }

@@ -40,6 +40,13 @@ export interface CreditCustomer {
   last_entry_at: string | null
   created_at: string
   updated_at: string
+  /** 客户覆盖的线上余额告警阈值；0 = 跟随设置页全局值 */
+  low_balance_threshold: number
+  /** 最近一次扫描的线上余额；null 表示尚未扫描 */
+  user_balance: number | null
+  user_balance_at: string | null
+  /** 相对有效阈值（客户覆盖或全局）是否偏低；与通知开关无关 */
+  below_balance_threshold: boolean
 }
 
 export interface CreditLedgerEntry {
@@ -80,6 +87,7 @@ export interface CustomerPayload {
   note: string
   admin_note: string
   credit_limit: number
+  low_balance_threshold: number
   status: CustomerStatus
 }
 

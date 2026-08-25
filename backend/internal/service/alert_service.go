@@ -181,6 +181,35 @@ func (a *AlertService) HandleCreditAlert(ev CreditAlertEvent) {
 		ev.CustomerName, ev.Band, ev.Outstanding, ev.CreditLimit)
 }
 
+// renderUserBalanceTemplate 渲染客户线上余额预警文案。
+func renderUserBalanceTemplate(tpl, customerName, userID string, balance, threshold float64) string {
+	if strings.TrimSpace(tpl) == "" {
+		tpl = DefaultUserBalanceTemplate
+	}
+	return strings.NewReplacer(
+		"{customerName}", customerName,
+		"{userId}", userID,
+		"{balance}", fmt.Sprintf("%.2f", balance),
+		"{threshold}", fmt.Sprintf("%.2f", threshold),
+	).Replace(tpl)
+}
+
+// HandleUserBalanceAlert 客户线上余额跌破 / 补催钩子。边沿与冷却在 CreditService。
+func (a *AlertService) HandleUserBalanceAlert(ev UserBalanceAlertEvent) {
+	st := a.settings.Strategy()
+	if !st.UserBalanceAlertEnabled || len(st.UserBalanceNotifyChannels) == 0 {
+		return
+	}
+	text := renderUserBalanceTemplate(st.UserBalanceTemplate, ev.CustomerName, ev.UserID, ev.Balance, ev.Threshold)
+	title := "客户余额预警"
+	if ev.Reminder {
+		title = "客户余额持续偏低"
+	}
+	go a.send(st.UserBalanceNotifyChannels, notify.Message{Title: title, Text: text})
+	log.Printf("[alert] 客户余额预警: %s (#%s) $%.2f < $%.2f reminder=%v",
+		ev.CustomerName, ev.UserID, ev.Balance, ev.Threshold, ev.Reminder)
+}
+
 // send 异步定向发送（独立超时，不阻塞采集链路）。
 func (a *AlertService) send(channels []string, msg notify.Message) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

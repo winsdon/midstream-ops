@@ -13,11 +13,46 @@ import (
 
 // fakeCreditNotifier 记录收到的告警事件（替代真实通知渠道）。
 type fakeCreditNotifier struct {
-	events []CreditAlertEvent
+	events        []CreditAlertEvent
+	balanceEvents []UserBalanceAlertEvent
+}
+
+type fakeBalanceSource struct {
+	balances map[int64]float64
+}
+
+func (f *fakeBalanceSource) BalancesByIDs(_ context.Context, ids []int64) (map[int64]float64, error) {
+	out := make(map[int64]float64)
+	for _, id := range ids {
+		if v, ok := f.balances[id]; ok {
+			out[id] = v
+		}
+	}
+	return out, nil
+}
+
+func enabledUserBalanceSettings(th float64) StrategySettings {
+	return StrategySettings{
+		UserBalanceAlertEnabled:     true,
+		DefaultUserBalanceThreshold: th,
+		UserBalanceNotifyChannels:   []string{"dingtalk"},
+	}
+}
+
+func watchReady(t *testing.T, st StrategySettings) (*CreditService, *fakeCreditNotifier, *fakeBalanceSource) {
+	t.Helper()
+	svc, notifier := newTestCreditService(t)
+	src := &fakeBalanceSource{balances: map[int64]float64{}}
+	svc.SetUserBalanceSource(src, &SettingsService{strategy: st})
+	return svc, notifier, src
 }
 
 func (f *fakeCreditNotifier) HandleCreditAlert(ev CreditAlertEvent) {
 	f.events = append(f.events, ev)
+}
+
+func (f *fakeCreditNotifier) HandleUserBalanceAlert(ev UserBalanceAlertEvent) {
+	f.balanceEvents = append(f.balanceEvents, ev)
 }
 
 func (f *fakeCreditNotifier) bands() []int {
@@ -446,6 +481,178 @@ func TestEnsureCustomerIsIdempotent(t *testing.T) {
 	if _, err := svc.EnsureCustomer(ctx, "", "x@example.com"); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("空 userID 应被拒绝，实际 %v", err)
 	}
+}
+
+func TestNegativeLowBalanceThresholdRejected(t *testing.T) {
+	svc, _ := newTestCreditService(t)
+	_, err := svc.CreateCustomer(context.Background(), repository.CustomerParams{
+		Sub2apiUserID: "9001", LowBalanceThreshold: -1,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("负余额阈值应被拒绝，实际 %v", err)
+	}
+}
+
+func TestWatchUserBalancesFirstFireAndCooldown(t *testing.T) {
+	svc, notifier, src := watchReady(t, enabledUserBalanceSettings(10))
+	ctx := context.Background()
+	c := newCustomer(t, svc, "1001", 100)
+	src.balances[1001] = 5
+
+	svc.WatchUserBalances(ctx)
+	if len(notifier.balanceEvents) != 1 || notifier.balanceEvents[0].Reminder {
+		t.Fatalf("跌破应发一条首次告警，实际 %+v", notifier.balanceEvents)
+	}
+	if notifier.balanceEvents[0].Balance != 5 || notifier.balanceEvents[0].Threshold != 10 {
+		t.Fatalf("金额字段错误: %+v", notifier.balanceEvents[0])
+	}
+	got, err := svc.GetCustomer(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UserBalance == nil || *got.UserBalance != 5 || got.UserBalanceAlertLevel != 1 {
+		t.Fatalf("缓存/闩锁未写入: balance=%v level=%d", got.UserBalance, got.UserBalanceAlertLevel)
+	}
+
+	svc.WatchUserBalances(ctx)
+	if len(notifier.balanceEvents) != 1 {
+		t.Fatalf("冷却内不应补催，实际 %d 条", len(notifier.balanceEvents))
+	}
+
+	ago := time.Now().Add(-2 * time.Hour)
+	if err := svc.repo.SaveUserBalanceWatch(ctx, c.ID, 5, 1, &ago); err != nil {
+		t.Fatal(err)
+	}
+	svc.WatchUserBalances(ctx)
+	if len(notifier.balanceEvents) != 2 || !notifier.balanceEvents[1].Reminder {
+		t.Fatalf("冷却后应补催，实际 %+v", notifier.balanceEvents)
+	}
+}
+
+func TestWatchUserBalancesRearmsAfterRecovery(t *testing.T) {
+	svc, notifier, src := watchReady(t, enabledUserBalanceSettings(10))
+	ctx := context.Background()
+	c := newCustomer(t, svc, "1002", 100)
+	src.balances[1002] = 1
+	svc.WatchUserBalances(ctx)
+	if len(notifier.balanceEvents) != 1 {
+		t.Fatalf("首次应告警，实际 %d", len(notifier.balanceEvents))
+	}
+
+	src.balances[1002] = 20
+	svc.WatchUserBalances(ctx)
+	if len(notifier.balanceEvents) != 1 {
+		t.Fatalf("回升不应通知，实际 %d", len(notifier.balanceEvents))
+	}
+	got, err := svc.GetCustomer(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UserBalanceAlertLevel != 0 {
+		t.Fatalf("回升后应重新武装，实际 level=%d", got.UserBalanceAlertLevel)
+	}
+
+	src.balances[1002] = 1
+	svc.WatchUserBalances(ctx)
+	if len(notifier.balanceEvents) != 2 || notifier.balanceEvents[1].Reminder {
+		t.Fatalf("再次跌破应发首次，实际 %+v", notifier.balanceEvents)
+	}
+}
+
+func TestWatchUserBalancesPerCustomerOverride(t *testing.T) {
+	svc, notifier, src := watchReady(t, enabledUserBalanceSettings(10))
+	ctx := context.Background()
+	over, err := svc.CreateCustomer(ctx, repository.CustomerParams{
+		Sub2apiUserID: "2001", DisplayName: "over", CreditLimit: 100, LowBalanceThreshold: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	follow, err := svc.CreateCustomer(ctx, repository.CustomerParams{
+		Sub2apiUserID: "2002", DisplayName: "follow", CreditLimit: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = over
+	_ = follow
+	src.balances[2001] = 20
+	src.balances[2002] = 20
+	svc.WatchUserBalances(ctx)
+	if len(notifier.balanceEvents) != 1 || notifier.balanceEvents[0].UserID != "2001" {
+		t.Fatalf("仅覆盖阈值 50 的客户应告警（20<50），跟随全局 10 的 20 不告。实际 %+v", notifier.balanceEvents)
+	}
+}
+
+func TestWatchUserBalancesZeroThresholdCachesOnly(t *testing.T) {
+	svc, notifier, src := watchReady(t, enabledUserBalanceSettings(0))
+	ctx := context.Background()
+	c := newCustomer(t, svc, "3001", 100)
+	src.balances[3001] = 0.01
+	svc.WatchUserBalances(ctx)
+	if len(notifier.balanceEvents) != 0 {
+		t.Fatalf("阈值 0 不应告警，实际 %+v", notifier.balanceEvents)
+	}
+	got, err := svc.GetCustomer(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UserBalance == nil || *got.UserBalance != 0.01 {
+		t.Fatalf("仍应写入缓存，实际 %v", got.UserBalance)
+	}
+	if got.UserBalanceAlertLevel != 0 {
+		t.Fatalf("闩锁不应动，实际 %d", got.UserBalanceAlertLevel)
+	}
+}
+
+func TestWatchUserBalancesDisabledStillCaches(t *testing.T) {
+	st := enabledUserBalanceSettings(10)
+	st.UserBalanceAlertEnabled = false
+	svc, notifier, src := watchReady(t, st)
+	ctx := context.Background()
+	c := newCustomer(t, svc, "3002", 100)
+	src.balances[3002] = 1
+	svc.WatchUserBalances(ctx)
+	if len(notifier.balanceEvents) != 0 {
+		t.Fatalf("开关关闭不应告警，实际 %+v", notifier.balanceEvents)
+	}
+	got, err := svc.GetCustomer(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UserBalance == nil || *got.UserBalance != 1 {
+		t.Fatalf("开关关闭仍应缓存余额，实际 %v", got.UserBalance)
+	}
+	if got.UserBalanceAlertLevel != 0 {
+		t.Fatalf("开关关闭不得改闩锁，实际 %d", got.UserBalanceAlertLevel)
+	}
+}
+
+func TestWatchUserBalancesSkipsNonNumericAndMissing(t *testing.T) {
+	svc, notifier, src := watchReady(t, enabledUserBalanceSettings(10))
+	ctx := context.Background()
+	newCustomer(t, svc, "not-a-number", 100)
+	missing := newCustomer(t, svc, "4001", 100)
+	ok := newCustomer(t, svc, "4002", 100)
+	src.balances[4002] = 1
+	svc.WatchUserBalances(ctx)
+	if len(notifier.balanceEvents) != 1 || notifier.balanceEvents[0].UserID != "4002" {
+		t.Fatalf("只应对查到余额的数字 id 告警，实际 %+v", notifier.balanceEvents)
+	}
+	got, err := svc.GetCustomer(ctx, missing.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UserBalance != nil {
+		t.Fatalf("查无此人不得把缓存写成 0，实际 %v", got.UserBalance)
+	}
+	_ = ok
+}
+
+func TestWatchUserBalancesNilSourceNoPanic(t *testing.T) {
+	svc, _ := newTestCreditService(t)
+	newCustomer(t, svc, "5001", 100)
+	svc.WatchUserBalances(context.Background())
 }
 
 // TestAppendEntryUsesProvidedOccurredAt 补录历史时用传入的业务时间，不用当前时间。

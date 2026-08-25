@@ -105,6 +105,7 @@ func main() {
 	// box 同时用于 KYC 的 PII 加解密 —— 未配置密钥时身份证号等会明文落库。
 	creditRepo := repository.NewCreditRepo(store, box)
 	creditSvc := service.NewCreditService(creditRepo, alertSvc)
+	creditSvc.SetUserBalanceSource(pg, settingsSvc)
 
 	// AfterSync 钩子：余额预警（采集服务不感知通知渠道，全部在装配层挂接）
 	syncSvc.AfterSync = alertSvc.HandleSyncOutcome
@@ -217,6 +218,7 @@ func main() {
 
 	// 生图任务记录纳入每日清理（未启用时 mediaSvc 为 nil，清理项自动跳过）
 	scheduler.SetMediaService(mediaSvc)
+	scheduler.SetCreditService(creditSvc)
 
 	// 装配处理器
 	handlers := &server.Handlers{
@@ -231,7 +233,7 @@ func main() {
 		Pricing:          handler.NewPricingHandler(pricingSvc, rateRepo, pg),
 		Provision:        handler.NewProvisionHandler(provisionSvc),
 		Plaza:            plazaHandler,
-		Credit:           handler.NewCreditHandler(creditSvc, pg),
+		Credit:           handler.NewCreditHandler(creditSvc, pg, settingsSvc),
 		EmbedKyc:         embedKycHandler,
 		EmbedMedia:       embedMediaHandler,
 		EmbedDev:         embedDevHandler,
@@ -250,10 +252,11 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// 启动时序：同步跑 rate 基线（UI 立即有数），probe 不自动跑
+	// 启动时序：同步跑 rate 基线 + 客户余额扫描（UI 立即有数），probe 不自动跑
 	if pg.Available() {
 		bootCtx, bootCancel := context.WithTimeout(context.Background(), 60*time.Second)
 		rateSvc.PollOnce(bootCtx)
+		creditSvc.WatchUserBalances(bootCtx)
 		bootCancel()
 	}
 

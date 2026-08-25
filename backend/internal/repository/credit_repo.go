@@ -49,6 +49,13 @@ type Customer struct {
 	LastEntryAt   *time.Time
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+
+	// 线上余额提前告警（只读扫描 users.balance 的缓存，不是台账）。
+	LowBalanceThreshold   float64  // 客户覆盖阈值；0 = 跟随全局
+	UserBalance           *float64 // nil = 尚未扫描
+	UserBalanceAt         *time.Time
+	UserBalanceAlertLevel int        // 0 在阈值上 / 1 已跌破
+	UserBalanceAlertAt    *time.Time // 最近一次发出通知的时刻
 }
 
 // Available 可用额度。未授信（CreditLimit ≤ 0）时恒为 0。
@@ -65,6 +72,29 @@ func (c *Customer) UsageRatio() float64 {
 		return 0
 	}
 	return c.Outstanding / c.CreditLimit
+}
+
+// EffectiveLowBalanceThreshold 客户覆盖 > 0 时用覆盖值，否则用全局。
+func (c *Customer) EffectiveLowBalanceThreshold(global float64) float64 {
+	if c.LowBalanceThreshold > 0 {
+		return c.LowBalanceThreshold
+	}
+	if global < 0 {
+		return 0
+	}
+	return global
+}
+
+// BelowUserBalance 缓存余额是否严格低于有效阈值。尚未扫描或阈值 ≤ 0 时为 false。
+func (c *Customer) BelowUserBalance(global float64) bool {
+	if c.UserBalance == nil {
+		return false
+	}
+	th := c.EffectiveLowBalanceThreshold(global)
+	if th <= 0 {
+		return false
+	}
+	return *c.UserBalance < th
 }
 
 // LedgerEntry 一条台账分录。Amount 恒为正，方向由 EntryType 决定。
@@ -96,23 +126,38 @@ func NewCreditRepo(s *Store, box *secretbox.Box) *CreditRepo {
 }
 
 const customerCols = `id, sub2api_user_id, display_name, email, note, admin_note,
-	credit_limit, outstanding, status, alert_level, alert_at, last_entry_at, created_at, updated_at`
+	credit_limit, outstanding, status, alert_level, alert_at, last_entry_at, created_at, updated_at,
+	low_balance_threshold, user_balance, user_balance_at, user_balance_alert_level, user_balance_alert_at`
 
 // scanCustomer 扫描一行客户。
 // 注意：Scan 参数顺序与 customerCols 是手工维持的隐式契约，无编译期保护，
 // 新增列必须在两处同序追加，否则所有 SELECT 会静默错位。
 func scanCustomer(row interface{ Scan(...any) error }) (*Customer, error) {
 	var lastEntryAt, alertAt sql.NullTime
+	var userBalance sql.NullFloat64
+	var userBalanceAt, userBalanceAlertAt sql.NullTime
 	var c Customer
 	err := row.Scan(&c.ID, &c.Sub2apiUserID, &c.DisplayName, &c.Email, &c.Note, &c.AdminNote,
 		&c.CreditLimit, &c.Outstanding, &c.Status, &c.AlertLevel, &alertAt, &lastEntryAt,
-		&c.CreatedAt, &c.UpdatedAt)
+		&c.CreatedAt, &c.UpdatedAt,
+		&c.LowBalanceThreshold, &userBalance, &userBalanceAt, &c.UserBalanceAlertLevel, &userBalanceAlertAt)
 	if err != nil {
 		return nil, err
 	}
 	c.AlertAt = timePtr(alertAt)
 	c.LastEntryAt = timePtr(lastEntryAt)
+	c.UserBalance = floatPtr(userBalance)
+	c.UserBalanceAt = timePtr(userBalanceAt)
+	c.UserBalanceAlertAt = timePtr(userBalanceAlertAt)
 	return &c, nil
+}
+
+func floatPtr(n sql.NullFloat64) *float64 {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Float64
+	return &v
 }
 
 const ledgerCols = `id, customer_id, entry_type, amount, currency, occurred_at,
@@ -153,12 +198,13 @@ type CustomerFilter struct {
 // 两者解耦，改列名不影响前端。
 // 刻意不含 KYC 的 _enc 列：随机 nonce 让密文排序毫无意义（见 012 迁移注释）。
 var customerSortCols = map[string]string{
-	"user_id":     "sub2api_user_id",
-	"name":        "display_name",
-	"limit":       "credit_limit",
-	"outstanding": "outstanding",
-	"available":   "(credit_limit - outstanding)",
-	"last_entry":  "last_entry_at",
+	"user_id":      "sub2api_user_id",
+	"name":         "display_name",
+	"limit":        "credit_limit",
+	"outstanding":  "outstanding",
+	"available":    "(credit_limit - outstanding)",
+	"last_entry":   "last_entry_at",
+	"user_balance": "user_balance",
 }
 
 // orderClause 把过滤条件里的排序意图翻译成 ORDER BY 子句。
@@ -175,7 +221,7 @@ func orderClause(sort, order string) string {
 	if strings.EqualFold(order, "desc") {
 		dir = "DESC"
 	}
-	return col + " " + dir + ", id DESC"
+	return col + " " + dir + " NULLS LAST, id DESC"
 }
 
 // ListCustomers 分页查询客户。默认按敞口降序（欠得多的排前面），可按白名单列改排序。
@@ -265,13 +311,14 @@ func (r *CreditRepo) ListEnrolledUserIDs(ctx context.Context) (map[string]bool, 
 
 // CustomerParams 新建/编辑客户参数。
 type CustomerParams struct {
-	Sub2apiUserID string
-	DisplayName   string
-	Email         string
-	Note          string
-	AdminNote     string
-	CreditLimit   float64
-	Status        string
+	Sub2apiUserID       string
+	DisplayName         string
+	Email               string
+	Note                string
+	AdminNote           string
+	CreditLimit         float64
+	LowBalanceThreshold float64
+	Status              string
 }
 
 // CreateCustomer 新建客户。sub2api_user_id 唯一，重复时返回 ErrDuplicate。
@@ -282,10 +329,10 @@ func (r *CreditRepo) CreateCustomer(ctx context.Context, p CustomerParams) (*Cus
 	var id int64
 	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO customers (sub2api_user_id, display_name, email, note, admin_note,
-			credit_limit, status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?) RETURNING id`,
+			credit_limit, low_balance_threshold, status, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id`,
 		p.Sub2apiUserID, p.DisplayName, p.Email, p.Note, p.AdminNote,
-		p.CreditLimit, p.Status, nowUTC(), nowUTC()).Scan(&id)
+		p.CreditLimit, p.LowBalanceThreshold, p.Status, nowUTC(), nowUTC()).Scan(&id)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrDuplicate
@@ -306,10 +353,10 @@ func (r *CreditRepo) UpdateCustomer(ctx context.Context, id int64, p CustomerPar
 	}
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE customers SET sub2api_user_id=?, display_name=?, email=?, note=?, admin_note=?,
-			credit_limit=?, status=?, updated_at=?
+			credit_limit=?, low_balance_threshold=?, status=?, updated_at=?
 		WHERE id=?`,
 		p.Sub2apiUserID, p.DisplayName, p.Email, p.Note, p.AdminNote,
-		p.CreditLimit, p.Status, nowUTC(), id)
+		p.CreditLimit, p.LowBalanceThreshold, p.Status, nowUTC(), id)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrDuplicate
@@ -516,6 +563,40 @@ func (r *CreditRepo) RecalcAll(ctx context.Context) ([]int64, error) {
 		return nil, err
 	}
 	return ids, nil
+}
+
+// ListActiveCustomers 返回全部生效客户（余额扫描用，不分页）。
+func (r *CreditRepo) ListActiveCustomers(ctx context.Context) ([]*Customer, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+customerCols+` FROM customers WHERE status = 'active' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Customer
+	for rows.Next() {
+		c, err := scanCustomer(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// SaveUserBalanceWatch 写入线上余额缓存与告警闩锁。
+//
+// 不改 updated_at：扫描不是管理员编辑。firedAt == nil 时不覆盖 user_balance_alert_at。
+func (r *CreditRepo) SaveUserBalanceWatch(ctx context.Context, id int64, balance float64, level int, firedAt *time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE customers SET
+			user_balance = ?,
+			user_balance_at = ?,
+			user_balance_alert_level = ?,
+			user_balance_alert_at = COALESCE(?, user_balance_alert_at)
+		WHERE id = ?`,
+		balance, nowUTC(), level, firedAt, id)
+	return err
 }
 
 // ---------- 告警闩锁 ----------

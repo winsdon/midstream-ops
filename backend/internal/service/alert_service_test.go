@@ -179,3 +179,22 @@ func TestRenderRateTemplate(t *testing.T) {
 		}
 	})
 }
+
+func TestRenderUserBalanceTemplate(t *testing.T) {
+	got := renderUserBalanceTemplate("", "阿米娅", "42", 3.2, 10)
+	for _, part := range []string{"阿米娅", "42", "3.20", "10.00"} {
+		if !strings.Contains(got, part) {
+			t.Errorf("默认模板缺少 %q\n实际: %s", part, got)
+		}
+	}
+	for _, ph := range []string{"{customerName}", "{userId}", "{balance}", "{threshold}"} {
+		if strings.Contains(got, ph) {
+			t.Errorf("占位符 %s 未被替换: %s", ph, got)
+		}
+	}
+
+	custom := renderUserBalanceTemplate("{customerName}/{userId} {balance}<{threshold}", "n", "1", 2, 3)
+	if custom != "n/1 2.00<3.00" {
+		t.Errorf("自定义模板渲染错误: %s", custom)
+	}
+}
