@@ -50,26 +50,13 @@
                 :label="t('credit.customer')"
               />
               <SortableTh
-                class="text-right" align="right"
-                sort-key="limit" :active-key="sortKey" :order="sortOrder" @sort="sortBy"
-                :label="t('credit.limit')"
-              />
-              <SortableTh
-                class="text-right" align="right"
                 sort-key="outstanding" :active-key="sortKey" :order="sortOrder" @sort="sortBy"
-                :label="t('credit.outstanding')"
+                :label="t('credit.quota')"
               />
               <SortableTh
-                class="text-right" align="right"
-                sort-key="available" :active-key="sortKey" :order="sortOrder" @sort="sortBy"
-                :label="t('credit.available')"
-              />
-              <SortableTh
-                class="text-right" align="right"
                 sort-key="user_balance" :active-key="sortKey" :order="sortOrder" @sort="sortBy"
-                :label="t('credit.userBalance')"
+                :label="t('credit.balanceAlert')"
               />
-              <th class="min-w-[9rem]">{{ t('credit.usage') }}</th>
               <SortableTh
                 sort-key="last_entry" :active-key="sortKey" :order="sortOrder" @sort="sortBy"
                 :label="t('credit.lastEntry')"
@@ -81,7 +68,7 @@
             <TableState
               :loading="loading"
               :empty="!customers.length"
-              :colspan="8"
+              :colspan="5"
               icon="creditCard"
               :title="t('credit.emptyTitle')"
               :description="t('credit.emptyDesc')"
@@ -100,20 +87,11 @@
                   </span>
                 </div>
               </td>
-              <td class="text-right">{{ displayMoney(c.credit_limit) }}</td>
-              <td class="text-right font-semibold">{{ displayMoney(c.outstanding) }}</td>
-              <td class="text-right font-semibold" :class="displayMoneyClass(c.available)">
-                {{ displayMoney(c.available) }}
-              </td>
-              <td
-                class="text-right font-semibold"
-                :class="c.below_balance_threshold ? 'text-red-600 dark:text-red-400' : ''"
-                :title="c.user_balance_at ? t('credit.userBalanceAt', { time: fmtDateTime(c.user_balance_at) }) : ''"
-              >
-                {{ displayMoney(c.user_balance) }}
+              <td>
+                <CreditQuotaCell :customer="c" />
               </td>
               <td>
-                <CreditUsageBar :ratio="c.usage_ratio" :limit="c.credit_limit" />
+                <CreditBalanceAlertCell :customer="c" />
               </td>
               <td>
                 <!-- 风险 #1：台账是人工录的，久未记账多半是忘了记，而不是真没交易 -->
@@ -289,7 +267,7 @@ import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { creditApi } from '@/api/credit'
 import { errorMessage } from '@/api/client'
-import { minutesSince, fmtDateTime } from '@/utils/format'
+import { minutesSince } from '@/utils/format'
 import { usePrivacyMoney } from '@/composables/usePrivacyMoney'
 import { useAppStore } from '@/stores/app'
 import type { SortOrder } from '@/utils/tableSort'
@@ -302,14 +280,15 @@ import Select from '@/components/common/Select.vue'
 import Pagination from '@/components/Pagination.vue'
 import Icon from '@/components/icons/Icon.vue'
 import CreditToolbar from '@/components/credit/CreditToolbar.vue'
-import CreditUsageBar from '@/components/credit/CreditUsageBar.vue'
+import CreditQuotaCell from '@/components/credit/CreditQuotaCell.vue'
+import CreditBalanceAlertCell from '@/components/credit/CreditBalanceAlertCell.vue'
 import LedgerDialog from '@/components/credit/LedgerDialog.vue'
 import KycDialog from '@/components/credit/KycDialog.vue'
 import type { CreditCustomer, CreditSummary, CustomerStatus, Sub2apiUserOption } from '@/types/credit'
 
 const { t } = useI18n()
 const app = useAppStore()
-const { displayMoney, displayMoneyClass } = usePrivacyMoney()
+const { displayMoney } = usePrivacyMoney()
 
 const PAGE_SIZE = 20
 /** 超过这个天数没记账就提示，人工台账最大的失效模式是「忘了记」 */

@@ -42,6 +42,8 @@ export interface CreditCustomer {
   updated_at: string
   /** 客户覆盖的线上余额告警阈值；0 = 跟随设置页全局值 */
   low_balance_threshold: number
+  /** 有效阈值：客户覆盖 > 0 用覆盖，否则用设置页全局值 */
+  effective_low_balance_threshold: number
   /** 最近一次扫描的线上余额；null 表示尚未扫描 */
   user_balance: number | null
   user_balance_at: string | null

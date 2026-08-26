@@ -45,10 +45,11 @@ type customerDTO struct {
 	CreatedAt     string  `json:"created_at"`
 	UpdatedAt     string  `json:"updated_at"`
 
-	LowBalanceThreshold   float64  `json:"low_balance_threshold"`
-	UserBalance           *float64 `json:"user_balance"`
-	UserBalanceAt         *string  `json:"user_balance_at"`
-	BelowBalanceThreshold bool     `json:"below_balance_threshold"`
+	LowBalanceThreshold          float64  `json:"low_balance_threshold"`
+	EffectiveLowBalanceThreshold float64  `json:"effective_low_balance_threshold"`
+	UserBalance                  *float64 `json:"user_balance"`
+	UserBalanceAt                *string  `json:"user_balance_at"`
+	BelowBalanceThreshold        bool     `json:"below_balance_threshold"`
 }
 
 // ledgerEntryDTO 台账分录输出。
@@ -76,26 +77,27 @@ func fmtTimePtr(t *time.Time) *string {
 
 func toCustomerDTO(c *repository.Customer, globalTh float64) customerDTO {
 	return customerDTO{
-		ID:                    c.ID,
-		Sub2apiUserID:         c.Sub2apiUserID,
-		DisplayName:           c.DisplayName,
-		Email:                 c.Email,
-		Note:                  c.Note,
-		AdminNote:             c.AdminNote,
-		CreditLimit:           c.CreditLimit,
-		Outstanding:           c.Outstanding,
-		Available:             c.Available(),
-		UsageRatio:            c.UsageRatio(),
-		Status:                c.Status,
-		AlertLevel:            c.AlertLevel,
-		AlertAt:               fmtTimePtr(c.AlertAt),
-		LastEntryAt:           fmtTimePtr(c.LastEntryAt),
-		CreatedAt:             c.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt:             c.UpdatedAt.UTC().Format(time.RFC3339),
-		LowBalanceThreshold:   c.LowBalanceThreshold,
-		UserBalance:           c.UserBalance,
-		UserBalanceAt:         fmtTimePtr(c.UserBalanceAt),
-		BelowBalanceThreshold: c.BelowUserBalance(globalTh),
+		ID:                           c.ID,
+		Sub2apiUserID:                c.Sub2apiUserID,
+		DisplayName:                  c.DisplayName,
+		Email:                        c.Email,
+		Note:                         c.Note,
+		AdminNote:                    c.AdminNote,
+		CreditLimit:                  c.CreditLimit,
+		Outstanding:                  c.Outstanding,
+		Available:                    c.Available(),
+		UsageRatio:                   c.UsageRatio(),
+		Status:                       c.Status,
+		AlertLevel:                   c.AlertLevel,
+		AlertAt:                      fmtTimePtr(c.AlertAt),
+		LastEntryAt:                  fmtTimePtr(c.LastEntryAt),
+		CreatedAt:                    c.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:                    c.UpdatedAt.UTC().Format(time.RFC3339),
+		LowBalanceThreshold:          c.LowBalanceThreshold,
+		EffectiveLowBalanceThreshold: c.EffectiveLowBalanceThreshold(globalTh),
+		UserBalance:                  c.UserBalance,
+		UserBalanceAt:                fmtTimePtr(c.UserBalanceAt),
+		BelowBalanceThreshold:        c.BelowUserBalance(globalTh),
 	}
 }
 
