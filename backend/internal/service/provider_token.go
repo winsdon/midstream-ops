@@ -80,7 +80,19 @@ func (m *providerTokenManager) ensure(ctx context.Context, p *repository.Provide
 func (m *providerTokenManager) refresh(ctx context.Context, p *repository.Provider) (*providerSession, error) {
 	if p.Platform == "new-api" {
 		if p.AuthMode == "user_key" {
-			// 静态令牌无从刷新：401 即令牌失效
+			// 编辑供应商不会中止已经开始的同步任务。旧任务可能仍拿着旧令牌，
+			// 先重读一次库，让刚保存的新令牌接管本次请求。
+			if fresh, err := m.repo.GetByID(ctx, p.ID); err == nil &&
+				fresh.AuthMode == "user_key" && fresh.AccessToken != "" &&
+				(fresh.AccessToken != p.AccessToken || fresh.UpstreamUserID != p.UpstreamUserID) {
+				p.AccessToken = fresh.AccessToken
+				p.UpstreamUserID = fresh.UpstreamUserID
+				return &providerSession{NewAPI: NewAPIAuth{
+					AccessToken: p.AccessToken,
+					UserID:      p.UpstreamUserID,
+				}}, nil
+			}
+			// 静态令牌无从刷新，且库里没有更新后的凭据：401 即令牌失效。
 			return nil, fmt.Errorf("%w: 系统访问令牌已失效，请更换", ErrLoginRejected)
 		}
 		// 新版：先试续期（内部失败会自动降级重登），避免 15 分钟撞一次登录接口

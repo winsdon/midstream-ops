@@ -285,6 +285,44 @@ func TestEnsureNewAPIUserKey(t *testing.T) {
 	}
 }
 
+// TestRefreshNewAPIUserKeyReloadsUpdatedCredential
+//
+// 供应商编辑不会中止已经开始的同步任务。旧任务收到 401 时，必须先重读库，
+// 这样刚保存的新系统令牌才能接管本次同步，而不是把旧令牌的失败继续报给用户。
+func TestRefreshNewAPIUserKeyReloadsUpdatedCredential(t *testing.T) {
+	stub := newNewAPIStub(t, http.StatusOK)
+	repo := newTestProviderRepo(t)
+	created := newTestNewAPIProvider(t, repo, stub.url)
+	oldToken := "pat-old"
+	if _, err := repo.Update(context.Background(), created.ID, repository.UpdateParams{
+		Name: "stub", BalanceType: "sub2api", Platform: "new-api", AuthMode: "user_key",
+		BaseURL: stub.url, AccessToken: &oldToken, UpstreamUserID: "7",
+	}); err != nil {
+		t.Fatalf("seed old credential: %v", err)
+	}
+	p := mustGetProvider(t, repo, created.ID)
+
+	newToken := "pat-new"
+	if _, err := repo.Update(context.Background(), p.ID, repository.UpdateParams{
+		Name: "stub", BalanceType: "sub2api", Platform: "new-api", AuthMode: "user_key",
+		BaseURL: stub.url, AccessToken: &newToken, UpstreamUserID: "8",
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	m := newTokenManager(repo, nil, newAPITestClient())
+	sess, err := m.refresh(context.Background(), p)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if sess.NewAPI.AccessToken != "pat-new" || sess.NewAPI.UserID != "8" {
+		t.Fatalf("会话 = token %q / user %q，期望新凭据", sess.NewAPI.AccessToken, sess.NewAPI.UserID)
+	}
+	if stub.refreshHits.Load() != 0 || stub.loginHits.Load() != 0 {
+		t.Errorf("静态令牌不应调用 refresh/login：refresh=%d login=%d", stub.refreshHits.Load(), stub.loginHits.Load())
+	}
+}
+
 // ---- sub2api 密码会话 ----
 
 // sub2apiStub 模拟 sub2api 登录/续期端点，按端点计数。
