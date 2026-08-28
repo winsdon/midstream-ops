@@ -8,6 +8,7 @@
 
 import type { FilterOption } from '@/utils/providerModel'
 import { latencyBand } from '@/utils/latencyBand'
+import { sortRows, type SortOrder } from '@/utils/tableSort'
 
 /** 时间窗口档位（分钟）。实时盯盘口径，对齐运维监控的 5m/30m/1h/6h/24h。 */
 export type WindowMinutes = 5 | 30 | 60 | 360 | 1440
@@ -330,6 +331,15 @@ export function sortPassiveRows<T extends { sla: number | null; first_token_p50?
     if (sa != null && sb != null && sa !== sb) return sa - sb
     return (b.first_token_p50 ?? -1) - (a.first_token_p50 ?? -1)
   })
+}
+
+/** 被动卡片按成功率 / 请求次数排序；空值沉底，不修改入参。 */
+export function sortStabilityRows<T extends { sla: number | null; requests: number }>(
+  rows: readonly T[],
+  key: 'sla' | 'requests',
+  order: SortOrder
+): T[] {
+  return sortRows(rows, (r) => (key === 'sla' ? r.sla : r.requests), order)
 }
 
 export function rowGrade(input: {

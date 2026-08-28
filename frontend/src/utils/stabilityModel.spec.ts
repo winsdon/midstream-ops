@@ -21,6 +21,7 @@ import {
   rowGrade,
   GRADE_RANK,
   sortPassiveRows,
+  sortStabilityRows,
   type FilterableRow
 } from '@/utils/stabilityModel'
 
@@ -337,6 +338,34 @@ describe('sortPassiveRows', () => {
     ]
     const sorted = sortPassiveRows(rows, (r) => r.grade)
     expect(sorted.map((r) => r.grade)).toEqual(['bad', 'warn', 'unknown', 'good'])
+  })
+})
+
+describe('sortStabilityRows', () => {
+  const rows = [
+    { name: 'a', sla: 99, requests: 10 },
+    { name: 'b', sla: 40, requests: 80 },
+    { name: 'c', sla: null, requests: 5 },
+    { name: 'd', sla: 80, requests: 40 }
+  ]
+
+  it('按成功率升序，空值沉底', () => {
+    expect(sortStabilityRows(rows, 'sla', 'asc').map((r) => r.name)).toEqual(['b', 'd', 'a', 'c'])
+  })
+
+  it('按请求次数降序', () => {
+    expect(sortStabilityRows(rows, 'requests', 'desc').map((r) => r.name)).toEqual([
+      'b',
+      'd',
+      'a',
+      'c'
+    ])
+  })
+
+  it('不修改入参', () => {
+    const snapshot = rows.map((r) => r.name)
+    sortStabilityRows(rows, 'requests', 'desc')
+    expect(rows.map((r) => r.name)).toEqual(snapshot)
   })
 })
 

@@ -376,6 +376,7 @@ export default {
     ftP50: '首字 P50',
     ftP95: '首字 P95',
     successRate: '成功率',
+    sortRequests: '请求次数',
     avgTtft: '平均首字',
     avgTotal: '平均耗时',
     lastAt: '最近探测',

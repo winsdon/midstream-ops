@@ -16,12 +16,16 @@
       :health-opts="healthOpts"
       :group-opts="groupOpts"
       :loading="passiveLoading || activeLoading"
-      :all-open="allOpen"
       @refresh="load"
-      @toggle-all="toggleAll"
     />
 
-    <p v-if="tab === 'passive'" class="text-xs text-gray-500 dark:text-dark-400">{{ t('stability.passiveHint') }}</p>
+    <StabilityListHeader
+      :all-open="allOpen"
+      :hint="tab === 'passive' ? t('stability.passiveHint') : undefined"
+      :sort="listSort"
+      @toggle-all="toggleAll"
+      @update:sort="listSort = $event"
+    />
 
     <div
       v-if="tab === 'active' && minutes < PROBE_INTERVAL_MINUTES"
@@ -42,9 +46,11 @@
       :loading="passiveLoading"
       :grouping="grouping"
       :show-grade="false"
-      :auto-collapse="true"
       :compact="true"
+      :selectable="true"
       :expand-cmd="expandCmd"
+      :open-detail="openPassiveSection"
+      @update:all-open="allOpen = $event"
     >
       <template #table="{ rows }">
         <PassiveCards
@@ -52,7 +58,8 @@
           :loading="passiveLoading && !passiveSections.length"
           :minutes="minutes"
           :secondary="rowSecondary"
-          :grade-of="passiveGrade"
+          :sort-key="listSort.key"
+          :sort-order="listSort.order"
           @select="openPassiveDetail"
         />
       </template>
@@ -64,6 +71,7 @@
       :loading="activeLoading"
       :grouping="grouping"
       :expand-cmd="expandCmd"
+      @update:all-open="allOpen = $event"
     >
       <template #table="{ rows }">
         <ActiveTable
@@ -83,7 +91,7 @@
 
     <PassiveDetailDialog
       :show="showPassiveDetail"
-      :row="passiveDetail"
+      :detail="passiveDetail"
       :minutes="minutes"
       @close="showPassiveDetail = false"
     />
@@ -165,16 +173,26 @@ import {
   type WindowMinutes
 } from '@/utils/stabilityModel'
 import {
+  applySectionSort,
   buildSections,
   passiveCounts,
   activeCounts,
-  type GroupingMode
+  DEFAULT_STABILITY_SORT,
+  type GroupingMode,
+  type StabilitySection,
+  type StabilitySort
 } from '@/utils/stabilitySections'
+import {
+  aggregatePassiveRows,
+  passiveDetailFromRow,
+  type PassiveDetail
+} from '@/utils/stabilityMetrics'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import LineChart from '@/components/LineChart.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import StabilityToolbar from '@/components/stability/StabilityToolbar.vue'
+import StabilityListHeader from '@/components/stability/StabilityListHeader.vue'
 import StabilityBlocks from '@/components/stability/StabilityBlocks.vue'
 import PassiveCards from '@/components/stability/PassiveCards.vue'
 import PassiveDetailDialog from '@/components/stability/PassiveDetailDialog.vue'
@@ -204,13 +222,13 @@ const summary = ref<ProbeSummaryRow[]>([])
 const activeLoading = ref(false)
 const probingId = ref<number | null>(null)
 const showPassiveDetail = ref(false)
-const passiveDetail = ref<PassiveRow | null>(null)
+const passiveDetail = ref<PassiveDetail | null>(null)
 const expandCmd = ref<{ open: boolean } | null>(null)
 const allOpen = ref(false)
+const listSort = ref<StabilitySort>({ ...DEFAULT_STABILITY_SORT })
 
 function toggleAll() {
-  allOpen.value = !allOpen.value
-  expandCmd.value = { open: allOpen.value }
+  expandCmd.value = { open: !allOpen.value }
 }
 
 // 健康状态
@@ -274,10 +292,18 @@ const passiveRows = computed(() => visibleRows(passive.value))
 const activeRows = computed(() => visibleRows(summary.value))
 
 const passiveSections = computed(() =>
-  buildSections(passiveRows.value, grouping.value, passiveGrade, passiveCounts)
+  applySectionSort(
+    buildSections(passiveRows.value, grouping.value, passiveGrade, passiveCounts),
+    listSort.value.key,
+    listSort.value.order
+  )
 )
 const activeSections = computed(() =>
-  buildSections(activeRows.value, grouping.value, activeGrade, activeCounts)
+  applySectionSort(
+    buildSections(activeRows.value, grouping.value, activeGrade, activeCounts),
+    listSort.value.key,
+    listSort.value.order
+  )
 )
 
 /** 被动卡用流量 SLA + 首字；不吃探测健康状态（那是主动表的事）。 */
@@ -398,8 +424,18 @@ async function loadSummary() {
   }
 }
 
+function sectionTitle(sec: StabilitySection<PassiveRow>): string {
+  if (sec.label) return sec.label
+  return grouping.value === 'group' ? t('stability.ungrouped') : t('stability.unassigned')
+}
+
 function openPassiveDetail(r: PassiveRow) {
-  passiveDetail.value = r
+  passiveDetail.value = passiveDetailFromRow(r)
+  showPassiveDetail.value = true
+}
+
+function openPassiveSection(sec: StabilitySection<PassiveRow>) {
+  passiveDetail.value = aggregatePassiveRows(sec.rows, sectionTitle(sec))
   showPassiveDetail.value = true
 }
 

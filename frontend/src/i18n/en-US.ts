@@ -376,6 +376,7 @@ export default {
     ftP50: 'TTFT P50',
     ftP95: 'TTFT P95',
     successRate: 'Success Rate',
+    sortRequests: 'Request count',
     avgTtft: 'Avg TTFT',
     avgTotal: 'Avg Duration',
     lastAt: 'Last Probe',

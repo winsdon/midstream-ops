@@ -15,7 +15,9 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { sortPassiveRows, type RowGrade } from '@/utils/stabilityModel'
+import { sortStabilityRows } from '@/utils/stabilityModel'
+import type { StabilitySortKey } from '@/utils/stabilitySections'
+import type { SortOrder } from '@/utils/tableSort'
 import LoadingState from '@/components/common/LoadingState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import PassiveCard from './PassiveCard.vue'
@@ -26,10 +28,11 @@ const props = defineProps<{
   loading: boolean
   minutes: number
   secondary?: 'groups' | 'provider'
-  gradeOf: (r: PassiveRow) => RowGrade
+  sortKey: StabilitySortKey
+  sortOrder: SortOrder
 }>()
 
 const emit = defineEmits<{ select: [row: PassiveRow] }>()
 
-const sorted = computed(() => sortPassiveRows(props.rows, props.gradeOf))
+const sorted = computed(() => sortStabilityRows(props.rows, props.sortKey, props.sortOrder))
 </script>

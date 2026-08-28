@@ -1,15 +1,18 @@
 <template>
-  <BaseDialog :show="show && !!row" :title="row?.account_name || ''" width="narrow" @close="emit('close')">
-    <div v-if="row" class="space-y-3 text-sm">
+  <BaseDialog :show="show && !!detail" :title="detail?.title || ''" width="narrow" @close="emit('close')">
+    <div v-if="detail" class="space-y-3 text-sm">
       <p class="text-xs text-gray-500 dark:text-dark-400">
-        {{ t('common.platform') }} {{ row.platform || '-' }}
-        · {{ t('stability.provider') }} {{ row.provider_name || t('stability.unassigned') }}
-        · {{ t('stability.groups') }} {{ (row.groups ?? []).join(' · ') || t('stability.ungrouped') }}
+        <template v-if="detail.accountCount != null">
+          {{ t('stability.sectionAccounts', { n: detail.accountCount }) }} ·
+        </template>
+        {{ t('common.platform') }} {{ detail.platform || '-' }}
+        · {{ t('stability.provider') }} {{ detail.provider_name || t('stability.unassigned') }}
+        · {{ t('stability.groups') }} {{ (detail.groups ?? []).join(' · ') || t('stability.ungrouped') }}
       </p>
       <p class="text-xs text-gray-400 dark:text-dark-500">
-        {{ t('stability.requests') }} {{ fmtNum(row.requests) }}
-        · {{ t('stability.successCount') }} {{ fmtNum(row.success_count) }}
-        · {{ t('stability.errorCount') }} {{ fmtNum(row.error_count) }}
+        {{ t('stability.requests') }} {{ fmtNum(detail.requests) }}
+        · {{ t('stability.successCount') }} {{ fmtNum(detail.success_count) }}
+        · {{ t('stability.errorCount') }} {{ fmtNum(detail.error_count) }}
       </p>
       <dl class="space-y-0.5 font-mono text-xs leading-5">
         <div v-for="line in lines" :key="line.label" class="flex items-baseline gap-1.5">
@@ -30,17 +33,17 @@ import { passiveRateClass } from '@/utils/stabilityModel'
 import {
   accountHealthScore,
   errorRatePercent,
+  healthScoreClass,
   formatRpm,
   formatTokenRate,
-  healthScoreClass,
-  rpm
+  rpm,
+  type PassiveDetail
 } from '@/utils/stabilityMetrics'
 import BaseDialog from '@/components/common/BaseDialog.vue'
-import type { PassiveRow } from '@/types'
 
 const props = defineProps<{
   show: boolean
-  row: PassiveRow | null
+  detail: PassiveDetail | null
   minutes: number
 }>()
 
@@ -56,13 +59,13 @@ const TONE: Record<LatencyBand, string> = {
 }
 
 const errPct = computed(() =>
-  props.row ? errorRatePercent(props.row.success_count, props.row.error_count) : null
+  props.detail ? errorRatePercent(props.detail.success_count, props.detail.error_count) : null
 )
 const score = computed(() =>
-  props.row
+  props.detail
     ? accountHealthScore({
-        sla: props.row.sla,
-        ttftP50: props.row.first_token_p50,
+        sla: props.detail.sla,
+        ttftP50: props.detail.first_token_p50,
         errorRate: errPct.value
       })
     : 0
@@ -73,7 +76,7 @@ function triple(avg?: number | null, p50?: number | null, p90?: number | null): 
 }
 
 const lines = computed(() => {
-  const r = props.row
+  const r = props.detail
   if (!r) return []
   const slaTone = passiveRateClass(r.sla)
   return [

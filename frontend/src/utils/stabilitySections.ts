@@ -6,12 +6,39 @@
  * 多分组账号在按分组分块时会在各组各出现一次。
  */
 
+import { compareValuesWithOrder, type SortOrder } from '@/utils/tableSort'
 import {
   GRADE_RANK,
   slaPercent,
   type FilterableRow,
   type RowGrade
 } from '@/utils/stabilityModel'
+
+/** 面板列表的用户排序：成功率 / 请求次数。 */
+export type StabilitySortKey = 'sla' | 'requests'
+
+export interface StabilitySort {
+  key: StabilitySortKey
+  order: SortOrder
+}
+
+/** 成功率默认升序（差的在前）；请求次数默认降序（量大的在前）。 */
+export const DEFAULT_STABILITY_SORT: StabilitySort = { key: 'sla', order: 'asc' }
+
+export function nextStabilitySort(current: StabilitySort, clicked: StabilitySortKey): StabilitySort {
+  if (current.key === clicked) {
+    return { key: clicked, order: current.order === 'asc' ? 'desc' : 'asc' }
+  }
+  return { key: clicked, order: clicked === 'requests' ? 'desc' : 'asc' }
+}
+
+/** 每个块都显式为开才算全部展开；缺省（未写入）视为收起。无块不算展开。 */
+export function allSectionsOpen(
+  openByKey: Readonly<Record<string, boolean>>,
+  keys: readonly string[]
+): boolean {
+  return keys.length > 0 && keys.every((k) => openByKey[k] === true)
+}
 
 export type GroupingMode = 'provider' | 'group'
 
@@ -127,6 +154,39 @@ export function sortSections<T>(sections: readonly StabilitySection<T>[]): Stabi
     else if (a.sla !== b.sla) return a.sla - b.sla
     return a.label.localeCompare(b.label)
   })
+}
+
+function sortValue<T>(sec: StabilitySection<T>, key: StabilitySortKey): number | null {
+  return key === 'sla' ? sec.sla : sec.requestCount
+}
+
+function compareSections<T>(
+  a: StabilitySection<T>,
+  b: StabilitySection<T>,
+  key: StabilitySortKey,
+  order: SortOrder
+): number {
+  const aEmpty = a.label === '' ? 1 : 0
+  const bEmpty = b.label === '' ? 1 : 0
+  if (aEmpty !== bEmpty) return aEmpty - bEmpty
+  return compareValuesWithOrder(sortValue(a, key), sortValue(b, key), order) || a.label.localeCompare(b.label)
+}
+
+/**
+ * 按用户选择的成功率 / 请求次数重排分块（含内层）。空桶仍沉底。
+ * 返回新数组，不改入参。
+ */
+export function applySectionSort<T>(
+  sections: readonly StabilitySection<T>[],
+  key: StabilitySortKey,
+  order: SortOrder
+): StabilitySection<T>[] {
+  return [...sections]
+    .sort((a, b) => compareSections(a, b, key, order))
+    .map((s) => ({
+      ...s,
+      children: s.children.length ? applySectionSort(s.children, key, order) : s.children
+    }))
 }
 
 export function buildSections<T extends FilterableRow>(

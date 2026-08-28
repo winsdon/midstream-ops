@@ -40,19 +40,6 @@
           {{ t('stats.byGroup') }}
         </button>
       </div>
-
-      <div class="flex rounded-lg bg-gray-100 p-0.5 dark:bg-dark-800">
-        <button
-          type="button"
-          class="flex items-center gap-1"
-          :class="pillClass(false)"
-          :title="allOpen ? t('stability.collapseAll') : t('stability.expandAll')"
-          @click="emit('toggleAll')"
-        >
-          <Icon :name="allOpen ? 'chevronRight' : 'chevronDown'" size="sm" />
-          {{ allOpen ? t('stability.collapseAll') : t('stability.expandAll') }}
-        </button>
-      </div>
     </div>
 
     <div class="flex flex-wrap items-center gap-2">
@@ -129,7 +116,6 @@ const props = defineProps<{
   keyword: string
   minutes: WindowMinutes
   loading: boolean
-  allOpen: boolean
 }>()
 
 const emit = defineEmits<{
@@ -141,7 +127,6 @@ const emit = defineEmits<{
   (e: 'update:keyword', v: string): void
   (e: 'update:minutes', v: WindowMinutes): void
   (e: 'refresh'): void
-  (e: 'toggleAll'): void
 }>()
 
 const { t } = useI18n()

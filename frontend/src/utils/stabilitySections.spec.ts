@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { buildSections, passiveCounts, activeCounts, type GroupingMode } from '@/utils/stabilitySections'
+import {
+  buildSections,
+  passiveCounts,
+  activeCounts,
+  applySectionSort,
+  nextStabilitySort,
+  allSectionsOpen,
+  type GroupingMode
+} from '@/utils/stabilitySections'
 import type { RowGrade } from '@/utils/stabilityModel'
 
 interface Row {
@@ -98,5 +106,99 @@ describe('buildSections', () => {
     const secs = buildSections(rows, 'provider', gradeOf, passiveCounts)
     expect(secs[0].key).toBe('乙')
     expect(secs[0].grade).toBe('bad')
+  })
+})
+
+describe('applySectionSort', () => {
+  const rows = [
+    r(1, '甲', ['pro', 'default'], 90, 10, 'warn'),
+    r(2, '甲', ['default'], 50, 0, 'good'),
+    r(3, '乙', ['pro'], 10, 10, 'bad'),
+    r(4, '', [], 5, 0, 'good')
+  ]
+
+  it('按成功率升序：低的在前，空桶沉底', () => {
+    const secs = applySectionSort(
+      buildSections(rows, 'provider', gradeOf, passiveCounts),
+      'sla',
+      'asc'
+    )
+    expect(secs.map((s) => s.key)).toEqual(['乙', '甲', ''])
+  })
+
+  it('按成功率降序：高的在前，空桶仍沉底', () => {
+    const secs = applySectionSort(
+      buildSections(rows, 'provider', gradeOf, passiveCounts),
+      'sla',
+      'desc'
+    )
+    expect(secs.map((s) => s.key)).toEqual(['甲', '乙', ''])
+  })
+
+  it('按请求次数降序：量大的在前', () => {
+    const secs = applySectionSort(
+      buildSections(rows, 'provider', gradeOf, passiveCounts),
+      'requests',
+      'desc'
+    )
+    // 甲 150、乙 20、空桶 5
+    expect(secs.map((s) => s.key)).toEqual(['甲', '乙', ''])
+  })
+
+  it('内层子块跟随同一排序条件', () => {
+    const jia = applySectionSort(
+      buildSections(rows, 'provider', gradeOf, passiveCounts),
+      'requests',
+      'desc'
+    ).find((s) => s.key === '甲')!
+    // default: acc1+acc2  vis-à-vis pro: acc1 only
+    expect(jia.children.map((c) => c.key)).toEqual(['default', 'pro'])
+  })
+
+  it('不修改入参数组', () => {
+    const original = buildSections(rows, 'provider', gradeOf, passiveCounts)
+    const snapshot = original.map((s) => s.key)
+    applySectionSort(original, 'requests', 'desc')
+    expect(original.map((s) => s.key)).toEqual(snapshot)
+  })
+})
+
+describe('nextStabilitySort', () => {
+  it('点当前列翻转方向', () => {
+    expect(nextStabilitySort({ key: 'sla', order: 'asc' }, 'sla')).toEqual({
+      key: 'sla',
+      order: 'desc'
+    })
+    expect(nextStabilitySort({ key: 'requests', order: 'desc' }, 'requests')).toEqual({
+      key: 'requests',
+      order: 'asc'
+    })
+  })
+
+  it('点新列：成功率从升序起，请求次数从降序起', () => {
+    expect(nextStabilitySort({ key: 'requests', order: 'desc' }, 'sla')).toEqual({
+      key: 'sla',
+      order: 'asc'
+    })
+    expect(nextStabilitySort({ key: 'sla', order: 'asc' }, 'requests')).toEqual({
+      key: 'requests',
+      order: 'desc'
+    })
+  })
+})
+
+describe('allSectionsOpen', () => {
+  it('无块不算全部展开', () => {
+    expect(allSectionsOpen({}, [])).toBe(false)
+  })
+
+  it('每个块都开着才是全部展开', () => {
+    expect(allSectionsOpen({ a: true, b: true }, ['a', 'b'])).toBe(true)
+    expect(allSectionsOpen({ a: true, b: false }, ['a', 'b'])).toBe(false)
+    expect(allSectionsOpen({ a: true }, ['a', 'b'])).toBe(false)
+  })
+
+  it('缺省（未写入）视为收起', () => {
+    expect(allSectionsOpen({}, ['a'])).toBe(false)
   })
 })

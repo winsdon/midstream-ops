@@ -4,6 +4,123 @@
  * 健康分是账号流量综合分，不是探测状态机，也不是运维看板那套含 CPU/DB 的分。
  */
 
+import type { PassiveRow } from '@/types'
+import { slaPercent } from '@/utils/stabilityModel'
+
+/** 被动详情弹窗：账号行与供应商/分组块共用。 */
+export interface PassiveDetail {
+  title: string
+  platform: string
+  provider_name: string
+  groups: string[]
+  /** 块级才有：该面板下的账号数 */
+  accountCount?: number
+  requests: number
+  success_count: number
+  error_count: number
+  sla: number | null
+  duration_avg: number | null
+  duration_p50: number | null
+  duration_p90: number | null
+  first_token_avg: number | null
+  first_token_p50: number | null
+  first_token_p90: number | null
+  tokens_per_second: number | null
+  cache_rate: number | null
+}
+
+/** 按权重平均；缺值与非正权重跳过。无有效样本返回 null。 */
+export function weightedAvg(
+  items: readonly { weight: number; value: number | null | undefined }[]
+): number | null {
+  let num = 0
+  let den = 0
+  for (const it of items) {
+    if (it.value == null || !Number.isFinite(it.value) || !Number.isFinite(it.weight) || it.weight <= 0) {
+      continue
+    }
+    num += it.value * it.weight
+    den += it.weight
+  }
+  return den > 0 ? num / den : null
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const raw of values) {
+    const v = raw.trim()
+    if (!v || seen.has(v)) continue
+    seen.add(v)
+    out.push(v)
+  }
+  return out
+}
+
+export function passiveDetailFromRow(row: PassiveRow): PassiveDetail {
+  return {
+    title: row.account_name,
+    platform: row.platform,
+    provider_name: row.provider_name,
+    groups: [...(row.groups ?? [])],
+    requests: row.requests,
+    success_count: row.success_count,
+    error_count: row.error_count,
+    sla: row.sla,
+    duration_avg: row.duration_avg,
+    duration_p50: row.duration_p50,
+    duration_p90: row.duration_p90,
+    first_token_avg: row.first_token_avg,
+    first_token_p50: row.first_token_p50,
+    first_token_p90: row.first_token_p90,
+    tokens_per_second: row.tokens_per_second,
+    cache_rate: row.cache_rate
+  }
+}
+
+/**
+ * 把一块里的账号行合成详情。延迟/吞吐/缓存按请求次数加权平均
+ * （前端没有原始样本，无法重算真分位数）。SLA 用成功/失败求和。
+ */
+export function aggregatePassiveRows(rows: readonly PassiveRow[], title: string): PassiveDetail {
+  const weightOf = (r: PassiveRow) => r.requests
+  let requests = 0
+  let success = 0
+  let error = 0
+  const platforms: string[] = []
+  const providers: string[] = []
+  const groups: string[] = []
+  for (const r of rows) {
+    requests += r.requests
+    success += r.success_count
+    error += r.error_count
+    platforms.push(r.platform)
+    providers.push(r.provider_name)
+    for (const g of r.groups ?? []) groups.push(g)
+  }
+  const w = (pick: (r: PassiveRow) => number | null) =>
+    weightedAvg(rows.map((r) => ({ weight: weightOf(r), value: pick(r) })))
+  return {
+    title,
+    platform: uniqueStrings(platforms).join(' · '),
+    provider_name: uniqueStrings(providers).join(' · '),
+    groups: uniqueStrings(groups),
+    accountCount: rows.length,
+    requests,
+    success_count: success,
+    error_count: error,
+    sla: slaPercent(success, error),
+    duration_avg: w((r) => r.duration_avg),
+    duration_p50: w((r) => r.duration_p50),
+    duration_p90: w((r) => r.duration_p90),
+    first_token_avg: w((r) => r.first_token_avg),
+    first_token_p50: w((r) => r.first_token_p50),
+    first_token_p90: w((r) => r.first_token_p90),
+    tokens_per_second: w((r) => r.tokens_per_second),
+    cache_rate: w((r) => r.cache_rate)
+  }
+}
+
 export function errorRatePercent(success: number, errorCount: number): number | null {
   if (!Number.isFinite(success) || !Number.isFinite(errorCount)) return null
   const total = success + errorCount
