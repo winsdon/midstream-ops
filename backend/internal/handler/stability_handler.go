@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"sort"
 	"strconv"
 	"time"
 
@@ -119,13 +120,13 @@ func (h *StabilityHandler) SetHealthDisabled(c *gin.Context) {
 }
 
 // Passive GET /stability/passive?minutes=
-// 被动口径：真实流量的耗时/首字分位数（无成功率）。
+// 被动口径：真实流量的耗时/首字分位数 + SLA（失败来自 ops_error_logs，排除业务限制）。
 func (h *StabilityHandler) Passive(c *gin.Context) {
 	if !h.pg.Available() {
 		response.ServiceUnavailable(c, "线上数据库暂不可用")
 		return
 	}
-	window, minutes := parseWindow(c, 24*60)
+	window, minutes := parseWindow(c, defaultWindowMinutes)
 	since := time.Now().Add(-window)
 	rows, err := h.pg.PassiveStability(c.Request.Context(), since)
 	if err != nil {
@@ -133,22 +134,31 @@ func (h *StabilityHandler) Passive(c *gin.Context) {
 		return
 	}
 	linkMap, nameByID := h.providerLookup(c.Request.Context())
+	groups := h.groupLookup(c.Request.Context())
 	out := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
 		item := gin.H{
-			"account_id":      r.AccountID,
-			"account_name":    r.AccountName,
-			"platform":        r.Platform,
-			"requests":        r.Requests,
-			"duration_p50":    r.DurationP50,
-			"duration_p95":    r.DurationP95,
-			"first_token_p50": r.FirstTokP50,
-			"first_token_p95": r.FirstTokP95,
+			"account_id":        r.AccountID,
+			"account_name":      r.AccountName,
+			"platform":          r.Platform,
+			"requests":          r.Requests,
+			"success_count":     r.Requests,
+			"error_count":       r.ErrorCount,
+			"sla":               slaPercent(r.Requests, r.ErrorCount),
+			"duration_avg":      r.DurationAvg,
+			"duration_p50":      r.DurationP50,
+			"duration_p90":      r.DurationP90,
+			"first_token_avg":   r.FirstTokAvg,
+			"first_token_p50":   r.FirstTokP50,
+			"first_token_p90":   r.FirstTokP90,
+			"tokens_per_second": tokensPerSecond(r.OutputTokens, r.DurationMsSum),
+			"cache_rate":        cacheHitRate(r.CacheReadTokens, r.InputTokens),
 		}
 		attachProvider(item, r.AccountID, linkMap, nameByID)
+		attachGroups(item, r.AccountID, groups)
 		out = append(out, item)
 	}
-	response.Success(c, gin.H{"minutes": minutes, "items": out, "note": "被动口径仅成功请求，无成功率"})
+	response.Success(c, gin.H{"minutes": minutes, "items": out, "note": "SLA 排除业务限制；分位数仅来自成功请求"})
 }
 
 // Probes GET /stability/probes?account_id=&page=&page_size=
@@ -174,7 +184,7 @@ func (h *StabilityHandler) Probes(c *gin.Context) {
 
 // ProbeSummary GET /stability/probes/summary?minutes=
 func (h *StabilityHandler) ProbeSummary(c *gin.Context) {
-	window, minutes := parseWindow(c, 24*60)
+	window, minutes := parseWindow(c, defaultWindowMinutes)
 	since := time.Now().Add(-window)
 	rows, err := h.probeSvc.Repo().Summary(c.Request.Context(), since)
 	if err != nil {
@@ -182,6 +192,7 @@ func (h *StabilityHandler) ProbeSummary(c *gin.Context) {
 		return
 	}
 	linkMap, nameByID := h.providerLookup(c.Request.Context())
+	groups := h.groupLookup(c.Request.Context())
 	out := make([]gin.H, 0, len(rows))
 	for _, s := range rows {
 		var successRate float64
@@ -205,6 +216,7 @@ func (h *StabilityHandler) ProbeSummary(c *gin.Context) {
 			"last_at":       lastAt,
 		}
 		attachProvider(item, s.AccountID, linkMap, nameByID)
+		attachGroups(item, s.AccountID, groups)
 		out = append(out, item)
 	}
 	response.Success(c, gin.H{"minutes": minutes, "items": out})
@@ -217,7 +229,7 @@ func (h *StabilityHandler) ProbeTrend(c *gin.Context) {
 		response.BadRequest(c, "account_id 必填")
 		return
 	}
-	window, minutes := parseWindow(c, 24*60)
+	window, minutes := parseWindow(c, defaultWindowMinutes)
 	since := time.Now().Add(-window)
 	items, err := h.probeSvc.Repo().Trend(c.Request.Context(), aid, since)
 	if err != nil {
@@ -324,6 +336,59 @@ func attachProvider(item gin.H, accountID int64, linkMap map[int64]int64, nameBy
 	item["provider_name"] = nameByID[pid]
 }
 
+// groupLookup 取账号 → 本站分组名。失败或上游库不可用时返回空 map，
+// 前端把缺 groups 的行当成「未分组」，不让整个稳定性接口 500。
+func (h *StabilityHandler) groupLookup(ctx context.Context) map[int64][]string {
+	if h.pg == nil || !h.pg.Available() {
+		return map[int64][]string{}
+	}
+	m, err := h.pg.AccountGroups(ctx)
+	if err != nil || m == nil {
+		return map[int64][]string{}
+	}
+	return m
+}
+
+// attachGroups 写入分组名数组。未分组给空数组而不是省略/null，
+// 前端筛「未分组」桶时可以直接看 length === 0。
+func attachGroups(item gin.H, accountID int64, groups map[int64][]string) {
+	gs := groups[accountID]
+	if len(gs) == 0 {
+		item["groups"] = []string{}
+		return
+	}
+	cp := append([]string(nil), gs...)
+	sort.Strings(cp)
+	item["groups"] = cp
+}
+
+// slaPercent 流量 SLA（0–100）。成功+失败均为 0 时返回 nil，前端渲染成「-」。
+func slaPercent(success, errCount int64) any {
+	total := success + errCount
+	if total <= 0 {
+		return nil
+	}
+	return float64(success) / float64(total) * 100
+}
+
+// tokensPerSecond 输出吞吐：Σ output_tokens / Σ duration_s。与广场模型指标同一公式。
+func tokensPerSecond(outputTokens int64, durationMsSum float64) any {
+	if durationMsSum <= 0 {
+		return nil
+	}
+	return float64(outputTokens) / (durationMsSum / 1000.0)
+}
+
+// cacheHitRate 缓存命中率（0–100）：cache_read / (input + cache_read)。
+// 两边都 0 返回 nil（没走 token 的请求，不是命中率 0）。
+func cacheHitRate(cacheRead, input int64) any {
+	total := cacheRead + input
+	if total <= 0 {
+		return nil
+	}
+	return float64(cacheRead) / float64(total) * 100
+}
+
 func probeDTO(pr *repository.ProbeResult) gin.H {
 	return gin.H{
 		"id":           pr.ID,
@@ -345,6 +410,9 @@ func probeDTO(pr *repository.ProbeResult) gin.H {
 
 // maxWindowMinutes 与旧 hours 上限（720 小时 = 30 天）等价。
 const maxWindowMinutes = 720 * 60
+
+// defaultWindowMinutes 稳定性页默认窗口：近 1 小时。
+const defaultWindowMinutes = 60
 
 // parseWindow 解析统计窗口，返回时长与回显给前端的分钟数。
 //

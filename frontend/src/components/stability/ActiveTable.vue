@@ -1,18 +1,6 @@
 <template>
-  <div class="card overflow-hidden">
-    <!-- 短窗口提示：探测每 15 分钟一轮，选 5 分钟时多数账号还没有新样本。
-         不提示的话空表会被误读成「账号全挂了」。 -->
-    <div
-      v-if="sparse"
-      class="border-b border-gray-200 bg-amber-50 px-4 py-2 text-xs text-amber-700 dark:border-dark-800 dark:bg-amber-900/20 dark:text-amber-400"
-    >
-      {{ t('stability.probeSparseHint', { n: PROBE_INTERVAL_MINUTES }) }}
-    </div>
-    <div v-if="budgetUsed > 0" class="border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs text-gray-500 dark:border-dark-800 dark:bg-dark-800/50">
-      {{ t('health.budgetUsed', { n: budgetUsed }) }}
-    </div>
-    <div class="table-wrapper">
-      <table class="table">
+  <div class="table-wrapper">
+    <table class="table">
         <thead>
           <tr>
             <SortableTh
@@ -60,7 +48,7 @@
               <GradeDot :grade="gradeOf(r)">
                 <span class="truncate">{{ r.account_name }}</span>
               </GradeDot>
-              <div v-if="r.provider_name" class="ml-4 text-xs text-gray-400">{{ r.provider_name }}</div>
+              <div v-if="rowSub(r)" class="ml-4 text-xs text-gray-400">{{ rowSub(r) }}</div>
             </td>
             <td><span class="rounded bg-gray-100 px-1.5 py-0.5 text-xs dark:bg-dark-800">{{ r.platform }}</span></td>
             <td>
@@ -113,7 +101,6 @@
           </tr>
         </tbody>
       </table>
-    </div>
   </div>
 </template>
 
@@ -124,12 +111,9 @@ import { fmtPct } from '@/utils/format'
 import { useTableSort } from '@/composables/useTableSort'
 import {
   GRADE_RANK,
-  PROBE_INTERVAL_MINUTES,
   healthRank,
-  rateBand,
-  type RateBand,
-  type RowGrade,
-  type WindowMinutes
+  rateClass,
+  type RowGrade
 } from '@/utils/stabilityModel'
 import TableState from '@/components/common/TableState.vue'
 import SortableTh from '@/components/common/SortableTh.vue'
@@ -142,9 +126,8 @@ const props = defineProps<{
   /** 已由父组件筛选过 */
   rows: ProbeSummaryRow[]
   loading: boolean
-  budgetUsed: number
   probingId: number | null
-  minutes: WindowMinutes
+  secondary?: 'groups' | 'provider'
   healthOf: (accountId: number) => HealthStateItem | undefined
   gradeOf: (r: ProbeSummaryRow) => RowGrade
 }>()
@@ -155,7 +138,10 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-const sparse = computed(() => props.minutes < PROBE_INTERVAL_MINUTES)
+function rowSub(r: ProbeSummaryRow): string {
+  if (props.secondary === 'provider') return r.provider_name || ''
+  return (r.groups ?? []).join(' · ')
+}
 
 function isDisabled(r: ProbeSummaryRow): boolean {
   return props.healthOf(r.account_id)?.state === 'disabled'
@@ -187,24 +173,6 @@ function healthTip(st?: HealthStateItem): string {
   if (st.consecutive_successes > 0) parts.push(t('health.consecutiveSuccesses', { n: st.consecutive_successes }))
   if (st.cooldown_until) parts.push(t('health.cooldownUntil', { time: st.cooldown_until }))
   return parts.join(' · ')
-}
-
-/**
- * 成功率着色。分档走 rateBand（与评级点共用一份阈值），
- * 但缺值在这里显示为灰色而非弃权 —— 主动表的成功率恒有值，
- * 缺值意味着「窗口内没探测过」，与评级点弃权的语境不同。
- *
- * 必须写完整字面量：Tailwind 扫描源码文本提取类名，拼接出来的会被漏掉。
- */
-const RATE_TONE: Record<RateBand, string> = {
-  good: 'font-semibold text-emerald-600',
-  warn: 'font-semibold text-amber-600',
-  bad: 'font-semibold text-red-600',
-  unknown: 'text-gray-400'
-}
-
-function rateClass(v?: number | null): string {
-  return RATE_TONE[rateBand(v)]
 }
 
 const rowsRef = computed(() => props.rows)

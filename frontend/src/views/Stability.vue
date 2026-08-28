@@ -6,36 +6,86 @@
 
     <StabilityToolbar
       v-model:tab="tab"
+      v-model:grouping="grouping"
       v-model:provider="providerFilter"
       v-model:health="healthFilter"
+      v-model:group="groupFilter"
       v-model:keyword="keyword"
       v-model:minutes="minutes"
       :provider-opts="providerOpts"
       :health-opts="healthOpts"
+      :group-opts="groupOpts"
       :loading="passiveLoading || activeLoading"
+      :all-open="allOpen"
       @refresh="load"
+      @toggle-all="toggleAll"
     />
 
-    <PassiveTable
-      v-show="tab === 'passive'"
-      :rows="passiveRows"
+    <p v-if="tab === 'passive'" class="text-xs text-gray-500 dark:text-dark-400">{{ t('stability.passiveHint') }}</p>
+
+    <div
+      v-if="tab === 'active' && minutes < PROBE_INTERVAL_MINUTES"
+      class="rounded-lg bg-amber-50 px-4 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-400"
+    >
+      {{ t('stability.probeSparseHint', { n: PROBE_INTERVAL_MINUTES }) }}
+    </div>
+    <div
+      v-if="tab === 'active' && budgetUsed > 0"
+      class="rounded-lg bg-gray-50 px-4 py-2 text-xs text-gray-500 dark:bg-dark-800/50 dark:text-dark-400"
+    >
+      {{ t('health.budgetUsed', { n: budgetUsed }) }}
+    </div>
+
+    <StabilityBlocks
+      v-if="tab === 'passive'"
+      :sections="passiveSections"
       :loading="passiveLoading"
-      :grade-of="passiveGrade"
-    />
+      :grouping="grouping"
+      :show-grade="false"
+      :auto-collapse="true"
+      :compact="true"
+      :expand-cmd="expandCmd"
+    >
+      <template #table="{ rows }">
+        <PassiveCards
+          :rows="rows"
+          :loading="passiveLoading && !passiveSections.length"
+          :minutes="minutes"
+          :secondary="rowSecondary"
+          :grade-of="passiveGrade"
+          @select="openPassiveDetail"
+        />
+      </template>
+    </StabilityBlocks>
 
-    <ActiveTable
-      v-show="tab === 'active'"
-      :rows="activeRows"
+    <StabilityBlocks
+      v-if="tab === 'active'"
+      :sections="activeSections"
       :loading="activeLoading"
-      :budget-used="budgetUsed"
-      :probing-id="probingId"
+      :grouping="grouping"
+      :expand-cmd="expandCmd"
+    >
+      <template #table="{ rows }">
+        <ActiveTable
+          :rows="rows"
+          :loading="activeLoading && !activeSections.length"
+          :probing-id="probingId"
+          :secondary="rowSecondary"
+          :health-of="healthOf"
+          :grade-of="activeGrade"
+          @probe="runProbe"
+          @trend="openTrend"
+          @timeline="openTimeline"
+          @toggle-disabled="toggleDisabled"
+        />
+      </template>
+    </StabilityBlocks>
+
+    <PassiveDetailDialog
+      :show="showPassiveDetail"
+      :row="passiveDetail"
       :minutes="minutes"
-      :health-of="healthOf"
-      :grade-of="activeGrade"
-      @probe="runProbe"
-      @trend="openTrend"
-      @timeline="openTimeline"
-      @toggle-disabled="toggleDisabled"
+      @close="showPassiveDetail = false"
     />
 
     <!-- 状态时间线弹窗 -->
@@ -104,18 +154,30 @@ import {
   searchStabilityRows,
   providerOptions,
   healthOptions,
+  groupOptions,
   rowGrade,
+  PASSIVE_RATE_BANDS,
+  DEFAULT_WINDOW_MINUTES,
+  PROBE_INTERVAL_MINUTES,
   type FilterableRow,
   type SearchableRow,
   type RowGrade,
   type WindowMinutes
 } from '@/utils/stabilityModel'
+import {
+  buildSections,
+  passiveCounts,
+  activeCounts,
+  type GroupingMode
+} from '@/utils/stabilitySections'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import LineChart from '@/components/LineChart.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import StabilityToolbar from '@/components/stability/StabilityToolbar.vue'
-import PassiveTable from '@/components/stability/PassiveTable.vue'
+import StabilityBlocks from '@/components/stability/StabilityBlocks.vue'
+import PassiveCards from '@/components/stability/PassiveCards.vue'
+import PassiveDetailDialog from '@/components/stability/PassiveDetailDialog.vue'
 import ActiveTable from '@/components/stability/ActiveTable.vue'
 import type { HealthEventItem, HealthStateItem, PassiveRow, ProbeSummaryRow, ProbeResult } from '@/types'
 
@@ -127,11 +189,13 @@ const app = useAppStore()
  * 主动探测每 15 分钟才一轮，短窗口下样本稀疏，不适合当首屏。
  */
 const tab = ref<'passive' | 'active'>('passive')
-const minutes = ref<WindowMinutes>(1440)
+const grouping = ref<GroupingMode>('provider')
+const minutes = ref<WindowMinutes>(DEFAULT_WINDOW_MINUTES)
 
-// null = 不限。provider 用 '' 表示「未归属」桶，故不能用 '' 表示不限。
+// null = 不限。provider / group 用 '' 表示空桶，故不能用 '' 表示不限。
 const providerFilter = ref<string | null>(null)
 const healthFilter = ref<string | null>(null)
+const groupFilter = ref<string | null>(null)
 const keyword = ref('')
 
 const passive = ref<PassiveRow[]>([])
@@ -139,6 +203,15 @@ const passiveLoading = ref(false)
 const summary = ref<ProbeSummaryRow[]>([])
 const activeLoading = ref(false)
 const probingId = ref<number | null>(null)
+const showPassiveDetail = ref(false)
+const passiveDetail = ref<PassiveRow | null>(null)
+const expandCmd = ref<{ open: boolean } | null>(null)
+const allOpen = ref(false)
+
+function toggleAll() {
+  allOpen.value = !allOpen.value
+  expandCmd.value = { open: allOpen.value }
+}
 
 // 健康状态
 const healthStates = ref<Map<number, HealthStateItem>>(new Map())
@@ -172,22 +245,27 @@ function healthLabel(state?: string): string {
  * 筛选选项取自「当前 tab 的全量行」而非筛选后的行 ——
  * 否则选中某个供应商后其他供应商的 pill 会消失，用户无法切换回去。
  */
-const optionSource = computed<{ account_id: number; provider_name: string }[]>(() =>
+const optionSource = computed<FilterableRow[]>(() =>
   tab.value === 'passive' ? passive.value : summary.value
 )
 const providerOpts = computed(() => providerOptions(optionSource.value))
 const healthOpts = computed(() => healthOptions(optionSource.value, healthStateOf))
+const groupOpts = computed(() => groupOptions(optionSource.value))
+
+const rowSecondary = computed<'groups' | 'provider'>(() =>
+  grouping.value === 'provider' ? 'groups' : 'provider'
+)
 
 /**
  * 筛选在排序之前；排序由各子表内部的 useTableSort 负责。
- * pill 筛选与文本搜索都是行级谓词，先后顺序不影响结果。
+ * 下拉筛选与文本搜索都是行级谓词，先后顺序不影响结果。
  *
  * 注意 optionSource 刻意不跟随搜索（见上）—— 否则搜索会让 pill 消失，
  * 而 StabilityToolbar 在选项只剩一个时会整组丢弃，用户就失去了清除筛选的入口。
  */
 function visibleRows<T extends FilterableRow & SearchableRow>(rows: T[]): T[] {
   return searchStabilityRows(
-    filterRows(rows, providerFilter.value, healthFilter.value, healthStateOf),
+    filterRows(rows, providerFilter.value, healthFilter.value, healthStateOf, groupFilter.value),
     keyword.value
   )
 }
@@ -195,12 +273,20 @@ function visibleRows<T extends FilterableRow & SearchableRow>(rows: T[]): T[] {
 const passiveRows = computed(() => visibleRows(passive.value))
 const activeRows = computed(() => visibleRows(summary.value))
 
-/**
- * 被动口径没有成功率（线上 usage_logs 只记成功请求），该维度弃权，
- * 评级由首字延迟与健康状态合成。
- */
+const passiveSections = computed(() =>
+  buildSections(passiveRows.value, grouping.value, passiveGrade, passiveCounts)
+)
+const activeSections = computed(() =>
+  buildSections(activeRows.value, grouping.value, activeGrade, activeCounts)
+)
+
+/** 被动卡用流量 SLA + 首字；不吃探测健康状态（那是主动表的事）。 */
 function passiveGrade(r: PassiveRow): RowGrade {
-  return rowGrade({ ttftMs: r.first_token_p50, healthState: healthStateOf(r.account_id) })
+  return rowGrade({
+    ttftMs: r.first_token_p50,
+    successRate: r.sla,
+    rateBands: PASSIVE_RATE_BANDS
+  })
 }
 
 function activeGrade(r: ProbeSummaryRow): RowGrade {
@@ -212,15 +298,18 @@ function activeGrade(r: ProbeSummaryRow): RowGrade {
 }
 
 /**
- * 切 tab 时清掉两个 pill 筛选：两张表的账号集合不同（被动只有有流量的，
+ * 切 tab 时清掉筛选：两张表的账号集合不同（被动只有有流量的，
  * 主动只有开了探测的），沿用旧筛选很容易得到一张空表却看不出为什么。
  *
  * 搜索词刻意豁免：查询词通常是账号名，而同一账号两个 tab 都有 ——
  * 「看 X 的被动数据，再看它的探测结果」正是这页的真实工作流，清空会与之对抗。
  */
-watch(tab, () => {
+watch(tab, (next) => {
   providerFilter.value = null
   healthFilter.value = null
+  groupFilter.value = null
+  showPassiveDetail.value = false
+  if (next === 'active' && !summary.value.length) void loadSummary()
 })
 
 async function loadHealth() {
@@ -283,7 +372,13 @@ async function loadPassive() {
   passiveLoading.value = true
   try {
     const res = await stabilityApi.passive(minutes.value)
-    passive.value = res.items || []
+    passive.value = (res.items || []).map((r) => ({
+      ...r,
+      groups: r.groups ?? [],
+      success_count: r.success_count ?? r.requests,
+      error_count: r.error_count ?? 0,
+      sla: r.sla ?? null
+    }))
   } catch (e) {
     app.showError(errorMessage(e))
   } finally {
@@ -295,7 +390,7 @@ async function loadSummary() {
   activeLoading.value = true
   try {
     const res = await stabilityApi.probeSummary(minutes.value)
-    summary.value = res.items || []
+    summary.value = (res.items || []).map((r) => ({ ...r, groups: r.groups ?? [] }))
   } catch (e) {
     app.showError(errorMessage(e))
   } finally {
@@ -303,12 +398,24 @@ async function loadSummary() {
   }
 }
 
+function openPassiveDetail(r: PassiveRow) {
+  passiveDetail.value = r
+  showPassiveDetail.value = true
+}
+
 async function load() {
-  await Promise.all([loadPassive(), loadSummary(), loadHealth()])
+  if (tab.value === 'passive') {
+    await Promise.all([loadPassive(), loadHealth()])
+    return
+  }
+  await Promise.all([loadSummary(), loadHealth()])
 }
 
 // 窗口档位变更要重新取数（筛选是本地的，不必重新请求）
-watch(minutes, load)
+watch(minutes, () => {
+  showPassiveDetail.value = false
+  void load()
+})
 
 async function runProbe(r: ProbeSummaryRow) {
   probingId.value = r.account_id

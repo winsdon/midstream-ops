@@ -9,9 +9,30 @@
 import type { FilterOption } from '@/utils/providerModel'
 import { latencyBand } from '@/utils/latencyBand'
 
-/** 时间窗口档位（分钟）。实时盯盘口径，不是复盘口径。 */
-export type WindowMinutes = 5 | 30 | 60 | 300 | 1440
-export const WINDOW_OPTIONS: readonly WindowMinutes[] = [5, 30, 60, 300, 1440]
+/** 时间窗口档位（分钟）。实时盯盘口径，对齐运维监控的 5m/30m/1h/6h/24h。 */
+export type WindowMinutes = 5 | 30 | 60 | 360 | 1440
+export const WINDOW_OPTIONS: readonly WindowMinutes[] = [5, 30, 60, 360, 1440]
+/** 默认窗口：近 1 小时。短到能看见正在发生的事，长到被动流量够样本。 */
+export const DEFAULT_WINDOW_MINUTES: WindowMinutes = 60
+
+/**
+ * Select 不能用 '' 同时表示「全部」和「未归属/未分组」桶。
+ * 工具条把这两个哨兵映射回 filterRows 的 null / ''。
+ */
+export const SELECT_ALL = '__all__'
+export const SELECT_EMPTY = '__empty__'
+
+export function selectValue(filter: string | null): string {
+  if (filter === null) return SELECT_ALL
+  if (filter === '') return SELECT_EMPTY
+  return filter
+}
+
+export function parseSelectValue(v: string | number | boolean | null): string | null {
+  if (v === null || v === SELECT_ALL || v === '') return null
+  if (v === SELECT_EMPTY) return ''
+  return String(v)
+}
 
 /**
  * 探测调度间隔（分钟），与 config.yaml 的 probe.interval_minutes 默认值一致。
@@ -57,17 +78,52 @@ export function normalizeHealth(state?: string): string {
  * 故必须收在一处 —— 同一行里不该出现「成功率文字是琥珀色但评级点是绿的」。
  */
 export const RATE_BANDS = [95, 80] as const
+/** 被动 SLA 着色 / 评级：比主动探测松一档，小样本里一次失败不该整行变黄。 */
+export const PASSIVE_RATE_BANDS = [90, 70] as const
 
 export type RateBand = 'good' | 'warn' | 'bad' | 'unknown'
 
 /**
+ * 成功率 / SLA 着色。必须写完整字面量：Tailwind 扫描源码文本提取类名。
+ * 缺值灰色而非弃权 —— 列上「没数字」和评级点「该维度弃权」是两件事。
+ */
+export const RATE_TONE: Record<RateBand, string> = {
+  good: 'font-semibold text-emerald-600',
+  warn: 'font-semibold text-amber-600',
+  bad: 'font-semibold text-red-600',
+  unknown: 'text-gray-400'
+}
+
+export function rateClass(v?: number | null): string {
+  return RATE_TONE[rateBand(v)]
+}
+
+export function passiveRateClass(v?: number | null): string {
+  return RATE_TONE[rateBand(v, PASSIVE_RATE_BANDS)]
+}
+
+/**
+ * 流量 SLA（0–100）。分母 = 成功 + SLA 口径失败；两边都 0 返回 null。
+ * 与运维监控 / 广场模型指标同一公式，只是这里输出百分数而非 0–1。
+ */
+export function slaPercent(success: number, errorCount: number): number | null {
+  if (!Number.isFinite(success) || !Number.isFinite(errorCount)) return null
+  const total = success + errorCount
+  if (total <= 0) return null
+  return (success / total) * 100
+}
+
+/**
  * 成功率分档。缺值返 unknown —— 「这个数落在哪档」与「缺值意味着什么」
- * 是两件事，后者由调用方决定（见 rateToGrade 与 ActiveTable 的 rateClass，
+ * 是两件事，后者由调用方决定（见 rateToGrade 与 rateClass，
  * 二者对缺值的处理刻意不同）。
  */
-export function rateBand(v?: number | null): RateBand {
+export function rateBand(
+  v?: number | null,
+  bands: readonly [number, number] = RATE_BANDS
+): RateBand {
   if (v === null || v === undefined || !Number.isFinite(v)) return 'unknown'
-  const [good, warn] = RATE_BANDS
+  const [good, warn] = bands
   if (v >= good) return 'good'
   if (v >= warn) return 'warn'
   return 'bad'
@@ -78,21 +134,34 @@ export interface FilterableRow {
   account_id: number
   /** '' = 未归属 */
   provider_name: string
+  /** 本站分组名。缺省或空数组 = 未分组 */
+  groups?: readonly string[]
 }
 
 /** 账号 id → 健康状态的查表函数。由调用方注入，纯函数不必知道状态存在 Vue ref 里。 */
 export type HealthLookup = (accountId: number) => string | undefined
 
+function rowGroups(r: FilterableRow): readonly string[] {
+  return r.groups ?? []
+}
+
+function inGroup(r: FilterableRow, group: string): boolean {
+  const gs = rowGroups(r)
+  return group === '' ? gs.length === 0 : gs.includes(group)
+}
+
 /**
- * 按归属供应商 / 健康状态过滤（null 表示不限）。
+ * 按归属供应商 / 健康状态 / 分组过滤（null 表示不限）。
  *
- * provider 传 '' 即筛「未归属」桶 —— 故必须用 null 而非 '' 表示不限。
+ * provider / group 传 '' 即筛「未归属」「未分组」桶 —— 故必须用 null 而非 '' 表示不限。
+ * 一个账号可属于多个分组：命中任一即保留。
  */
 export function filterRows<T extends FilterableRow>(
   rows: readonly T[],
   provider: string | null,
   health: string | null,
-  healthOf: HealthLookup
+  healthOf: HealthLookup,
+  group: string | null = null
 ): T[] {
   let out = [...rows]
   if (provider !== null) {
@@ -100,6 +169,9 @@ export function filterRows<T extends FilterableRow>(
   }
   if (health !== null) {
     out = out.filter((r) => normalizeHealth(healthOf(r.account_id)) === health)
+  }
+  if (group !== null) {
+    out = out.filter((r) => inGroup(r, group))
   }
   return out
 }
@@ -129,10 +201,11 @@ export interface SearchableRow {
   account_name: string
   platform: string
   provider_name: string
+  groups?: readonly string[]
 }
 
 /**
- * 按账号名 / 平台 / 归属供应商模糊搜索（大小写不敏感）。
+ * 按账号名 / 平台 / 归属供应商 / 分组模糊搜索（大小写不敏感）。
  *
  * 刻意不匹配 account_id，与 linkModel.matchAccount 不同：那里匹配 id 是因为
  * 关联弹窗会显示 id 且账号名常是不可读的哈希；稳定性表两者都不显示，
@@ -145,32 +218,20 @@ export function searchStabilityRows<T extends SearchableRow>(rows: readonly T[],
     (r) =>
       r.account_name.toLowerCase().includes(q) ||
       r.platform.toLowerCase().includes(q) ||
-      r.provider_name.toLowerCase().includes(q)
+      r.provider_name.toLowerCase().includes(q) ||
+      (r.groups ?? []).some((g) => g.toLowerCase().includes(q))
   )
 }
 
-/**
- * 抖动比可信所需的最小样本量。
- *
- * 低于此数时 percentile_cont(0.95) 基本就是最大值本身 —— 三次请求里
- * 偶然一次慢就会算出「6.2×」，既吓人又不含信息。宁可显示 '-'。
- */
-export const JITTER_MIN_SAMPLES = 20
-
-/**
- * 抖动比 = P95 / P50，衡量延迟的离散程度而非快慢。
- *
- * 这是被动表唯一回答「稳不稳」的指标：P50 800ms/P95 900ms 与
- * P50 800ms/P95 9000ms 在延迟列上完全一样，但只有后者是问题。
- *
- * 样本不足或 P50 为 0（无有效样本）时返回 null，由 compareValuesWithOrder 沉底。
- * P95 >= P50 对同一组分位数恒成立，故比值恒 >= 1，无需反向守卫。
- */
-export function jitterRatio(p50?: number | null, p95?: number | null, samples?: number): number | null {
-  if (samples === undefined || samples < JITTER_MIN_SAMPLES) return null
-  if (p50 === null || p50 === undefined || !Number.isFinite(p50) || p50 <= 0) return null
-  if (p95 === null || p95 === undefined || !Number.isFinite(p95)) return null
-  return p95 / p50
+/** 分组选项。空串桶 = 未分组；多分组账号在每个组各计一次。 */
+export function groupOptions<T extends FilterableRow>(rows: readonly T[]): FilterOption<string>[] {
+  const exploded: { g: string }[] = []
+  for (const r of rows) {
+    const gs = rowGroups(r)
+    if (gs.length === 0) exploded.push({ g: '' })
+    else for (const g of gs) exploded.push({ g })
+  }
+  return countBy(exploded, (x) => x.g)
 }
 
 /** 健康状态选项，按「越糟越靠后」排而非字母序，与表格排序方向一致。 */
@@ -219,8 +280,8 @@ function latencyToGrade(ms?: number | null): RowGrade {
  * （线上 usage_logs 只记成功请求）。若返 unknown，被动表每行至少 unknown、
  * 评级点全灰 —— 那就等于没有这个功能。
  */
-function rateToGrade(v?: number | null): RowGrade {
-  const band = rateBand(v)
+function rateToGrade(v?: number | null, bands: readonly [number, number] = RATE_BANDS): RowGrade {
+  const band = rateBand(v, bands)
   return band === 'unknown' ? 'good' : band
 }
 
@@ -254,15 +315,34 @@ function healthToGrade(state?: string): RowGrade {
  * 平均会把「成功率 100% 但首字 8 秒」摊成一个中间色，
  * 恰好掩盖了唯一需要报告的事实。
  */
+/** 被动卡片块内排序：差的在前，再 SLA 升序，再首字 P50 降序。空值沉底。 */
+export function sortPassiveRows<T extends { sla: number | null; first_token_p50?: number | null }>(
+  rows: readonly T[],
+  gradeOf: (r: T) => RowGrade
+): T[] {
+  return [...rows].sort((a, b) => {
+    const g = GRADE_RANK[gradeOf(b)] - GRADE_RANK[gradeOf(a)]
+    if (g) return g
+    const sa = a.sla
+    const sb = b.sla
+    if (sa == null && sb != null) return 1
+    if (sb == null && sa != null) return -1
+    if (sa != null && sb != null && sa !== sb) return sa - sb
+    return (b.first_token_p50 ?? -1) - (a.first_token_p50 ?? -1)
+  })
+}
+
 export function rowGrade(input: {
   ttftMs?: number | null
-  /** 被动表恒为 undefined —— 该维度弃权，见 rateToGrade */
+  /** 被动表传流量 SLA；缺样本时为 null/undefined，该维度弃权 */
   successRate?: number | null
   healthState?: string
+  /** 缺省走主动探测 95/80；被动传 PASSIVE_RATE_BANDS */
+  rateBands?: readonly [number, number]
 }): RowGrade {
   const grades: RowGrade[] = [
     latencyToGrade(input.ttftMs),
-    rateToGrade(input.successRate),
+    rateToGrade(input.successRate, input.rateBands),
     healthToGrade(input.healthState)
   ]
   return grades.reduce((worst, g) => (GRADE_RANK[g] > GRADE_RANK[worst] ? g : worst), 'good')

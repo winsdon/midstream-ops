@@ -56,7 +56,7 @@ midstream-ops（代码内部标识 `sub2api-account-monitor`）是面向 AI API 
 | **分组倍率** | 变更驱动快照追踪上游站点与本站的分组倍率：当前倍率 / 上次倍率 / 涨跌幅（持续展示到下一次变化）/ 生效时长；每实体变更历史时间线 |
 | **调价映射** | 上游分组倍率 → 本站分组倍率联动：`目标 = 上游 × 系数 + 偏移`（夹紧上下限）；手动一键应用或自动调价；人工修改冲突检测（检测到即停止覆盖，须人工确认）；调价审计留痕 |
 | **上游成本同步** | 随供应商统一 sync 拉取各供应商 per-key `actual_cost` 落 monitor 库，首次回补 90 天历史；只存 key 的 sha256 指纹 |
-| **稳定性** | 默认被动统计（真实流量 duration / first_token 分位数）+ 主动探测（对上游 key 发最小流式请求测 TTFT / 总耗时 / 成功率）；按归属供应商与健康状态两维度筛选；实时窗口档位（5 分钟 / 30 分钟 / 1 小时 / 5 小时 / 24 小时）；**首字延迟为主视觉指标**（分档着色，P50/P95 合一格）+ 行首综合评级色点；六状态健康状态机（正常/降权/熔断/观察/恢复/停用）+ 状态迁移时间线；失败退避与每日探测预算。**详见 [稳定性可视化](docs/DESIGN_NOTES.md#稳定性可视化)** |
+| **稳定性** | 默认被动统计（真实流量 AVG/P50/P90 + SLA + 吞吐/缓存/RPM，账号指标卡，点击看明细）+ 主动探测（对上游 key 发最小流式请求测 TTFT / 总耗时 / 成功率）；按分组 / 供应商 / 健康状态筛选，列表按供应商或分组分块；实时窗口档位（5 分钟 / 30 分钟 / 1 小时 / 6 小时 / 24 小时，默认 1 小时）；主动表保留行首综合评级色点；六状态健康状态机（正常/降权/熔断/观察/恢复/停用）+ 状态迁移时间线；失败退避与每日探测预算。**详见 [稳定性可视化](docs/DESIGN_NOTES.md#稳定性可视化)** |
 | **授信台账** | 客户授信额度与垫付应收账的**人工台账**：建档时从 sub2api 用户列表直接选人（已建档的禁选）；垫付 / 回款只追加分录，记错走冲正；敞口 = Σ垫付 − Σ回款，每次写入在同一事务内全量重算；80% / 100% 分级告警（边沿触发，闩锁落库）。KYC 实名资料加密落库，支持管理端代录与客户自助填报 + 审核流。**详见 [授信台账](docs/DESIGN_NOTES.md#授信台账人工记账)** |
 | **系统设置** | 数据刷新频率（per-provider 错峰调度，热更新免重启）；余额预警（充值倍率折 CNY，1h 冷却，可按站点单独静音）；倍率变更预警；钉钉 / 飞书 / Telegram 机器人通知渠道（支持加签与测试发送） |
 
@@ -310,9 +310,9 @@ midstream-ops/
 | POST | `/api/v1/pricing/mappings/:id/apply` | 手动应用（GET+PUT-merge + 人工冲突检测） |
 | POST | `/api/v1/pricing/mappings/:id/resolve-conflict` | 确认冲突，恢复自动调价资格 |
 | GET | `/api/v1/pricing/mappings/:id/actions` | 调价审计历史 |
-| GET | `/api/v1/stability/passive?minutes=` | 被动稳定性（含 `provider_id` / `provider_name` 归属） |
+| GET | `/api/v1/stability/passive?minutes=` | 被动稳定性（含 SLA / `error_count` / `groups` / 归属） |
 | GET | `/api/v1/stability/probes` | 探测记录（分页） |
-| GET | `/api/v1/stability/probes/summary?minutes=` | 探测汇总（含归属；`last_success` 限窗口内） |
+| GET | `/api/v1/stability/probes/summary?minutes=` | 探测汇总（含归属与 `groups`；`last_success` 限窗口内） |
 | GET | `/api/v1/stability/probes/trend?account_id=&minutes=` | 单账号探测趋势 |
 | POST | `/api/v1/stability/probe/run` | 手动探测（`{account_id}` 同步 / `{provider_id}` 异步） |
 | GET | `/api/v1/stability/health` | 账号健康状态（六状态 + 当日探测预算） |

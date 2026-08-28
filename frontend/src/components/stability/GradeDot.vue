@@ -1,5 +1,5 @@
 <template>
-  <span class="inline-flex items-center gap-2">
+  <span class="inline-flex min-w-0 items-center gap-2">
     <span class="h-2 w-2 shrink-0 rounded-full" :class="DOT[grade]" :title="tip" />
     <slot />
   </span>

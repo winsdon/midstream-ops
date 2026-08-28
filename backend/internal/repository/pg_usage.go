@@ -126,29 +126,76 @@ func (p *PG) AggregateUsageDaily(ctx context.Context, tz string, start, end time
 	return out, rows.Err()
 }
 
-// PassiveStabilityRow 被动稳定性行（真实流量分位数）。
+// PassiveStabilityRow 被动稳定性行（真实流量分位数 + SLA 口径失败数）。
 type PassiveStabilityRow struct {
-	AccountID   int64
-	AccountName string
-	Platform    string
-	Requests    int64
-	DurationP50 *float64
-	DurationP95 *float64
-	FirstTokP50 *float64
-	FirstTokP95 *float64
+	AccountID       int64
+	AccountName     string
+	Platform        string
+	Requests        int64 // 成功请求数（usage_logs 只记成功）
+	ErrorCount      int64 // SLA 口径失败（ops_error_logs，已排除业务限制）
+	DurationAvg     *float64
+	DurationP50     *float64
+	DurationP90     *float64
+	FirstTokAvg     *float64
+	FirstTokP50     *float64
+	FirstTokP90     *float64
+	OutputTokens    int64
+	DurationMsSum   float64 // 仅用于算 TPS，不进 DTO
+	InputTokens     int64
+	CacheReadTokens int64
 }
 
-// PassiveStability 近 N 小时按账号的耗时/首字分位数。
+// PassiveStability 近 N 分钟按账号的耗时/首字分位数与 SLA 成败计数。
+//
+// 成功率口径对齐 sub2api 运维监控：分母排除 is_business_limited。
+// usage_logs 只记录成功请求，失败在 ops_error_logs，两表 FULL OUTER JOIN
+// 后在应用层合成 —— 窗口内只有失败的账号也必须出现，否则 100% 挂掉反而从表上消失。
 func (p *PG) PassiveStability(ctx context.Context, since time.Time) ([]PassiveStabilityRow, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT ul.account_id, COALESCE(a.name,''), COALESCE(a.platform,''), COUNT(*),
-		       percentile_cont(0.5)  WITHIN GROUP (ORDER BY ul.duration_ms)    FILTER (WHERE ul.duration_ms    IS NOT NULL),
-		       percentile_cont(0.95) WITHIN GROUP (ORDER BY ul.duration_ms)    FILTER (WHERE ul.duration_ms    IS NOT NULL),
-		       percentile_cont(0.5)  WITHIN GROUP (ORDER BY ul.first_token_ms) FILTER (WHERE ul.first_token_ms IS NOT NULL),
-		       percentile_cont(0.95) WITHIN GROUP (ORDER BY ul.first_token_ms) FILTER (WHERE ul.first_token_ms IS NOT NULL)
-		FROM usage_logs ul LEFT JOIN accounts a ON a.id = ul.account_id
-		WHERE ul.created_at >= $1
-		GROUP BY 1, 2, 3`, since)
+		WITH usage_agg AS (
+		    SELECT ul.account_id,
+		           COUNT(*) AS requests,
+		           AVG(ul.duration_ms)    FILTER (WHERE ul.duration_ms    IS NOT NULL) AS duration_avg,
+		           percentile_cont(0.5)  WITHIN GROUP (ORDER BY ul.duration_ms)    FILTER (WHERE ul.duration_ms    IS NOT NULL) AS duration_p50,
+		           percentile_cont(0.9)   WITHIN GROUP (ORDER BY ul.duration_ms)    FILTER (WHERE ul.duration_ms    IS NOT NULL) AS duration_p90,
+		           AVG(ul.first_token_ms) FILTER (WHERE ul.first_token_ms IS NOT NULL) AS first_tok_avg,
+		           percentile_cont(0.5)  WITHIN GROUP (ORDER BY ul.first_token_ms) FILTER (WHERE ul.first_token_ms IS NOT NULL) AS first_tok_p50,
+		           percentile_cont(0.9)   WITHIN GROUP (ORDER BY ul.first_token_ms) FILTER (WHERE ul.first_token_ms IS NOT NULL) AS first_tok_p90,
+		           COALESCE(SUM(ul.output_tokens) FILTER (WHERE ul.duration_ms > 0), 0) AS output_tokens,
+		           COALESCE(SUM(ul.duration_ms) FILTER (WHERE ul.duration_ms > 0), 0)::float8 AS duration_ms_sum,
+		           COALESCE(SUM(ul.input_tokens), 0) AS input_tokens,
+		           COALESCE(SUM(ul.cache_read_tokens), 0) AS cache_read_tokens
+		    FROM usage_logs ul
+		    WHERE ul.created_at >= $1
+		    GROUP BY 1
+		),
+		error_agg AS (
+		    SELECT account_id, COUNT(*) AS error_count
+		    FROM ops_error_logs
+		    WHERE created_at >= $1
+		      AND is_business_limited = FALSE
+		      AND COALESCE(status_code, 0) >= 400
+		      AND account_id IS NOT NULL
+		    GROUP BY 1
+		)
+		SELECT COALESCE(u.account_id, e.account_id),
+		       COALESCE(a.name, ''),
+		       COALESCE(a.platform, ''),
+		       COALESCE(u.requests, 0),
+		       COALESCE(e.error_count, 0),
+		       u.duration_avg,
+		       u.duration_p50,
+		       u.duration_p90,
+		       u.first_tok_avg,
+		       u.first_tok_p50,
+		       u.first_tok_p90,
+		       COALESCE(u.output_tokens, 0),
+		       COALESCE(u.duration_ms_sum, 0),
+		       COALESCE(u.input_tokens, 0),
+		       COALESCE(u.cache_read_tokens, 0)
+		FROM usage_agg u
+		FULL OUTER JOIN error_agg e ON e.account_id = u.account_id
+		LEFT JOIN accounts a ON a.id = COALESCE(u.account_id, e.account_id)`, since)
 	if err != nil {
 		return nil, err
 	}
@@ -156,8 +203,10 @@ func (p *PG) PassiveStability(ctx context.Context, since time.Time) ([]PassiveSt
 	var out []PassiveStabilityRow
 	for rows.Next() {
 		var r PassiveStabilityRow
-		if err := rows.Scan(&r.AccountID, &r.AccountName, &r.Platform, &r.Requests,
-			&r.DurationP50, &r.DurationP95, &r.FirstTokP50, &r.FirstTokP95); err != nil {
+		if err := rows.Scan(&r.AccountID, &r.AccountName, &r.Platform, &r.Requests, &r.ErrorCount,
+			&r.DurationAvg, &r.DurationP50, &r.DurationP90,
+			&r.FirstTokAvg, &r.FirstTokP50, &r.FirstTokP90,
+			&r.OutputTokens, &r.DurationMsSum, &r.InputTokens, &r.CacheReadTokens); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

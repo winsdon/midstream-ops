@@ -34,7 +34,7 @@ const { t } = useI18n()
  * 必须写完整字面量：Tailwind 扫描源码文本提取类名，拼接出来的会被漏掉。
  *
  * ok 档刻意用中性灰而非绿 —— 四档里两档给绿色会让绿色泛滥，
- * 只有真快（首字 <1.5s）才值得一个正向信号。
+ * 只有真快（首字落入 fast 档）才值得一个正向信号。
  */
 const TONE: Record<LatencyBand, string> = {
   fast: 'text-emerald-600 dark:text-emerald-400',

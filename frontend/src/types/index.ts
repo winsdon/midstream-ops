@@ -469,11 +469,25 @@ export interface PassiveRow {
   provider_id: number
   /** 归属供应商名，'' = 未关联，前端渲染成「未归属」 */
   provider_name: string
+  /** 本站分组名。空数组 = 未分组 */
+  groups: string[]
   requests: number
-  duration_p50: number
-  duration_p95: number
-  first_token_p50: number
-  first_token_p95: number
+  /** 成功请求数，与 requests 同值；SLA 分子 */
+  success_count: number
+  /** SLA 口径失败数（已排除业务限制） */
+  error_count: number
+  /** 0–100；窗口内无样本为 null */
+  sla: number | null
+  duration_avg: number | null
+  duration_p50: number | null
+  duration_p90: number | null
+  first_token_avg: number | null
+  first_token_p50: number | null
+  first_token_p90: number | null
+  /** 输出吞吐；无耗时样本为 null */
+  tokens_per_second: number | null
+  /** 缓存命中率 0–100；无 token 样本为 null */
+  cache_rate: number | null
 }
 
 export interface ProbeResult {
@@ -501,6 +515,8 @@ export interface ProbeSummaryRow {
   provider_id: number
   /** 归属供应商名，'' = 未关联 */
   provider_name: string
+  /** 本站分组名。空数组 = 未分组 */
+  groups: string[]
   total: number
   success_count: number
   success_rate: number

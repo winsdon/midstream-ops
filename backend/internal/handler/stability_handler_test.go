@@ -25,6 +25,7 @@ func TestParseWindow(t *testing.T) {
 	}{
 		{"最短档位 5 分钟", "minutes=5", 5},
 		{"30 分钟", "minutes=30", 30},
+		{"6 小时", "minutes=360", 360},
 		{"1440 分钟", "minutes=1440", 1440},
 		{"无参数取默认", "", def},
 		{"minutes=0 非法回退", "minutes=0", def},
@@ -53,6 +54,48 @@ func TestParseWindow(t *testing.T) {
 				t.Errorf("window = %v, want %v", window, want)
 			}
 		})
+	}
+}
+
+func TestDefaultWindowMinutesIsOneHour(t *testing.T) {
+	if defaultWindowMinutes != 60 {
+		t.Errorf("defaultWindowMinutes = %d, want 60", defaultWindowMinutes)
+	}
+}
+
+func TestSlaPercent(t *testing.T) {
+	if got := slaPercent(99, 1); got != float64(99) {
+		t.Errorf("99/100 = %v, want 99", got)
+	}
+	if got := slaPercent(100, 0); got != float64(100) {
+		t.Errorf("100/0err = %v, want 100", got)
+	}
+	if got := slaPercent(0, 5); got != float64(0) {
+		t.Errorf("0/5 = %v, want 0", got)
+	}
+	if got := slaPercent(0, 0); got != nil {
+		t.Errorf("0/0 = %v, want nil", got)
+	}
+}
+
+func TestAttachGroupsEmptyBucketIsEmptySlice(t *testing.T) {
+	item := gin.H{}
+	attachGroups(item, 999, map[int64][]string{1: {"pro"}})
+	gs, ok := item["groups"].([]string)
+	if !ok {
+		t.Fatalf("groups type = %T, want []string", item["groups"])
+	}
+	if len(gs) != 0 {
+		t.Errorf("unassigned groups = %v, want empty slice", gs)
+	}
+}
+
+func TestAttachGroupsSortsNames(t *testing.T) {
+	item := gin.H{}
+	attachGroups(item, 1, map[int64][]string{1: {"pro", "default"}})
+	gs := item["groups"].([]string)
+	if len(gs) != 2 || gs[0] != "default" || gs[1] != "pro" {
+		t.Errorf("groups = %v, want sorted [default pro]", gs)
 	}
 }
 
@@ -93,5 +136,35 @@ func TestAttachProviderToleratesNilLookup(t *testing.T) {
 
 	if item["provider_id"] != int64(0) || item["provider_name"] != "" {
 		t.Errorf("nil lookup got %v / %v, want 0 / empty", item["provider_id"], item["provider_name"])
+	}
+}
+
+func TestTokensPerSecond(t *testing.T) {
+	got := tokensPerSecond(1_200_000, 1000)
+	f, ok := got.(float64)
+	if !ok || f != 1_200_000 {
+		t.Errorf("1.2M tokens in 1s = %v, want 1200000", got)
+	}
+	if tokensPerSecond(100, 0) != nil {
+		t.Errorf("duration 0 should be nil")
+	}
+	if tokensPerSecond(100, -1) != nil {
+		t.Errorf("negative duration should be nil")
+	}
+}
+
+func TestCacheHitRate(t *testing.T) {
+	got := cacheHitRate(912, 88)
+	f, ok := got.(float64)
+	if !ok || f < 91.19 || f > 91.21 {
+		t.Errorf("912/(912+88) = %v, want 91.2", got)
+	}
+	if cacheHitRate(0, 0) != nil {
+		t.Errorf("empty sample should be nil")
+	}
+	zero := cacheHitRate(0, 100)
+	zf, ok := zero.(float64)
+	if !ok || zf != 0 {
+		t.Errorf("no cache reads = %v, want 0", zero)
 	}
 }
