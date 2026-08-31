@@ -8,7 +8,8 @@ import {
   formatRpm,
   healthScoreClass,
   weightedAvg,
-  aggregatePassiveRows
+  aggregatePassiveRows,
+  passiveDetailFromRow
 } from '@/utils/stabilityMetrics'
 import type { PassiveRow } from '@/types'
 
@@ -136,6 +137,34 @@ describe('weightedAvg', () => {
   })
 })
 
+describe('passiveDetailFromRow', () => {
+  it('请求数包含失败', () => {
+    const out = passiveDetailFromRow({
+      account_id: 1,
+      account_name: 'a',
+      platform: '',
+      provider_id: 0,
+      provider_name: '',
+      groups: [],
+      requests: 2,
+      success_count: 2,
+      error_count: 16,
+      sla: 11.1,
+      duration_avg: null,
+      duration_p50: null,
+      duration_p90: null,
+      first_token_avg: null,
+      first_token_p50: null,
+      first_token_p90: null,
+      tokens_per_second: null,
+      cache_rate: null
+    })
+    expect(out.requests).toBe(18)
+    expect(out.success_count).toBe(2)
+    expect(out.error_count).toBe(16)
+  })
+})
+
 describe('aggregatePassiveRows', () => {
   function row(partial: Partial<PassiveRow> & Pick<PassiveRow, 'account_id' | 'requests'>): PassiveRow {
     return {
@@ -177,7 +206,7 @@ describe('aggregatePassiveRows', () => {
     const out = aggregatePassiveRows([a], '供应商甲')
     expect(out.title).toBe('供应商甲')
     expect(out.accountCount).toBe(1)
-    expect(out.requests).toBe(40)
+    expect(out.requests).toBe(50)
     expect(out.success_count).toBe(40)
     expect(out.error_count).toBe(10)
     expect(out.sla).toBeCloseTo(80)
@@ -217,7 +246,7 @@ describe('aggregatePassiveRows', () => {
       '甲'
     )
     expect(out.accountCount).toBe(2)
-    expect(out.requests).toBe(100)
+    expect(out.requests).toBe(110)
     expect(out.success_count).toBe(100)
     expect(out.error_count).toBe(10)
     expect(out.sla).toBeCloseTo((100 / 110) * 100)

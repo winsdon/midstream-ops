@@ -63,7 +63,7 @@ export function passiveDetailFromRow(row: PassiveRow): PassiveDetail {
     platform: row.platform,
     provider_name: row.provider_name,
     groups: [...(row.groups ?? [])],
-    requests: row.requests,
+    requests: row.success_count + row.error_count,
     success_count: row.success_count,
     error_count: row.error_count,
     sla: row.sla,
@@ -83,15 +83,13 @@ export function passiveDetailFromRow(row: PassiveRow): PassiveDetail {
  * （前端没有原始样本，无法重算真分位数）。SLA 用成功/失败求和。
  */
 export function aggregatePassiveRows(rows: readonly PassiveRow[], title: string): PassiveDetail {
-  const weightOf = (r: PassiveRow) => r.requests
-  let requests = 0
+  const weightOf = (r: PassiveRow) => r.success_count
   let success = 0
   let error = 0
   const platforms: string[] = []
   const providers: string[] = []
   const groups: string[] = []
   for (const r of rows) {
-    requests += r.requests
     success += r.success_count
     error += r.error_count
     platforms.push(r.platform)
@@ -106,7 +104,7 @@ export function aggregatePassiveRows(rows: readonly PassiveRow[], title: string)
     provider_name: uniqueStrings(providers).join(' · '),
     groups: uniqueStrings(groups),
     accountCount: rows.length,
-    requests,
+    requests: success + error,
     success_count: success,
     error_count: error,
     sla: slaPercent(success, error),

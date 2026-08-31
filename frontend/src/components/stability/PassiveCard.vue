@@ -26,7 +26,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { fmtPct } from '@/utils/format'
+import { fmtNum, fmtPct } from '@/utils/format'
 import { latencyBand, type LatencyBand } from '@/utils/latencyBand'
 import { passiveRateClass } from '@/utils/stabilityModel'
 import {
@@ -89,6 +89,7 @@ const lines = computed(() => {
       value: errPct.value == null ? '-' : fmtPct(errPct.value, 2),
       klass: slaTone
     },
+    { label: t('stability.requests'), value: fmtNum(r.requests), klass: 'text-gray-800 dark:text-dark-200' },
     { label: t('stability.rpm'), value: formatRpm(rpm(r.requests, props.minutes)), klass: 'text-gray-800 dark:text-dark-200' },
     {
       label: t('stability.requestDuration'),

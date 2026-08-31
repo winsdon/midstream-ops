@@ -63,6 +63,18 @@ func TestDefaultWindowMinutesIsOneHour(t *testing.T) {
 	}
 }
 
+func TestTotalPassiveRequestsIncludesErrors(t *testing.T) {
+	if got := totalPassiveRequests(2, 16); got != 18 {
+		t.Errorf("2 成功 + 16 失败 = %d, want 18", got)
+	}
+	if got := totalPassiveRequests(0, 5); got != 5 {
+		t.Errorf("仅失败 = %d, want 5", got)
+	}
+	if got := totalPassiveRequests(3, 0); got != 3 {
+		t.Errorf("仅成功 = %d, want 3", got)
+	}
+}
+
 func TestSlaPercent(t *testing.T) {
 	if got := slaPercent(99, 1); got != float64(99) {
 		t.Errorf("99/100 = %v, want 99", got)

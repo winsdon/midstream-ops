@@ -141,7 +141,7 @@ func (h *StabilityHandler) Passive(c *gin.Context) {
 			"account_id":        r.AccountID,
 			"account_name":      r.AccountName,
 			"platform":          r.Platform,
-			"requests":          r.Requests,
+			"requests":          totalPassiveRequests(r.Requests, r.ErrorCount),
 			"success_count":     r.Requests,
 			"error_count":       r.ErrorCount,
 			"sla":               slaPercent(r.Requests, r.ErrorCount),
@@ -360,6 +360,11 @@ func attachGroups(item gin.H, accountID int64, groups map[int64][]string) {
 	cp := append([]string(nil), gs...)
 	sort.Strings(cp)
 	item["groups"] = cp
+}
+
+// totalPassiveRequests 窗口内总请求数。usage_logs 只记成功，失败在 ops_error_logs。
+func totalPassiveRequests(success, errCount int64) int64 {
+	return success + errCount
 }
 
 // slaPercent 流量 SLA（0–100）。成功+失败均为 0 时返回 nil，前端渲染成「-」。

@@ -398,13 +398,18 @@ async function loadPassive() {
   passiveLoading.value = true
   try {
     const res = await stabilityApi.passive(minutes.value)
-    passive.value = (res.items || []).map((r) => ({
-      ...r,
-      groups: r.groups ?? [],
-      success_count: r.success_count ?? r.requests,
-      error_count: r.error_count ?? 0,
-      sla: r.sla ?? null
-    }))
+    passive.value = (res.items || []).map((r) => {
+      const success = r.success_count ?? r.requests ?? 0
+      const error = r.error_count ?? 0
+      return {
+        ...r,
+        groups: r.groups ?? [],
+        success_count: success,
+        error_count: error,
+        requests: success + error,
+        sla: r.sla ?? null
+      }
+    })
   } catch (e) {
     app.showError(errorMessage(e))
   } finally {
