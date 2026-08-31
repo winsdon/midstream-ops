@@ -6,7 +6,8 @@ import {
   applySectionSort,
   nextStabilitySort,
   allSectionsOpen,
-  type GroupingMode
+  type GroupingMode,
+  type StabilitySection
 } from '@/utils/stabilitySections'
 import type { RowGrade } from '@/utils/stabilityModel'
 
@@ -40,6 +41,10 @@ function r(
 }
 
 const gradeOf = (row: Row) => row.grade
+
+function idsAcross(secs: StabilitySection<Row>[]): number[] {
+  return secs.flatMap((s) => s.rows.map((x) => x.account_id))
+}
 
 describe('passiveCounts / activeCounts', () => {
   it('被动优先 success_count，缺省回退 requests', () => {
@@ -85,21 +90,34 @@ describe('buildSections', () => {
     expect(jia.grade).toBe('warn')
   })
 
-  it('供应商外层在内层分组多于 1 个时展开；单桶省略内层标题', () => {
+  it('供应商展开不再按分组拆内层，同一账号只出一张卡', () => {
     const secs = buildSections(rows, 'provider', gradeOf, passiveCounts)
     const jia = secs.find((s) => s.key === '甲')!
-    expect(jia.children.map((c) => c.key).sort()).toEqual(['default', 'pro'])
+    expect(jia.children).toEqual([])
+    expect(jia.rows.map((x) => x.account_id).sort()).toEqual([1, 2])
     const yi = secs.find((s) => s.key === '乙')!
     expect(yi.children).toEqual([])
+    expect(idsAcross(secs).sort()).toEqual([1, 2, 3, 4])
   })
 
-  it('按分组分块时多分组账号会在各组各出现一次', () => {
+  it('按分组分块时账号在每个所属组各出现一次，组内不重复、不拆内层', () => {
     const secs = buildSections(rows, 'group', gradeOf, passiveCounts)
     const pro = secs.find((s) => s.key === 'pro')!
     expect(pro.rows.map((x) => x.account_id).sort()).toEqual([1, 3])
+    expect(pro.children).toEqual([])
     const def = secs.find((s) => s.key === 'default')!
     expect(def.rows.map((x) => x.account_id).sort()).toEqual([1, 2])
+    expect(def.children).toEqual([])
     expect(secs[secs.length - 1].key).toBe('')
+    expect(secs.some((s) => s.key === '__multi__')).toBe(false)
+  })
+
+  it('按分组时块 SLA 含该组全部成员，含同时属于其他组的账号', () => {
+    const pro = buildSections(rows, 'group', gradeOf, passiveCounts).find((s) => s.key === 'pro')!
+    // acc1 90/100 + acc3 10/20
+    expect(pro.successCount).toBe(100)
+    expect(pro.errorCount).toBe(20)
+    expect(pro.accountCount).toBe(2)
   })
 
   it('最差评级上浮，坏的块排在前面', () => {
@@ -145,14 +163,14 @@ describe('applySectionSort', () => {
     expect(secs.map((s) => s.key)).toEqual(['甲', '乙', ''])
   })
 
-  it('内层子块跟随同一排序条件', () => {
+  it('供应商块不再拆内层，排序只动外层', () => {
     const jia = applySectionSort(
       buildSections(rows, 'provider', gradeOf, passiveCounts),
       'requests',
       'desc'
     ).find((s) => s.key === '甲')!
-    // default: acc1+acc2  vis-à-vis pro: acc1 only
-    expect(jia.children.map((c) => c.key)).toEqual(['default', 'pro'])
+    expect(jia.children).toEqual([])
+    expect(jia.rows.map((x) => x.account_id).sort()).toEqual([1, 2])
   })
 
   it('不修改入参数组', () => {

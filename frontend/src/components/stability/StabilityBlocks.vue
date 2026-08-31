@@ -27,27 +27,7 @@
       @update:open="setOpen(sec.key, $event)"
       @select="openDetail?.(sec)"
     >
-      <template v-if="sec.children.length">
-        <div class="flex flex-col gap-1 px-1.5 pb-1.5">
-          <div v-for="child in sec.children" :key="child.key || '__empty__'">
-            <div
-              class="flex items-center gap-1.5 px-1 py-0.5 text-[11px]"
-              :class="compact ? '' : 'border-t border-gray-100 bg-gray-50/80 px-4 py-1.5 dark:border-dark-800 dark:bg-dark-800/40'"
-            >
-              <GradeDot v-if="showGrade" class="min-w-0 flex-1" :grade="child.grade">
-                <span class="truncate font-medium text-gray-700 dark:text-dark-200">{{ titleOf(child.label, inner) }}</span>
-              </GradeDot>
-              <span v-else class="min-w-0 flex-1 truncate font-medium text-gray-700 dark:text-dark-200">{{ titleOf(child.label, inner) }}</span>
-              <span class="flex shrink-0 items-center gap-x-1 whitespace-nowrap text-gray-400">
-                <span :class="slaTone(child.sla)">{{ fmtPct(child.sla) }}</span>
-                <span>{{ t('stability.sectionRequests', { n: child.requestCount }) }}</span>
-              </span>
-            </div>
-            <slot name="table" :rows="child.rows" />
-          </div>
-        </div>
-      </template>
-      <slot v-else name="table" :rows="sec.rows" />
+      <slot name="table" :rows="sec.rows" />
     </StabilitySection>
   </div>
   </div>
@@ -56,14 +36,12 @@
 <script setup lang="ts" generic="T extends FilterableRow">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { fmtPct } from '@/utils/format'
-import { passiveRateClass, rateClass, type FilterableRow } from '@/utils/stabilityModel'
+import { type FilterableRow } from '@/utils/stabilityModel'
 import {
   allSectionsOpen,
   type StabilitySection as Section,
   type GroupingMode
 } from '@/utils/stabilitySections'
-import GradeDot from './GradeDot.vue'
 import StabilitySection from './StabilitySection.vue'
 
 const props = withDefaults(
@@ -89,7 +67,6 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-const inner = computed<GroupingMode>(() => (props.grouping === 'provider' ? 'group' : 'provider'))
 const emptyRows = computed<T[]>(() => [])
 const openMap = ref<Record<string, boolean>>({})
 
@@ -122,8 +99,4 @@ watch(
     openMap.value = next
   }
 )
-
-function slaTone(v: number | null): string {
-  return props.showGrade ? rateClass(v) : passiveRateClass(v)
-}
 </script>

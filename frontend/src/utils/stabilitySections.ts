@@ -1,9 +1,8 @@
 /**
  * 稳定性列表的供应商 / 分组分块。纯函数，不依赖 Vue。
  *
- * 外层可切换（供应商 ↔ 分组），内层自动带另一维；内层只剩一个桶时省略，
- * 免得整页都是「未分组」小标题。账号行仍是「每账号一行」，
- * 多分组账号在按分组分块时会在各组各出现一次。
+ * 外层可切换（供应商 ↔ 分组），不再拆内层：供应商下按组拆会把同一账号复制多份，
+ * 指标是账号级的，组只是标签。按分组分块时账号在每个所属组各出现一次（组成员视图）。
  */
 
 import { compareValuesWithOrder, type SortOrder } from '@/utils/tableSort'
@@ -52,7 +51,7 @@ export interface StabilitySection<T> {
   key: string
   label: string
   rows: T[]
-  /** 内层块。长度 ≤1 时为空，调用方不要渲染内层标题 */
+  /** 恒为空：不再按另一维拆内层 */
   children: StabilitySection<T>[]
   sla: number | null
   successCount: number
@@ -102,16 +101,11 @@ function bucketize<T extends FilterableRow>(rows: readonly T[], dim: GroupingMod
   return map
 }
 
-function innerDim(mode: GroupingMode): GroupingMode {
-  return mode === 'provider' ? 'group' : 'provider'
-}
-
 function makeSection<T extends FilterableRow>(
   key: string,
   rows: T[],
   gradeOf: (r: T) => RowGrade,
-  countsOf: (r: T) => Countable,
-  children: StabilitySection<T>[]
+  countsOf: (r: T) => Countable
 ): StabilitySection<T> {
   let success = 0
   let error = 0
@@ -127,7 +121,7 @@ function makeSection<T extends FilterableRow>(
     key,
     label: key,
     rows,
-    children,
+    children: [],
     sla: slaPercent(success, error),
     successCount: success,
     errorCount: error,
@@ -173,7 +167,7 @@ function compareSections<T>(
 }
 
 /**
- * 按用户选择的成功率 / 请求次数重排分块（含内层）。空桶仍沉底。
+ * 按用户选择的成功率 / 请求次数重排分块。空桶仍沉底。
  * 返回新数组，不改入参。
  */
 export function applySectionSort<T>(
@@ -181,12 +175,7 @@ export function applySectionSort<T>(
   key: StabilitySortKey,
   order: SortOrder
 ): StabilitySection<T>[] {
-  return [...sections]
-    .sort((a, b) => compareSections(a, b, key, order))
-    .map((s) => ({
-      ...s,
-      children: s.children.length ? applySectionSort(s.children, key, order) : s.children
-    }))
+  return [...sections].sort((a, b) => compareSections(a, b, key, order))
 }
 
 export function buildSections<T extends FilterableRow>(
@@ -196,16 +185,9 @@ export function buildSections<T extends FilterableRow>(
   countsOf: (r: T) => Countable
 ): StabilitySection<T>[] {
   const outer = bucketize(rows, mode)
-  const inner = innerDim(mode)
   const sections: StabilitySection<T>[] = []
   for (const [key, list] of outer) {
-    const innerMap = bucketize(list, inner)
-    const childSecs: StabilitySection<T>[] = []
-    for (const [ik, ilist] of innerMap) {
-      childSecs.push(makeSection(ik, ilist, gradeOf, countsOf, []))
-    }
-    const children = innerMap.size > 1 ? sortSections(childSecs) : []
-    sections.push(makeSection(key, list, gradeOf, countsOf, children))
+    sections.push(makeSection(key, list, gradeOf, countsOf))
   }
   return sortSections(sections)
 }
