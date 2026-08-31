@@ -16,6 +16,8 @@ export interface PaginatedData<T = unknown> {
 
 export interface LoginResult {
   token: string
+  refresh_token: string
+  expires_in: number
   expires_at: string
   username: string
 }
@@ -471,8 +473,9 @@ export interface PassiveRow {
   provider_name: string
   /** 本站分组名。空数组 = 未分组 */
   groups: string[]
+  /** 窗口内总请求数 = success_count + error_count */
   requests: number
-  /** 成功请求数，与 requests 同值；SLA 分子 */
+  /** 成功请求数（usage_logs）；SLA 分子 */
   success_count: number
   /** SLA 口径失败数（已排除业务限制） */
   error_count: number

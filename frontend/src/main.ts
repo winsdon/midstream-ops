@@ -3,6 +3,7 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
 import i18n from './i18n'
+import { useAuthStore } from './stores/auth'
 import './style.css'
 
 function initThemeClass() {
@@ -15,7 +16,9 @@ function initThemeClass() {
 async function bootstrap() {
   initThemeClass()
   const app = createApp(App)
-  app.use(createPinia())
+  const pinia = createPinia()
+  app.use(pinia)
+  await useAuthStore(pinia).initSession()
   app.use(router)
   app.use(i18n)
   await router.isReady()

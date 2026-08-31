@@ -134,8 +134,8 @@ function closeMobile(): void {
   }
 }
 
-function onLogout(): void {
-  auth.logout()
+async function onLogout(): Promise<void> {
+  await auth.logout()
   router.push({ name: 'login' })
 }
 </script>

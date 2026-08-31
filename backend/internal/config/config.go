@@ -36,10 +36,11 @@ type ServerConfig struct {
 }
 
 type AuthConfig struct {
-	Username      string `mapstructure:"username"`
-	Password      string `mapstructure:"password"` // 明文；$2a$/$2b$ 前缀按 bcrypt 校验
-	JWTSecret     string `mapstructure:"jwt_secret"`
-	TokenTTLHours int    `mapstructure:"token_ttl_hours"`
+	Username            string `mapstructure:"username"`
+	Password            string `mapstructure:"password"` // 明文；$2a$/$2b$ 前缀按 bcrypt 校验
+	JWTSecret           string `mapstructure:"jwt_secret"`
+	TokenTTLHours       int    `mapstructure:"token_ttl_hours"`
+	RefreshTokenTTLDays int    `mapstructure:"refresh_token_ttl_days"`
 }
 
 // PGConn 一个 Postgres 连接的通用参数。上游只读库与本地可写库共用此结构。
@@ -315,6 +316,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.username", "admin")
 	v.SetDefault("auth.password", "change-me")
 	v.SetDefault("auth.token_ttl_hours", 24)
+	v.SetDefault("auth.refresh_token_ttl_days", 30)
 
 	v.SetDefault("sub2api_db.port", 5432)
 	v.SetDefault("sub2api_db.dbname", "sub2api")
@@ -377,6 +379,7 @@ func bindEnvs(v *viper.Viper) {
 		"timezone",
 
 		"auth.username", "auth.password", "auth.jwt_secret", "auth.token_ttl_hours",
+		"auth.refresh_token_ttl_days",
 
 		"sub2api_db.host", "sub2api_db.port", "sub2api_db.user",
 		"sub2api_db.password", "sub2api_db.dbname", "sub2api_db.sslmode",
@@ -426,6 +429,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Auth.Password == "" {
 		return errors.New("auth.password 不能为空")
+	}
+	if c.Auth.RefreshTokenTTLDays <= 0 {
+		return errors.New("auth.refresh_token_ttl_days 须为正整数")
 	}
 	if err := c.Sub2api.validate("sub2api_db"); err != nil {
 		return err

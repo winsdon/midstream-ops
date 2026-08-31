@@ -92,8 +92,10 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 
 	v1 := r.Group("/api/v1")
 	{
-		// 登录（免鉴权）
+		// 登录 / 续期 / 登出（免鉴权；refresh 本身过期时返回 401，前端不得再拿它去续期）
 		v1.POST("/auth/login", h.Auth.Login)
+		v1.POST("/auth/refresh", h.Auth.Refresh)
+		v1.POST("/auth/logout", h.Auth.Logout)
 
 		// 模型广场（sub2api iframe 嵌入，独立于管理员 JWT 鉴权体系）。
 		// 换会话端点必须保持免鉴权：此时用户还没有 monitor 会话，

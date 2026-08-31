@@ -1,19 +1,25 @@
-import axios, { AxiosError, AxiosInstance } from 'axios'
+import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from 'axios'
 import type { ApiResponse } from '@/types'
+import { clearAuthTokens, getRefreshToken, getToken } from './authTokens'
+import { refreshAuthTokens } from './tokenRefresh'
 
-const TOKEN_KEY = 'monitor_token'
+export {
+  getToken,
+  setToken,
+  getRefreshToken,
+  setRefreshToken,
+  persistTokenPair,
+  getTokenExpiresAt,
+  setTokenExpiresAt,
+  getStoredUsername,
+  setStoredUsername
+} from './authTokens'
 
-export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
-}
-export function setToken(token: string) {
-  localStorage.setItem(TOKEN_KEY, token)
-}
 export function clearToken() {
-  localStorage.removeItem(TOKEN_KEY)
+  clearAuthTokens()
 }
 
-// 401 时由 router guard 处理跳转，这里仅清 token 并抛出。
+// 401 且续期失败时由 router 跳登录。
 let onUnauthorized: (() => void) | null = null
 export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn
@@ -32,13 +38,40 @@ http.interceptors.request.use((config) => {
   return config
 })
 
+function isAuthEndpoint(url?: string): boolean {
+  if (!url) return false
+  return url.includes('/auth/login') || url.includes('/auth/refresh') || url.includes('/auth/logout')
+}
+
+type RetryConfig = InternalAxiosRequestConfig & { _retry?: boolean }
+
 http.interceptors.response.use(
   (resp) => resp,
-  (error: AxiosError<ApiResponse>) => {
-    if (error.response?.status === 401) {
-      clearToken()
-      onUnauthorized?.()
+  async (error: AxiosError<ApiResponse>) => {
+    const original = error.config as RetryConfig | undefined
+    if (error.response?.status !== 401 || !original || isAuthEndpoint(original.url)) {
+      return Promise.reject(error)
     }
+    const snapshotRefresh = getRefreshToken()
+    if (!original._retry && snapshotRefresh) {
+      original._retry = true
+      try {
+        const tokens = await refreshAuthTokens()
+        original.headers = original.headers ?? {}
+        original.headers.Authorization = `Bearer ${tokens.token}`
+        return http(original)
+      } catch {
+        const peerToken = getToken()
+        const peerRefresh = getRefreshToken()
+        if (peerRefresh && peerRefresh !== snapshotRefresh && peerToken) {
+          original.headers = original.headers ?? {}
+          original.headers.Authorization = `Bearer ${peerToken}`
+          return http(original)
+        }
+      }
+    }
+    clearToken()
+    onUnauthorized?.()
     return Promise.reject(error)
   }
 )

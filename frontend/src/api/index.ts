@@ -43,6 +43,10 @@ import type {
 export const authApi = {
   login: (username: string, password: string) =>
     unwrap<LoginResult>(http.post<ApiResponse<LoginResult>>('/auth/login', { username, password })),
+  refresh: (refreshToken: string) =>
+    unwrap<LoginResult>(http.post<ApiResponse<LoginResult>>('/auth/refresh', { refresh_token: refreshToken })),
+  logout: (refreshToken?: string) =>
+    unwrap<{ message: string }>(http.post<ApiResponse<{ message: string }>>('/auth/logout', { refresh_token: refreshToken || '' })),
   me: () => unwrap<{ username: string }>(http.get<ApiResponse<{ username: string }>>('/auth/me'))
 }
 

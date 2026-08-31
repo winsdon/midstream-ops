@@ -8,7 +8,8 @@ auth:
   username: admin
   password: "change-me"        # 明文；填 $2a$/$2b$ 开头则按 bcrypt 校验
   jwt_secret: ""               # 必填，32 字节以上随机串
-  token_ttl_hours: 24
+  token_ttl_hours: 24          # access JWT 有效期
+  refresh_token_ttl_days: 30   # refresh token 有效期；到期前可静默续期，不必重新登录
 
 sub2api_db:                    # 线上库（只读；DSN 强制 default_transaction_read_only=on）
   host: 127.0.0.1

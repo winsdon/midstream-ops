@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { getToken, setUnauthorizedHandler } from '@/api/client'
 import { useNavigationLoadingState } from '@/composables/useNavigationLoading'
+import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -134,8 +135,9 @@ router.beforeEach((to) => {
 router.afterEach(() => nav.endNavigation())
 router.onError(() => nav.endNavigation())
 
-// 401 时跳回登录页
+// 续期失败才清会话并跳登录
 setUnauthorizedHandler(() => {
+  useAuthStore().forceLogout()
   if (router.currentRoute.value.name !== 'login') {
     router.push({ name: 'login' })
   }

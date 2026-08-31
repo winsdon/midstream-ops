@@ -107,9 +107,9 @@ const pageDescription = computed(() => {
   return key ? t(key) : ''
 })
 
-function onLogout(): void {
+async function onLogout(): Promise<void> {
   dropdownOpen.value = false
-  auth.logout()
+  await auth.logout()
   router.push({ name: 'login' })
 }
 

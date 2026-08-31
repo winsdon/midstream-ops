@@ -79,7 +79,7 @@ func main() {
 
 	// Services
 	jwtMgr := jwtutil.New(cfg.Auth.JWTSecret, time.Duration(cfg.Auth.TokenTTLHours)*time.Hour)
-	authSvc := service.NewAuthService(&cfg.Auth, jwtMgr)
+	authSvc := service.NewAuthService(&cfg.Auth, jwtMgr, repository.NewRefreshTokenRepo(store))
 	providerSvc := service.NewProviderService(providerRepo, linkRepo, pg)
 	statsSvc := service.NewStatsService(pg, costRepo, opCostRepo, linkRepo, providerRepo, cfg)
 	opCostSvc := service.NewOperatingCostService(opCostRepo, providerRepo, cfg)
