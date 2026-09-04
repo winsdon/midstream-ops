@@ -100,8 +100,8 @@ type MediaKeyView struct {
 
 // ListKeys 返回用户可用的 key 及每把 key 的生成能力。
 //
-// 每把 key 都会查一次所属分组的计费参数，把**折算后的最终单价**（含分组自定义
-// 单价与倍率）下发给前端。前端只做「单价 × 数量」，定价的全部复杂度留在这里——
+// 每把 key 都会查一次所属分组的计费参数，把**折算后的最终单价**（含模型级/分辨率级
+// 分组自定义价与倍率）下发给前端。前端只做「单价 × 数量」，定价的全部复杂度留在这里——
 // 页面报价算错过一次，根因正是倍率与分组自定义价散落在两端各算一半。
 func (s *MediaService) ListKeys(ctx context.Context, userID string) ([]MediaKeyView, error) {
 	keys, err := s.pg.ListUserKeys(ctx, userID)

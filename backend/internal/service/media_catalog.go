@@ -291,11 +291,14 @@ func imageUnitPriceTicks(model, tier string, pricing *repository.MediaPricing) i
 	return usdToTicks(usd * mediaMultiplier(pricing, MediaCapImage))
 }
 
-// videoUnitPriceTicks 计算一秒视频的最终单价（ticks），口径同上。
+// videoUnitPriceTicks 计算一秒视频的最终单价（ticks）。
+// 分组模型级覆盖优先于旧的分辨率通用价，最后才回落到内置标准价。
 func videoUnitPriceTicks(model, resolution string, pricing *repository.MediaPricing) int64 {
 	usd, ok := 0.0, false
 	if pricing != nil {
-		if p := pricing.VideoPrice(resolution); p != nil {
+		if p := pricing.VideoModelPrice(model, resolution); p != nil {
+			usd, ok = *p, true
+		} else if p := pricing.VideoPrice(resolution); p != nil {
 			usd, ok = *p, true
 		}
 	}

@@ -358,6 +358,33 @@ func TestEstimateCostTicksHonorsGroupPrices(t *testing.T) {
 	}
 }
 
+func TestEstimateCostTicksHonorsModelSpecificVideoPrices(t *testing.T) {
+	pricing := &repository.MediaPricing{
+		VideoModelPrices: map[string]map[string]float64{
+			"grok-imagine-video":     {"1080p": 0.20},
+			"grok-imagine-video-1.5": {"1080p": 0.50},
+		},
+		VideoRateIndependent: true,
+		VideoRateMultiplier:  1,
+	}
+
+	got := EstimateCostTicks(MediaGenerateParams{
+		Kind: MediaKindImage2Video, Model: "grok-imagine-video-1.5",
+		Resolution: "1080p", Duration: 15,
+	}, pricing)
+	if got != 75_000_000_000 {
+		t.Fatalf("模型级视频价应为 $0.50/s × 15 = $7.50，实得 %s", FormatTicksUSD(got))
+	}
+
+	got = EstimateCostTicks(MediaGenerateParams{
+		Kind: MediaKindText2Video, Model: "grok-imagine-video-1.5",
+		Resolution: "1080p", Duration: 15,
+	}, pricing)
+	if got != 30_000_000_000 {
+		t.Fatalf("文生视频降级后应按基础模型 $0.20/s × 15 = $3.00，实得 %s", FormatTicksUSD(got))
+	}
+}
+
 // 倍率必须参与计算。旧实现完全没读倍率，配了 1.5 倍的分组会被少报三分之一。
 func TestEstimateCostTicksAppliesMultipliers(t *testing.T) {
 	cases := []struct {

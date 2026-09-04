@@ -211,10 +211,16 @@ export function modelsForKind(key: MediaKey | null, kind: MediaTaskKind): MediaM
  * 720p×15s 是 $1.05，用户有权先知道这个数。
  */
 export function estimateTicks(form: MediaFormState, key: MediaKey | null): number {
-  const model = selectedModelOf(form, key)
+  let model = selectedModelOf(form, key)
   if (!model) return 0
 
   if (isVideoKind(form.kind)) {
+    // 文生视频的 grok-imagine-video-1.5 会在上游静默降级；
+    // 报价必须使用实际计费模型，图生视频则保留 1.5 的价格。
+    const downgradeTarget = downgradeTargetOf(form, key)
+    if (downgradeTarget) {
+      model = modelsForKind(key, form.kind).find((candidate) => candidate.name === downgradeTarget) ?? model
+    }
     const perSec = model.price_by_tier?.[form.resolution] ?? model.unit_price_ticks
     return perSec * Math.max(1, form.duration)
   }

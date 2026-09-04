@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -25,6 +26,9 @@ type MediaPricing struct {
 	VideoPrice480P  *float64
 	VideoPrice720P  *float64
 	VideoPrice1080P *float64
+	// VideoModelPrices 是分组按模型 / 分辨率覆盖的视频单价（USD/s）。
+	// 它优先于旧的 video_price_* 通用字段。
+	VideoModelPrices map[string]map[string]float64
 
 	// ImageRateIndependent 为 true 时图片用自己的倍率，否则跟随分组倍率。
 	ImageRateIndependent bool
@@ -71,6 +75,48 @@ func (m *MediaPricing) VideoPrice(resolution string) *float64 {
 		// 与 sub2api Group.GetVideoPrice 一致：未知分辨率按 480p 处理。
 		return m.VideoPrice480P
 	}
+}
+
+// VideoModelPrice 返回指定模型和分辨率的分组自定义单价（USD/s）。
+// nil 表示未配置该覆盖，调用方应继续回落到通用分辨率价格。
+func (m *MediaPricing) VideoModelPrice(model, resolution string) *float64 {
+	if m == nil {
+		return nil
+	}
+	modelKey := strings.ToLower(strings.TrimSpace(model))
+	modelCandidates := []string{modelKey}
+	// groups.video_model_prices stores canonical Grok price families, while
+	// model mappings may expose preview / provider-prefixed aliases.
+	canonicalModel := modelKey
+	for _, prefix := range []string{"xai/", "x-ai/", "grok/"} {
+		canonicalModel = strings.TrimPrefix(canonicalModel, prefix)
+	}
+	if strings.Contains(canonicalModel, "video-1.5") {
+		modelCandidates = append(modelCandidates, "grok-imagine-video-1.5")
+	} else if strings.HasPrefix(canonicalModel, "grok-imagine-video") || strings.HasPrefix(canonicalModel, "grok-video") {
+		modelCandidates = append(modelCandidates, "grok-imagine-video")
+	}
+
+	resolutionKey := strings.ToLower(strings.TrimSpace(resolution))
+	resolutionCandidates := []string{resolutionKey}
+	for _, fallback := range []string{"1080p", "720p", "480p"} {
+		if fallback != resolutionKey {
+			resolutionCandidates = append(resolutionCandidates, fallback)
+		}
+	}
+	for _, candidateModel := range modelCandidates {
+		byResolution, ok := m.VideoModelPrices[candidateModel]
+		if !ok {
+			continue
+		}
+		for _, candidateResolution := range resolutionCandidates {
+			if price, ok := byResolution[candidateResolution]; ok {
+				p := price
+				return &p
+			}
+		}
+	}
+	return nil
 }
 
 // EffectiveImageMultiplier 图片计费倍率，口径同 sub2api resolveImageRateMultiplier。
@@ -126,9 +172,11 @@ func (p *PG) GetMediaPricing(ctx context.Context, groupID int64, userID string) 
 	}
 
 	var m MediaPricing
+	var videoModelPricesJSON []byte
 	err := p.pool.QueryRow(ctx, `
 		SELECT g.image_price_1k, g.image_price_2k, g.image_price_4k,
 		       g.video_price_480p, g.video_price_720p, g.video_price_1080p,
+		       COALESCE(to_jsonb(g) -> 'video_model_prices', '{}'::jsonb),
 		       COALESCE(g.image_rate_independent,false), COALESCE(g.image_rate_multiplier,1),
 		       COALESCE(g.video_rate_independent,false), COALESCE(g.video_rate_multiplier,1),
 		       -- 专属倍率优先于分组默认倍率，与 sub2api userGroupRateResolver 同口径
@@ -140,6 +188,7 @@ func (p *PG) GetMediaPricing(ctx context.Context, groupID int64, userID string) 
 		groupID, userIDNum).Scan(
 		&m.ImagePrice1K, &m.ImagePrice2K, &m.ImagePrice4K,
 		&m.VideoPrice480P, &m.VideoPrice720P, &m.VideoPrice1080P,
+		&videoModelPricesJSON,
 		&m.ImageRateIndependent, &m.ImageRateMultiplier,
 		&m.VideoRateIndependent, &m.VideoRateMultiplier,
 		&m.GroupRateMultiplier)
@@ -148,6 +197,11 @@ func (p *PG) GetMediaPricing(ctx context.Context, groupID int64, userID string) 
 	}
 	if err != nil {
 		return nil, err
+	}
+	if len(videoModelPricesJSON) > 0 && string(videoModelPricesJSON) != "{}" {
+		if err := json.Unmarshal(videoModelPricesJSON, &m.VideoModelPrices); err != nil {
+			return nil, err
+		}
 	}
 	return &m, nil
 }

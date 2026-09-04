@@ -288,6 +288,13 @@ describe('estimateTicks', () => {
     expect(estimateTicks({ ...base, resolution: '720p', duration: 8 }, key)).toBe(11_200_000_000)
   })
 
+  it('文生视频的 1.5 静默降级时按基础模型的单价预估', () => {
+    const key = grokKey()
+    const base = { ...emptyMediaForm(), kind: 't2v' as const, model: 'grok-imagine-video-1.5' }
+    // 降级到基础版：1080p $0.07/s × 15s = $1.05
+    expect(estimateTicks({ ...base, resolution: '1080p', duration: 15 }, key)).toBe(10_500_000_000)
+  })
+
   it('未选模型或未知模型时返回 0', () => {
     expect(estimateTicks(emptyMediaForm(), grokKey())).toBe(0)
     expect(estimateTicks({ ...emptyMediaForm(), model: 'nope' }, grokKey())).toBe(0)
