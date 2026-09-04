@@ -114,6 +114,7 @@ const navItems = [
   { name: 'rates', label: 'nav.rates', icon: 'sort' },
   { name: 'pricing', label: 'nav.pricing', icon: 'arrowsUpDown' },
   { name: 'stability', label: 'nav.stability', icon: 'trendingUp' },
+  { name: 'detect', label: 'nav.detect', icon: 'shield' },
   { name: 'credit', label: 'nav.credit', icon: 'creditCard' },
   { name: 'embed-hub', label: 'nav.embedHub', icon: 'grid' },
   { name: 'settings', label: 'nav.settings', icon: 'cog' }

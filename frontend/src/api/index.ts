@@ -38,6 +38,16 @@ import type {
   StrategySettingsResult,
   TrendPoint
 } from '@/types'
+import type {
+  DetectAccount,
+  DetectCheckMeta,
+  DetectHistoryDetail,
+  DetectHistoryItem,
+  DetectJob,
+  DetectPreset,
+  DetectRunPayload,
+  DetectRunResult
+} from '@/types/detect'
 
 // ---- Auth ----
 export const authApi = {
@@ -401,4 +411,33 @@ export const stabilityApi = {
         disabled
       })
     )
+}
+
+// ---- 模型检测（上游 Claude 渠道指纹）----
+// 检测会真实消耗上游额度，所有请求都由用户在页面上显式发起，前端不做任何自动轮询之外的调用。
+export const detectApi = {
+  checks: () =>
+    unwrap<{ items: DetectCheckMeta[]; defaults: string[]; presets: DetectPreset[] }>(
+      http.get<ApiResponse<{ items: DetectCheckMeta[]; defaults: string[]; presets: DetectPreset[] }>>(
+        '/detect/checks'
+      )
+    ),
+  /** 可检测的 anthropic 账号；后端只返回展示字段，密钥不出后端 */
+  accounts: () =>
+    unwrap<{ items: DetectAccount[]; total: number }>(
+      http.get<ApiResponse<{ items: DetectAccount[]; total: number }>>('/detect/accounts')
+    ),
+  run: (payload: DetectRunPayload) =>
+    unwrap<DetectRunResult>(http.post<ApiResponse<DetectRunResult>>('/detect/run', payload)),
+  job: (jobId: string) => unwrap<DetectJob>(http.get<ApiResponse<DetectJob>>(`/detect/jobs/${jobId}`)),
+  cancel: (jobId: string) =>
+    unwrap<{ cancelled: boolean }>(
+      http.post<ApiResponse<{ cancelled: boolean }>>(`/detect/jobs/${jobId}/cancel`)
+    ),
+  history: (params: { account_id?: number; target_fp?: string; label?: string; page?: number; page_size?: number }) =>
+    unwrap<PaginatedData<DetectHistoryItem>>(
+      http.get<ApiResponse<PaginatedData<DetectHistoryItem>>>('/detect/history', { params })
+    ),
+  historyDetail: (id: number) =>
+    unwrap<DetectHistoryDetail>(http.get<ApiResponse<DetectHistoryDetail>>(`/detect/history/${id}`))
 }

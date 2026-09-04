@@ -77,6 +77,12 @@ const router = createRouter({
           meta: { titleKey: 'nav.stability', descriptionKey: 'page.stabilityDesc' }
         },
         {
+          path: 'detect',
+          name: 'detect',
+          component: () => import('@/views/ModelDetect.vue'),
+          meta: { titleKey: 'nav.detect', descriptionKey: 'page.detectDesc' }
+        },
+        {
           path: 'credit',
           name: 'credit',
           component: () => import('@/views/Credit.vue'),

@@ -31,6 +31,13 @@ type Scheduler struct {
 	// 会让「必需」与「可选」在签名里混为一谈。
 	mediaSvc  *MediaService
 	creditSvc *CreditService
+	// detectSvc 渠道检测历史清理。同为可选依赖，未注入时该清理项跳过。
+	detectSvc *ModelDetectService
+}
+
+// SetModelDetectService 注入渠道检测服务，使每日清理覆盖 model_detections。
+func (s *Scheduler) SetModelDetectService(svc *ModelDetectService) {
+	s.detectSvc = svc
 }
 
 // SetMediaService 注入生图服务，使每日清理覆盖 media_tasks。
@@ -168,6 +175,10 @@ func (s *Scheduler) cleanup() {
 	// 生图 / 生视频任务记录（功能未启用时 mediaSvc 为 nil）
 	if s.mediaSvc != nil {
 		s.mediaSvc.Cleanup(ctx, s.cfg.Media.TaskRetentionDays)
+	}
+	// 渠道检测历史：随 probe 保留期清理（同属「探测类留痕」，没必要多一个配置项）
+	if s.detectSvc != nil {
+		s.detectSvc.Cleanup(ctx, s.cfg.Probe.RetentionDays)
 	}
 }
 

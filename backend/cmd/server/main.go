@@ -92,6 +92,9 @@ func main() {
 	pricingSvc := service.NewPricingService(providerRepo, pricingRepo, rateRepo, balanceSvc, pg)
 	connRepo := repository.NewConnectionRepo(store)
 	provisionSvc := service.NewProvisionService(providerRepo, connRepo, linkRepo, pg, balanceSvc)
+	// 上游 Claude 渠道检测：判断某条上游到底是 Max 号池 / Bedrock / Kiro / 伪装
+	detectRepo := repository.NewModelDetectionRepo(store)
+	detectSvc := service.NewModelDetectService(detectRepo, pg, linkRepo, providerRepo)
 
 	// 系统设置（策略/通知，monitor 库持久化 + 热更新）
 	settingsSvc, err := service.NewSettingsService(settingsRepo)
@@ -219,6 +222,7 @@ func main() {
 	// 生图任务记录纳入每日清理（未启用时 mediaSvc 为 nil，清理项自动跳过）
 	scheduler.SetMediaService(mediaSvc)
 	scheduler.SetCreditService(creditSvc)
+	scheduler.SetModelDetectService(detectSvc)
 
 	// 装配处理器
 	handlers := &server.Handlers{
@@ -229,6 +233,7 @@ func main() {
 		Stats:            handler.NewStatsHandler(statsSvc, cfg, pg),
 		Rate:             handler.NewRateHandler(rateSvc),
 		Stability:        handler.NewStabilityHandler(probeSvc, pg, cfg),
+		Detect:           handler.NewModelDetectHandler(detectSvc),
 		Settings:         handler.NewSettingsHandler(settingsSvc, notifier),
 		Pricing:          handler.NewPricingHandler(pricingSvc, rateRepo, pg),
 		Provision:        handler.NewProvisionHandler(provisionSvc),

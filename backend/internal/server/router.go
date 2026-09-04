@@ -24,6 +24,7 @@ type Handlers struct {
 	Stats      *handler.StatsHandler
 	Rate       *handler.RateHandler
 	Stability  *handler.StabilityHandler
+	Detect     *handler.ModelDetectHandler
 	Settings   *handler.SettingsHandler
 	Pricing    *handler.PricingHandler
 	Provision  *handler.ProvisionHandler
@@ -213,6 +214,18 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 				auth.GET("/stability/health", h.Stability.HealthStates)
 				auth.GET("/stability/health/events", h.Stability.HealthEvents)
 				auth.PUT("/stability/health/:id/disabled", h.Stability.SetHealthDisabled)
+			}
+
+			// 上游 Claude 渠道检测：真实打上游接口，会消耗对方额度，
+			// 因此只挂在管理员鉴权组内，且由前端显式发起。
+			if h.Detect != nil {
+				auth.GET("/detect/checks", h.Detect.Checks)
+				auth.GET("/detect/accounts", h.Detect.Accounts)
+				auth.POST("/detect/run", h.Detect.Run)
+				auth.GET("/detect/jobs/:id", h.Detect.Job)
+				auth.POST("/detect/jobs/:id/cancel", h.Detect.Cancel)
+				auth.GET("/detect/history", h.Detect.History)
+				auth.GET("/detect/history/:id", h.Detect.HistoryDetail)
 			}
 
 			if h.Settings != nil {
