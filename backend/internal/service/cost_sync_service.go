@@ -81,12 +81,13 @@ func (s *CostSyncService) SyncOne(
 ) error {
 	state := repository.CostSyncState{ProviderID: p.ID}
 
-	keys, usage, err := s.fetchKeysAndUsage(ctx, p)
-	if err != nil {
-		msg := truncate(err.Error(), 500)
+	keys, usage, fetchErr := s.fetchKeysAndUsage(ctx, p)
+	// 用量部分失败时仍保存已获取的 key 映射与成功结果，失败项不补零。
+	if fetchErr != nil && len(keys) == 0 {
+		msg := truncate(fetchErr.Error(), 500)
 		state.LastError = &msg
 		_ = s.costRepo.SaveSyncState(ctx, state)
-		return err
+		return fetchErr
 	}
 	overrides := s.groupRateOverrides(ctx, p)
 
@@ -144,13 +145,19 @@ func (s *CostSyncService) SyncOne(
 	if err := s.costRepo.UpsertCosts(ctx, costs); err != nil {
 		return fmt.Errorf("写入今日成本失败: %w", err)
 	}
+	if fetchErr != nil {
+		msg := truncate(fetchErr.Error(), 500)
+		state.LastError = &msg
+	}
 
 	now := time.Now()
-	state.LastSyncedAt = &now
+	if fetchErr == nil {
+		state.LastSyncedAt = &now
+	}
 	state.KeysTotal = int64(len(keys))
 	state.KeysMatched = matched
 
-	if backfill {
+	if backfill && fetchErr == nil {
 		if err := s.backfillHistory(ctx, p, keys, mappings); err != nil {
 			// 回补失败不影响今日成本：记录告警，下轮重试
 			log.Printf("[cost-sync] 供应商 %s 历史回补失败（今日成本已写入）: %v", p.Name, err)
@@ -159,7 +166,10 @@ func (s *CostSyncService) SyncOne(
 			log.Printf("[cost-sync] 供应商 %s 历史回补完成（%d 天 × %d keys）", p.Name, backfillDays, len(keys))
 		}
 	}
-	return s.costRepo.SaveSyncState(ctx, state)
+	if saveErr := s.costRepo.SaveSyncState(ctx, state); saveErr != nil {
+		return saveErr
+	}
+	return fetchErr
 }
 
 // backfillHistory 逐 key 拉取历史逐日用量并落库（首次同步用）。
@@ -359,10 +369,7 @@ func (s *CostSyncService) fetchNewAPIKeysAndUsage(ctx context.Context, p *reposi
 			keys = append(keys, providerKey)
 		}
 		usage, err := s.newapiClient.GetTokensUsage(ctx, p.BaseURL, auth, tokens, start, end, quotaPerUnit)
-		if err != nil {
-			return nil, nil, err
-		}
-		return keys, usage, nil
+		return keys, usage, err
 	}
 
 	keys, usage, err := fetch(sess.NewAPI)

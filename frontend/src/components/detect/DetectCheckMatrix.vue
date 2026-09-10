@@ -32,22 +32,33 @@
                 <div class="text-xs text-gray-400">{{ t(`detect.groups.${row.group}`) }}</div>
               </td>
               <td v-for="(run, i) in runs" :key="i">
-                <button
-                  type="button"
-                  class="w-full rounded-xl border p-2 text-left transition-colors"
-                  :class="cellClass(run, row.id)"
-                  :disabled="!canOpen(run, row.id)"
-                  @click="openDetail(run, row.id)"
-                >
-                  <span class="flex items-center gap-1.5">
-                    <LoadingSpinner v-if="isRunning(run, row.id)" size="sm" />
-                    <span v-else class="text-sm font-semibold">{{ statusIcon(findCheck(run, row.id)?.status) }}</span>
-                    <span class="text-xs font-medium">{{ cellLabel(run, row.id) }}</span>
-                  </span>
-                  <span class="mt-0.5 block truncate text-xs text-gray-400" :title="cellSummary(run, row.id)">
-                    {{ cellSummary(run, row.id) }}
-                  </span>
-                </button>
+                <div class="rounded-xl border p-2 transition-colors" :class="cellClass(run, row.id)">
+                  <button
+                    type="button"
+                    class="w-full text-left"
+                    :disabled="!canOpen(run, row.id)"
+                    @click="openDetail(run, row.id)"
+                  >
+                    <span class="flex items-center gap-1.5">
+                      <LoadingSpinner v-if="isRunning(run, row.id)" size="sm" />
+                      <span v-else class="text-sm font-semibold">{{ statusIcon(findCheck(run, row.id)?.status) }}</span>
+                      <span class="text-xs font-medium">{{ cellLabel(run, row.id) }}</span>
+                    </span>
+                    <span class="mt-0.5 block truncate text-xs text-gray-400" :title="cellSummary(run, row.id)">
+                      {{ cellSummary(run, row.id) }}
+                    </span>
+                  </button>
+                  <button
+                    v-if="allowRetry && isRequestFailed(findCheck(run, row.id))"
+                    type="button"
+                    class="mt-1.5 inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-xs font-medium text-primary-600 hover:bg-primary-50 dark:text-primary-400 dark:hover:bg-primary-900/30"
+                    :title="t('detect.retryHint')"
+                    @click="emit('retry', { targetIndex: i, checkId: row.id })"
+                  >
+                    <Icon name="refresh" size="sm" />
+                    {{ t('detect.retry') }}
+                  </button>
+                </div>
               </td>
             </tr>
           </tbody>
@@ -62,7 +73,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
-import { findCheck, statusIcon } from '@/utils/detectModel'
+import { findCheck, isRequestFailed, statusIcon } from '@/utils/detectModel'
 import type { DetectCheckMeta, DetectCheckResult, DetectTargetRun } from '@/types/detect'
 
 const { t } = useI18n()
@@ -72,17 +83,36 @@ const props = defineProps<{
   checks: DetectCheckMeta[]
   /** 本轮实际执行的检测项 id，决定矩阵有哪些行 */
   activeIds: string[]
+  /** 当前作业仍在内存里且未在跑时，才允许点重试 */
+  allowRetry?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'select', payload: { run: DetectTargetRun; check: DetectCheckResult }): void
   (e: 'export'): void
+  (e: 'retry', payload: { targetIndex: number; checkId: string }): void
 }>()
+
+/** 跨项审计的 id。它不在勾选目录里（不发请求），但结果要能在矩阵里看到。 */
+const AUDIT_ID = 'cross-audit'
 
 /** 行取「本轮实际跑的项」，按目录顺序排列；这样没跑的项不会占位。 */
 const rows = computed<DetectCheckMeta[]>(() => {
   const active = new Set(props.activeIds)
-  return props.checks.filter((c) => active.has(c.id))
+  const list = props.checks.filter((c) => active.has(c.id))
+  // 审计项由后端在判定前追加，目录里没有它，用结果自带的 title / group 补一行。
+  const audit = props.runs.map((r) => findCheck(r, AUDIT_ID)).find((c) => !!c)
+  if (audit) {
+    list.push({
+      id: audit.id,
+      title: audit.title,
+      group: audit.group,
+      default: false,
+      cost: 'low',
+      requests: 0
+    })
+  }
+  return list
 })
 
 function isRunning(run: DetectTargetRun, id: string): boolean {

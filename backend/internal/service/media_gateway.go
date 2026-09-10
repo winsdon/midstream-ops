@@ -164,9 +164,10 @@ func (g *MediaGateway) GenerateImage(ctx context.Context, apiKey string, p Media
 // 公开地址填进 ImageURL——sub2api 把 multipart 文件转成 data URL 后，
 // xAI 会回 400 Invalid base64-encoded image。
 //
-// 字段形状与图生视频相同：嵌套对象 image.url，绝不能写成顶层 image_url。
+// 参考图字段形状按模型族分叉：Grok 用嵌套 image.url；gpt-image-* 用
+// OpenAI JSON 契约 images[].image_url。两套绝不能混用。
 func (g *MediaGateway) EditImage(ctx context.Context, apiKey string, p MediaGenerateParams) ([]ImageResult, error) {
-	if !isPublicHTTPURL(p.ImageURL) {
+	if len(allImageURLs(p)) == 0 {
 		return nil, fmt.Errorf("缺少参考图")
 	}
 
@@ -175,18 +176,12 @@ func (g *MediaGateway) EditImage(ctx context.Context, apiKey string, p MediaGene
 		"prompt": p.Prompt,
 		// 与 GenerateImage 同因：xAI CDN 直链国内不可达，必须要 b64。
 		"response_format": "b64_json",
-		"image":           map[string]any{"url": p.ImageURL},
 	}
 	if p.N > 0 {
 		payload["n"] = p.N
 	}
 	applyImageSizeParams(payload, p)
-	if img, images := refImageJSON(p); img != nil {
-		payload["image"] = img
-		if len(images) > 0 {
-			payload["images"] = images
-		}
-	}
+	applyEditImages(payload, p)
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -203,6 +198,37 @@ func (g *MediaGateway) EditImage(ctx context.Context, apiKey string, p MediaGene
 	defer resp.Body.Close()
 
 	return parseImagesResponse(resp)
+}
+
+// applyEditImages 按模型族写入图生图参考图字段。
+//
+// gpt-image-*（SizeModePixelSize）走 OpenAI /v1/images/edits 的 JSON 契约：
+//
+//	{"images":[{"image_url":"https://..."}]}
+//
+// 发 Grok 的 image.url 会触发上游 400：images[].image_url is required。
+//
+// Grok 仍用嵌套 image.url；多张时再带 images[{url}]。
+func applyEditImages(payload map[string]any, p MediaGenerateParams) {
+	urls := allImageURLs(p)
+	if len(urls) == 0 {
+		return
+	}
+	if MediaSizeModeOf(p.Model) == SizeModePixelSize {
+		items := make([]map[string]any, 0, len(urls))
+		for _, u := range urls {
+			items = append(items, map[string]any{"image_url": u})
+		}
+		payload["images"] = items
+		return
+	}
+	img, extras := refImageJSON(p)
+	if img != nil {
+		payload["image"] = img
+		if len(extras) > 0 {
+			payload["images"] = extras
+		}
+	}
 }
 
 // refImageJSON 组装上游要的 image / 多图列表。

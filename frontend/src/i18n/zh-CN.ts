@@ -406,6 +406,11 @@ export default {
 
     start: '开始检测',
     cancel: '停止检测',
+    retry: '重试',
+    retryFailed: '重试失败项（{n}）',
+    retryHint: '仅网络错误 / 超时 / 429 / 5xx 可重试，协议失败再打一遍没有新信息',
+    retryNone: '没有可重试的请求失败项',
+    retryFailedStart: '重试失败',
     running: '检测中',
     progress: '{done}/{total} 项已完成',
     idle: '选择目标与检测项后开始',
@@ -536,6 +541,7 @@ export default {
     ftP95: '首字 P95',
     successRate: '成功率',
     sortRequests: '请求次数',
+    windowRequests: '窗口内合计',
     avgTtft: '平均首字',
     avgTotal: '平均耗时',
     lastAt: '最近探测',
@@ -549,7 +555,32 @@ export default {
     time: '时间',
     source: '来源',
     result: '结果',
-    viewTrend: '趋势'
+    viewTrend: '趋势',
+    availability: '可用性',
+    availabilityTrend: '可用性趋势',
+    heatmapHint: '每行是一个供应商或分组；每个色块是一个统计区间，点击查看该行下的账号',
+    cellGranularity: '{n} 粒度',
+    channelDim: '渠道维度',
+    updatedAt: '更新至 {t}',
+    errorRateHint: '错误率 {n}',
+    p50Hint: '窗口内 P50',
+    tpsHint: '输出吞吐',
+    cacheHint: '读缓存占比',
+    rpmHint: '每分钟请求数',
+    bucketHint: '{start} – {end} · 成功率 {sla} · 成功 {ok} / 失败 {err}',
+    timelinePast: '过去',
+    timelineNow: '现在',
+    live: {
+      operational: '正常',
+      degraded: '降级',
+      failed: '失败',
+      empty: '无流量 / 样本不足'
+    },
+    tone: {
+      healthy: '健康',
+      watch: '需关注',
+      bad: '异常'
+    }
   },
   health: {
     state: '健康状态',
@@ -1022,6 +1053,8 @@ export default {
       title: '生成记录',
       empty: '还没有生成记录',
       emptyHint: '在左侧填写提示词并提交，结果会显示在这里。',
+      createdAt: '生成时间',
+      elapsed: '耗时',
       reuse: '复用配置',
       delete: '删除记录',
       deleteTitle: '删除生成记录',

@@ -128,6 +128,15 @@ func transient(exchanges []*Exchange) bool {
 	return false
 }
 
+// RequestFailed 该项失败来自请求本身（网络错误 / 超时 / 429 / 5xx），
+// 而不是协议断言未通过。这类结果值得重试；协议失败再打一遍没有新信息。
+func RequestFailed(r *CheckResult) bool {
+	if r == nil || r.Status == StatusRunning {
+		return false
+	}
+	return transient(r.Exchanges)
+}
+
 // newResult 按目录元信息初始化结果。
 func newResult(meta Check) *CheckResult {
 	return &CheckResult{ID: meta.ID, Title: meta.Title, Group: meta.Group}
@@ -193,7 +202,8 @@ var Checks = []Check{
 		Note: "稳定性、单调性，并与基础请求的 input_tokens 对齐", Requires: []string{"ping"}},
 
 	{ID: "persona-cc", Title: "Claude Code 人设", Group: GroupIdentity, Default: true, Cost: CostLow, Requests: 1},
-	{ID: "persona-kiro", Title: "Kiro 归属", Group: GroupIdentity, Default: true, Cost: CostMedium, Requests: 2},
+	{ID: "persona-kiro", Title: "非 Kiro 归属", Group: GroupIdentity, Default: true, Cost: CostMedium, Requests: 2,
+		Note: "排除 CC Max 是 Kiro 逆向；命中 Kiro 特征时失败"},
 	{ID: "env-leak", Title: "工作区泄露", Group: GroupIdentity, Default: true, Cost: CostLow, Requests: 1},
 	{ID: "sys-dump", Title: "系统提示泄露", Group: GroupIdentity, Default: true, Cost: CostMedium, Requests: 1,
 		Note: "泄露出别家品牌词即判伪装", Requires: []string{"ping"}},

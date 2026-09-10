@@ -1,27 +1,18 @@
 <template>
   <div class="flex flex-wrap items-center justify-between gap-2">
-    <div class="flex flex-wrap items-center gap-2">
-      <!-- 口径 tab：被动在左且为默认 —— 它查的是真实流量，主动探测每 15 分钟
-           才一轮，短窗口下样本稀疏，不适合当默认视图 -->
-      <div role="tablist" class="flex rounded-lg bg-gray-100 p-0.5 dark:bg-dark-800">
-        <button
-          type="button" role="tab"
-          :aria-selected="tab === 'passive'"
-          :class="pillClass(tab === 'passive')"
-          @click="emit('update:tab', 'passive')"
-        >
-          {{ t('stability.passive') }}
-        </button>
-        <button
-          type="button" role="tab"
-          :aria-selected="tab === 'active'"
-          :class="pillClass(tab === 'active')"
-          @click="emit('update:tab', 'active')"
-        >
-          {{ t('stability.active') }}
-        </button>
-      </div>
+    <div role="tablist" class="flex rounded-lg bg-gray-100 p-0.5 dark:bg-dark-800">
+      <button
+        v-for="m in WINDOW_OPTIONS" :key="m"
+        type="button" role="tab"
+        :aria-selected="minutes === m"
+        :class="pillClass(minutes === m)"
+        @click="emit('update:minutes', m)"
+      >
+        {{ t(`stability.win${m}`) }}
+      </button>
+    </div>
 
+    <div class="flex flex-wrap items-center gap-2">
       <div role="tablist" class="flex rounded-lg bg-gray-100 p-0.5 dark:bg-dark-800">
         <button
           type="button" role="tab"
@@ -40,13 +31,8 @@
           {{ t('stats.byGroup') }}
         </button>
       </div>
-    </div>
 
-    <div class="flex flex-wrap items-center gap-2">
-      <!-- 搜索不防抖：本地过滤几十行，与 Providers / CreditToolbar 的 300ms 防抖
-           刻意分歧 —— 那两处一个查后端、一个数据量大，这里都不成立。
-           也不在此 trim：searchStabilityRows 已经 trim，在输入时 trim 会吃掉
-           词中空格，让「上游 甲」这类查询打不出来 -->
+      <!-- 搜索不防抖：本地过滤几十行。也不在此 trim：searchStabilityRows 已经 trim。 -->
       <div class="relative">
         <Icon name="search" size="sm" class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
         <input
@@ -57,8 +43,6 @@
         />
       </div>
 
-      <!-- 分组 / 供应商 / 健康：选项一多 pill 会换行占半屏，收成下拉。
-           只剩一个取值的维度不渲染（无筛选意义）。 -->
       <Select
         v-for="g in groups" :key="g.key"
         class="!w-36"
@@ -67,22 +51,6 @@
         :searchable="g.searchable"
         @update:model-value="g.onSelect"
       />
-
-      <div role="tablist" class="flex rounded-lg bg-gray-100 p-0.5 dark:bg-dark-800">
-        <button
-          v-for="m in WINDOW_OPTIONS" :key="m"
-          type="button" role="tab"
-          :aria-selected="minutes === m"
-          :class="pillClass(minutes === m)"
-          @click="emit('update:minutes', m)"
-        >
-          {{ t(`stability.win${m}`) }}
-        </button>
-      </div>
-
-      <button class="btn btn-secondary text-sm" :title="t('common.refresh')" @click="emit('refresh')">
-        <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" />
-      </button>
     </div>
   </div>
 </template>
@@ -104,29 +72,22 @@ import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
 
 const props = defineProps<{
-  tab: 'passive' | 'active'
   grouping: GroupingMode
   /** value 为 provider_name，'' = 未归属 */
   providerOpts: FilterOption<string>[]
-  healthOpts: FilterOption<string>[]
   groupOpts: FilterOption<string>[]
   provider: string | null
-  health: string | null
   group: string | null
   keyword: string
   minutes: WindowMinutes
-  loading: boolean
 }>()
 
 const emit = defineEmits<{
-  (e: 'update:tab', v: 'passive' | 'active'): void
   (e: 'update:grouping', v: GroupingMode): void
   (e: 'update:provider', v: string | null): void
-  (e: 'update:health', v: string | null): void
   (e: 'update:group', v: string | null): void
   (e: 'update:keyword', v: string): void
   (e: 'update:minutes', v: WindowMinutes): void
-  (e: 'refresh'): void
 }>()
 
 const { t } = useI18n()
@@ -151,15 +112,6 @@ const groups = computed(() =>
       label: (v: string) => v || t('stability.unassigned'),
       onSelect: (v: string | number | boolean | null) => emit('update:provider', parseSelectValue(v))
     },
-    {
-      key: 'health',
-      options: props.healthOpts,
-      selected: selectValue(props.health),
-      searchable: false as const,
-      allLabel: t('stability.filterAllHealth'),
-      label: (v: string) => t('health.states.' + v),
-      onSelect: (v: string | number | boolean | null) => emit('update:health', parseSelectValue(v))
-    }
   ]
     .filter((g) => g.options.length > 1)
     .map((g) => ({

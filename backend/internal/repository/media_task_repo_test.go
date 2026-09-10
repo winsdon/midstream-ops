@@ -268,6 +268,39 @@ func TestSetUpstreamRequestID(t *testing.T) {
 	}
 }
 
+// 转存状态变更不能改 updated_at：耗时用 created_at→updated_at 计算，
+// 视频异步转存可能持续几十秒，叠进去会把生成耗时吹大。
+func TestSetStorageStatusDoesNotBumpUpdatedAt(t *testing.T) {
+	r := newMediaTestDB(t)
+	ctx := context.Background()
+
+	task, _, err := r.Create(ctx, mediaParams("u1", "store-1", MediaKindText2Image))
+	if err != nil {
+		t.Fatalf("创建失败: %v", err)
+	}
+	if err := r.MarkSucceeded(ctx, task.ID, "https://cdn.example/a.jpg", 1); err != nil {
+		t.Fatalf("标记成功失败: %v", err)
+	}
+	done, err := r.GetByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("回读失败: %v", err)
+	}
+
+	if err := r.SetStorageStatus(ctx, task.ID, MediaStorageStored); err != nil {
+		t.Fatalf("更新转存状态失败: %v", err)
+	}
+	got, err := r.GetByID(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("转存后回读失败: %v", err)
+	}
+	if got.StorageStatus != MediaStorageStored {
+		t.Fatalf("转存状态未写入: %q", got.StorageStatus)
+	}
+	if got.UpdatedAt != done.UpdatedAt {
+		t.Fatalf("转存不应改 updated_at：生成完成=%q 转存后=%q", done.UpdatedAt, got.UpdatedAt)
+	}
+}
+
 // 更新不存在的任务须返回 ErrNotFound，让上层能回 404 而非静默成功。
 func TestUpdateMissingTaskReturnsNotFound(t *testing.T) {
 	r := newMediaTestDB(t)

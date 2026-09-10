@@ -403,6 +403,85 @@ func TestEditImageSendsJSONImageURL(t *testing.T) {
 	}
 }
 
+// gpt-image-* 走 OpenAI /v1/images/edits 的 JSON 契约：images[].image_url。
+//
+// 线上报错就是「images[].image_url is required」——Grok 的嵌套 image.url
+// 被原样转给 OpenAI 格式端点时，校验找不到 images[].image_url。
+func TestEditImageGPTUsesImagesImageURL(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_, _ = io.WriteString(w, `{"data":[{"b64_json":"RURJVA=="}]}`)
+	}))
+	defer srv.Close()
+
+	ref := "https://oss.example.com/ref.png"
+	if _, err := NewMediaGateway(srv.URL).EditImage(context.Background(), testAPIKey,
+		MediaGenerateParams{
+			Model: "gpt-image-2", Prompt: "啊啊啊", N: 1,
+			Size: "1024x576", Quality: "high", ImageURL: ref,
+		}); err != nil {
+		t.Fatalf("编辑失败: %v", err)
+	}
+
+	if _, hasImage := gotBody["image"]; hasImage {
+		t.Fatalf("OpenAI 格式图生图不应发送 Grok 的 image 对象: %v", gotBody)
+	}
+	if _, bad := gotBody["image_url"]; bad {
+		t.Fatalf("不应发送顶层 image_url: %v", gotBody)
+	}
+	raw, ok := gotBody["images"].([]any)
+	if !ok || len(raw) != 1 {
+		t.Fatalf("必须发送 images 数组: %v", gotBody["images"])
+	}
+	item, _ := raw[0].(map[string]any)
+	if item["image_url"] != ref {
+		t.Fatalf("images[0].image_url 错误: %v", item)
+	}
+	if _, hasURL := item["url"]; hasURL {
+		t.Fatalf("OpenAI 格式条目用 image_url 而不是 url: %v", item)
+	}
+	if gotBody["size"] != "1024x576" || gotBody["quality"] != "high" {
+		t.Fatalf("尺寸与质量未透传: %v", gotBody)
+	}
+}
+
+// 多张参考图时 images 必须含全部条目，每张都是 image_url。
+func TestEditImageGPTSendsAllImageURLs(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_, _ = io.WriteString(w, `{"data":[{"b64_json":"RURJVA=="}]}`)
+	}))
+	defer srv.Close()
+
+	urls := []string{
+		"https://oss.example.com/a.png",
+		"https://oss.example.com/b.png",
+		"https://oss.example.com/c.png",
+	}
+	if _, err := NewMediaGateway(srv.URL).EditImage(context.Background(), testAPIKey,
+		MediaGenerateParams{
+			Model: "gpt-image-1.5", Prompt: "合成", N: 1,
+			ImageURL: urls[0], ImageURLs: urls,
+		}); err != nil {
+		t.Fatalf("编辑失败: %v", err)
+	}
+	if _, hasImage := gotBody["image"]; hasImage {
+		t.Fatalf("多张参考图也不该发 image: %v", gotBody)
+	}
+	raw, ok := gotBody["images"].([]any)
+	if !ok || len(raw) != 3 {
+		t.Fatalf("images 必须含 3 张: %v", gotBody["images"])
+	}
+	for i, item := range raw {
+		m, _ := item.(map[string]any)
+		if m["image_url"] != urls[i] {
+			t.Fatalf("images[%d].image_url 错误: %v", i, item)
+		}
+	}
+}
+
 // 【安全红线】任何错误信息都不得包含明文 API key。
 func TestErrorsNeverLeakAPIKey(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -52,6 +52,16 @@
           {{ t('detect.cancel') }}
         </button>
         <button
+          v-else-if="failedCount > 0"
+          type="button"
+          class="btn btn-secondary btn-md"
+          :title="t('detect.retryHint')"
+          @click="emit('retry-failed')"
+        >
+          <Icon name="refresh" size="sm" />
+          {{ t('detect.retryFailed', { n: failedCount }) }}
+        </button>
+        <button
           type="button"
           class="btn btn-primary btn-md"
           :disabled="running || disabled"
@@ -69,7 +79,12 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
-import { DEFAULT_DETECT_CONCURRENCY, MAX_DETECT_CONCURRENCY, progressPercent } from '@/utils/detectModel'
+import {
+  DEFAULT_DETECT_CONCURRENCY,
+  MAX_DETECT_CONCURRENCY,
+  jobRequestFailedCount,
+  progressPercent
+} from '@/utils/detectModel'
 import type { DetectJob } from '@/types/detect'
 
 const { t } = useI18n()
@@ -85,8 +100,11 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'start'): void
   (e: 'cancel'): void
+  (e: 'retry-failed'): void
   (e: 'update:concurrency', n: number): void
 }>()
+
+const failedCount = computed(() => jobRequestFailedCount(props.job))
 
 function onConcurrency(e: Event): void {
   const raw = Number((e.target as HTMLInputElement).value)

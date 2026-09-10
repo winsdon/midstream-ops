@@ -471,3 +471,29 @@ func TestOriginOf(t *testing.T) {
 		}
 	}
 }
+
+func TestNewAPIGetTokensUsageKeepsSuccessfulResultsWhenOneTokenFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token_name") == "bad" {
+			http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
+			return
+		}
+		_, _ = w.Write([]byte(`{"success":true,"data":{"quota":250000,"rpm":3}}`))
+	}))
+	defer srv.Close()
+
+	start := time.Unix(1000, 0)
+	usage, err := newAPITestClient().GetTokensUsage(context.Background(), srv.URL, NewAPIAuth{}, []NewAPIToken{
+		{ID: 1, Name: "good"},
+		{ID: 2, Name: "bad"},
+	}, start, start.Add(time.Hour), 100000)
+	if err == nil {
+		t.Fatal("one token failure should remain visible to the caller")
+	}
+	if got := usage[1]; got.TodayActualCost != 2.5 || got.Requests != 3 {
+		t.Fatalf("successful token result lost: %+v", got)
+	}
+	if _, ok := usage[2]; ok {
+		t.Fatal("failed token must not receive a fabricated usage result")
+	}
+}

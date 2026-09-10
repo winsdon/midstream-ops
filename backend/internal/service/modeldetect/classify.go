@@ -205,11 +205,14 @@ func pickLabel(top string, topScore int, scores map[string]int) string {
 }
 
 // confidenceOf 置信度：领先幅度是主判据，另有几组「铁证」直接给 high。
+//
+// Bedrock 用 bedrock_corroborated 而不是 msg_id_bedrock：后者是可以贴的前缀，
+// 孤证不配拿 high。
 func confidenceOf(label string, topScore, second int, results []*CheckResult) string {
 	if label == LabelUnknown {
 		return ConfidenceLow
 	}
-	if hasEvidence(results, "msg_id_bedrock", "msg_id_vertex", "sig_prefix_vertex", "unified_ratelimit") {
+	if hasEvidence(results, "bedrock_corroborated", "msg_id_vertex", "sig_prefix_vertex", "unified_ratelimit") {
 		return ConfidenceHigh
 	}
 	if topScore-second >= 3 {

@@ -82,6 +82,8 @@ export interface MediaTask {
   est_cost_usd: string
   error_message: string
   created_at: string
+  /** 生成耗时（毫秒）。进行中为已等待时长，终态为完成时刻相对创建时刻。 */
+  duration_ms?: number
   /** 产物是否可通过代理端点取回（仅视频，且转存未完成时才需要）。 */
   has_content: boolean
   result_url: string

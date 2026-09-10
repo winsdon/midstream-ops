@@ -40,6 +40,12 @@ const (
 // ErrDetectPGUnavailable 选了本站账号但线上库不可用。
 var ErrDetectPGUnavailable = errors.New("线上数据库暂不可用，无法读取账号密钥")
 
+var (
+	ErrDetectJobNotFound = errors.New("作业不存在或已过期")
+	ErrDetectJobBusy     = errors.New("检测尚未结束，请等待完成后再重试")
+	ErrDetectRetryNone   = errors.New("没有可重试的请求失败项")
+)
+
 // DetectTargetInput 一个待检测目标：要么指向本站账号，要么是手填渠道。
 type DetectTargetInput struct {
 	AccountID *int64 `json:"account_id"`
@@ -58,6 +64,15 @@ type DetectRunRequest struct {
 	TimeoutMs    int                 `json:"timeout_ms"`
 	// Concurrency 同时执行几项检测（跨目标共享）。0 / 缺省按 3；超出 1–10 夹紧，不 400。
 	Concurrency int `json:"concurrency"`
+}
+
+// DetectRetryRequest 重试作业里请求失败的检测项。
+//
+// CheckID 为空时重试范围内所有请求失败项；指定时只重试该项（及其因前置失败而没发出请求的后续项）。
+// 多目标时必须带 TargetIndex。
+type DetectRetryRequest struct {
+	TargetIndex *int   `json:"target_index"`
+	CheckID     string `json:"check_id"`
 }
 
 // DetectJob 一次检测作业的进度与结果快照（可直接序列化给前端）。
@@ -87,9 +102,10 @@ type ModelDetectService struct {
 
 // detectJob 是作业的内部形态：快照 + 取消钩子。
 type detectJob struct {
-	mu     sync.RWMutex
-	snap   DetectJob
-	cancel context.CancelFunc
+	mu      sync.RWMutex
+	snap    DetectJob
+	cancel  context.CancelFunc
+	targets []modeldetect.Target // 含密钥，只留在进程内供重试，不进快照
 }
 
 // NewModelDetectService 创建服务。
@@ -185,7 +201,8 @@ func (s *ModelDetectService) Start(ctx context.Context, req DetectRunRequest) (s
 			Total: len(targets) * len(checks), Concurrency: concurrency,
 			CreatedAt: now, UpdatedAt: now,
 		},
-		cancel: cancel,
+		cancel:  cancel,
+		targets: targets,
 	}
 	for _, t := range targets {
 		job.snap.Targets = append(job.snap.Targets, &modeldetect.TargetRun{
@@ -308,6 +325,166 @@ func (s *ModelDetectService) run(ctx context.Context, job *detectJob,
 	job.setStatus(status)
 }
 
+// Retry 重跑作业里请求失败的检测项。协议失败（非法参数被接受等）不重试。
+func (s *ModelDetectService) Retry(jobID string, req DetectRetryRequest) (int, error) {
+	s.mu.RLock()
+	job, ok := s.jobs[jobID]
+	s.mu.RUnlock()
+	if !ok {
+		return 0, ErrDetectJobNotFound
+	}
+
+	plan, err := job.planRetry(req)
+	if err != nil {
+		return 0, err
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	if !job.beginRetry(cancel) {
+		cancel()
+		return 0, ErrDetectJobBusy
+	}
+	go s.runRetry(runCtx, job, plan)
+	return plan.count(), nil
+}
+
+type retryPlan struct {
+	items []retryItem
+}
+
+type retryItem struct {
+	index  int
+	target modeldetect.Target
+	checks []string
+}
+
+func (p retryPlan) count() int {
+	n := 0
+	for _, it := range p.items {
+		n += len(it.checks)
+	}
+	return n
+}
+
+func (j *detectJob) planRetry(req DetectRetryRequest) (retryPlan, error) {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	if j.snap.Status == DetectJobRunning {
+		return retryPlan{}, ErrDetectJobBusy
+	}
+	n := len(j.snap.Targets)
+	if n == 0 || len(j.targets) != n {
+		return retryPlan{}, ErrDetectRetryNone
+	}
+
+	var indexes []int
+	if req.TargetIndex != nil {
+		i := *req.TargetIndex
+		if i < 0 || i >= n {
+			return retryPlan{}, fmt.Errorf("目标序号 %d 超出范围", i)
+		}
+		indexes = []int{i}
+	} else if req.CheckID != "" && n > 1 {
+		return retryPlan{}, errors.New("多个目标时请指定 target_index")
+	} else {
+		for i := 0; i < n; i++ {
+			indexes = append(indexes, i)
+		}
+	}
+
+	var plan retryPlan
+	for _, i := range indexes {
+		run := j.snap.Targets[i]
+		seed, err := retrySeed(run, req.CheckID)
+		if err != nil {
+			return retryPlan{}, err
+		}
+		ids := modeldetect.ExpandRetryIDs(seed, run.Checks, j.snap.Checks)
+		if len(ids) == 0 {
+			continue
+		}
+		plan.items = append(plan.items, retryItem{index: i, target: j.targets[i], checks: ids})
+	}
+	if plan.count() == 0 {
+		return retryPlan{}, ErrDetectRetryNone
+	}
+	return plan, nil
+}
+
+func retrySeed(run *modeldetect.TargetRun, checkID string) ([]string, error) {
+	if run == nil {
+		return nil, ErrDetectRetryNone
+	}
+	if checkID != "" {
+		c := findJobCheck(run, checkID)
+		if !modeldetect.RequestFailed(c) {
+			title := checkID
+			if c != nil && c.Title != "" {
+				title = c.Title
+			}
+			return nil, fmt.Errorf("%s 不是请求失败，无法重试", title)
+		}
+		return []string{checkID}, nil
+	}
+	var seed []string
+	for _, c := range run.Checks {
+		if modeldetect.RequestFailed(c) {
+			seed = append(seed, c.ID)
+		}
+	}
+	return seed, nil
+}
+
+func (j *detectJob) beginRetry(cancel context.CancelFunc) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.snap.Status == DetectJobRunning {
+		return false
+	}
+	j.cancel = cancel
+	j.snap.Status = DetectJobRunning
+	j.snap.Current = "准备重试"
+	j.snap.UpdatedAt = time.Now()
+	return true
+}
+
+func (s *ModelDetectService) runRetry(ctx context.Context, job *detectJob, plan retryPlan) {
+	gate := modeldetect.NewGate(job.concurrency())
+	var wg sync.WaitGroup
+	for _, item := range plan.items {
+		wg.Add(1)
+		go func(item retryItem) {
+			defer wg.Done()
+			if ctx.Err() != nil {
+				return
+			}
+			prev, _ := job.targetSnapshot(item.index)
+			result := modeldetect.RetryChecks(ctx, item.target, item.checks, prev, gate, func(res *modeldetect.CheckResult) {
+				job.onCheckProgress(item.index, res)
+			})
+			job.setTargetResult(item.index, result)
+			s.persist(context.Background(), item.target, result)
+		}(item)
+	}
+	wg.Wait()
+
+	status := DetectJobCompleted
+	if ctx.Err() != nil {
+		status = DetectJobCancelled
+	}
+	job.setStatus(status)
+}
+
+func (j *detectJob) targetSnapshot(idx int) (*modeldetect.TargetRun, bool) {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	if idx < 0 || idx >= len(j.snap.Targets) || j.snap.Targets[idx] == nil {
+		return nil, false
+	}
+	cp := *j.snap.Targets[idx]
+	cp.Checks = append([]*modeldetect.CheckResult(nil), j.snap.Targets[idx].Checks...)
+	return &cp, true
+}
+
 // clampDetectConcurrency 把页面传来的并发度夹进 [1, 10]，0 / 缺省视为 3。
 func clampDetectConcurrency(n int) int {
 	if n == 0 {
@@ -422,15 +599,32 @@ func (j *detectJob) onCheckProgress(targetIdx int, res *modeldetect.CheckResult)
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if targetIdx < len(j.snap.Targets) && j.snap.Targets[targetIdx] != nil {
-		prev := findJobCheck(j.snap.Targets[targetIdx], res.ID)
-		wasDone := prev != nil && prev.Status != modeldetect.StatusRunning
 		upsertJobCheck(j.snap.Targets[targetIdx], res)
-		if res.Status != modeldetect.StatusRunning && !wasDone {
-			j.snap.Done++
-		}
 	}
+	j.snap.Done = countFinished(j.snap.Targets)
 	j.snap.Current = runningSummary(j.snap.Targets, j.snap.Concurrency)
 	j.snap.UpdatedAt = time.Now()
+}
+
+// countFinished 统计已结束的检测项，用于进度显示。
+//
+// 跨项审计不计入：它不是用户勾选的项，也不发请求，Total 里没有它的份额。
+func countFinished(targets []*modeldetect.TargetRun) int {
+	n := 0
+	for _, t := range targets {
+		if t == nil {
+			continue
+		}
+		for _, c := range t.Checks {
+			if c == nil || c.ID == modeldetect.AuditCheckID {
+				continue
+			}
+			if c.Status != modeldetect.StatusRunning {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 func findJobCheck(run *modeldetect.TargetRun, id string) *modeldetect.CheckResult {
@@ -492,6 +686,7 @@ func (j *detectJob) setTargetResult(idx int, run *modeldetect.TargetRun) {
 	if idx < len(j.snap.Targets) {
 		j.snap.Targets[idx] = run
 	}
+	j.snap.Done = countFinished(j.snap.Targets)
 	j.snap.UpdatedAt = time.Now()
 }
 

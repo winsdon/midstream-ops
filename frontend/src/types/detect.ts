@@ -164,6 +164,11 @@ export interface DetectRunPayload {
   concurrency?: number
 }
 
+export interface DetectRetryPayload {
+  target_index?: number
+  check_id?: string
+}
+
 export interface DetectRunResult {
   job_id: string
   checks: string[]

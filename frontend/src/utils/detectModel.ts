@@ -5,6 +5,7 @@ import type {
   DetectCheckStatus,
   DetectClass,
   DetectGroup,
+  DetectJob,
   DetectLabel,
   DetectPreset,
   DetectTargetRun
@@ -163,6 +164,27 @@ export function withDependencies(checks: DetectCheckMeta[], selected: Set<string
 /** 从一次目标结果里按 id 取某项结论（矩阵格子用）。 */
 export function findCheck(run: DetectTargetRun | undefined, checkID: string): DetectCheckResult | undefined {
   return (run?.checks ?? undefined)?.find((c) => c.id === checkID)
+}
+
+/**
+ * 请求本身失败（网络错误 / 超时 / 429 / 5xx）才值得重试。
+ * 协议失败再打一遍没有新信息，不提供重试入口。
+ */
+export function isRequestFailed(check?: DetectCheckResult): boolean {
+  if (!check || check.status === 'running') return false
+  return (check.exchanges ?? []).some(
+    (ex) => !!ex.network_error || ex.status === 408 || ex.status === 429 || ex.status >= 500
+  )
+}
+
+export function jobRequestFailedCount(job: DetectJob | null | undefined): number {
+  let n = 0
+  for (const run of job?.targets ?? []) {
+    for (const c of run.checks ?? []) {
+      if (isRequestFailed(c)) n += 1
+    }
+  }
+  return n
 }
 
 /** 目标结果里各结论的计数，用于卡片上的一行小结。 */

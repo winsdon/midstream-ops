@@ -213,3 +213,97 @@ func (p *PG) PassiveStability(ctx context.Context, since time.Time) ([]PassiveSt
 	}
 	return out, rows.Err()
 }
+
+// PassiveTimelinePoint 单账号单时间桶的成败 + 延迟/吞吐（空桶不返回）。
+type PassiveTimelinePoint struct {
+	AccountID       int64
+	Bucket          time.Time
+	Ok              int64
+	Err             int64
+	DurationAvg     *float64
+	DurationP50     *float64
+	DurationP90     *float64
+	FirstTokAvg     *float64
+	FirstTokP50     *float64
+	FirstTokP90     *float64
+	OutputTokens    int64
+	DurationMsSum   float64
+	InputTokens     int64
+	CacheReadTokens int64
+}
+
+// PassiveStabilityTimeline 按账号 + date_bin 分桶。
+//
+// 口径与 PassiveStability 相同：成功来自 usage_logs，失败来自 ops_error_logs
+// 且排除业务限制。分位数只来自成功请求。origin 取 since。
+func (p *PG) PassiveStabilityTimeline(ctx context.Context, since time.Time, bucket time.Duration) ([]PassiveTimelinePoint, error) {
+	if bucket <= 0 {
+		bucket = time.Minute
+	}
+	rows, err := p.pool.Query(ctx, `
+		WITH usage_b AS (
+		    SELECT account_id,
+		           date_bin(($2 * INTERVAL '1 millisecond'), created_at, $1) AS bucket,
+		           COUNT(*) AS ok,
+		           AVG(duration_ms)    FILTER (WHERE duration_ms    IS NOT NULL) AS duration_avg,
+		           percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms)    FILTER (WHERE duration_ms    IS NOT NULL) AS duration_p50,
+		           percentile_cont(0.9) WITHIN GROUP (ORDER BY duration_ms)    FILTER (WHERE duration_ms    IS NOT NULL) AS duration_p90,
+		           AVG(first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL) AS first_tok_avg,
+		           percentile_cont(0.5) WITHIN GROUP (ORDER BY first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL) AS first_tok_p50,
+		           percentile_cont(0.9) WITHIN GROUP (ORDER BY first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL) AS first_tok_p90,
+		           COALESCE(SUM(output_tokens) FILTER (WHERE duration_ms > 0), 0) AS output_tokens,
+		           COALESCE(SUM(duration_ms) FILTER (WHERE duration_ms > 0), 0)::float8 AS duration_ms_sum,
+		           COALESCE(SUM(input_tokens), 0) AS input_tokens,
+		           COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens
+		    FROM usage_logs
+		    WHERE created_at >= $1
+		    GROUP BY 1, 2
+		),
+		error_b AS (
+		    SELECT account_id,
+		           date_bin(($2 * INTERVAL '1 millisecond'), created_at, $1) AS bucket,
+		           COUNT(*) AS err
+		    FROM ops_error_logs
+		    WHERE created_at >= $1
+		      AND is_business_limited = FALSE
+		      AND COALESCE(status_code, 0) >= 400
+		      AND account_id IS NOT NULL
+		    GROUP BY 1, 2
+		)
+		SELECT COALESCE(u.account_id, e.account_id),
+		       COALESCE(u.bucket, e.bucket),
+		       COALESCE(u.ok, 0),
+		       COALESCE(e.err, 0),
+		       u.duration_avg,
+		       u.duration_p50,
+		       u.duration_p90,
+		       u.first_tok_avg,
+		       u.first_tok_p50,
+		       u.first_tok_p90,
+		       COALESCE(u.output_tokens, 0),
+		       COALESCE(u.duration_ms_sum, 0),
+		       COALESCE(u.input_tokens, 0),
+		       COALESCE(u.cache_read_tokens, 0)
+		FROM usage_b u
+		FULL OUTER JOIN error_b e
+		  ON e.account_id = u.account_id AND e.bucket = u.bucket
+		ORDER BY 1, 2`, since, bucket.Milliseconds())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PassiveTimelinePoint
+	for rows.Next() {
+		var r PassiveTimelinePoint
+		if err := rows.Scan(
+			&r.AccountID, &r.Bucket, &r.Ok, &r.Err,
+			&r.DurationAvg, &r.DurationP50, &r.DurationP90,
+			&r.FirstTokAvg, &r.FirstTokP50, &r.FirstTokP90,
+			&r.OutputTokens, &r.DurationMsSum, &r.InputTokens, &r.CacheReadTokens,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

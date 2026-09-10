@@ -45,6 +45,7 @@ import type {
   DetectHistoryItem,
   DetectJob,
   DetectPreset,
+  DetectRetryPayload,
   DetectRunPayload,
   DetectRunResult
 } from '@/types/detect'
@@ -376,8 +377,11 @@ export const provisionApi = {
 // 窗口参数统一用 minutes：稳定性页档位下探到 5 分钟，整数小时表达不了。
 export const stabilityApi = {
   passive: (minutes = 1440) =>
-    unwrap<{ minutes: number; items: PassiveRow[]; note?: string }>(
-      http.get<ApiResponse<{ minutes: number; items: PassiveRow[]; note?: string }>>('/stability/passive', { params: { minutes } })
+    unwrap<{ minutes: number; generated_at?: string; items: PassiveRow[]; note?: string }>(
+      http.get<ApiResponse<{ minutes: number; generated_at?: string; items: PassiveRow[]; note?: string }>>(
+        '/stability/passive',
+        { params: { minutes } }
+      )
     ),
   probes: (params: { account_id?: number; page?: number; page_size?: number }) =>
     unwrap<PaginatedData<ProbeResult>>(http.get<ApiResponse<PaginatedData<ProbeResult>>>('/stability/probes', { params })),
@@ -434,6 +438,8 @@ export const detectApi = {
     unwrap<{ cancelled: boolean }>(
       http.post<ApiResponse<{ cancelled: boolean }>>(`/detect/jobs/${jobId}/cancel`)
     ),
+  retry: (jobId: string, payload: DetectRetryPayload = {}) =>
+    unwrap<{ retried: number }>(http.post<ApiResponse<{ retried: number }>>(`/detect/jobs/${jobId}/retry`, payload)),
   history: (params: { account_id?: number; target_fp?: string; label?: string; page?: number; page_size?: number }) =>
     unwrap<PaginatedData<DetectHistoryItem>>(
       http.get<ApiResponse<PaginatedData<DetectHistoryItem>>>('/detect/history', { params })

@@ -89,6 +89,31 @@ func (h *ModelDetectHandler) Cancel(c *gin.Context) {
 	response.Success(c, gin.H{"cancelled": true})
 }
 
+// Retry POST /detect/jobs/:id/retry —— 重试请求失败的检测项。
+func (h *ModelDetectHandler) Retry(c *gin.Context) {
+	var req service.DetectRetryRequest
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.BadRequest(c, "请求体格式错误: "+err.Error())
+			return
+		}
+	}
+	n, err := h.svc.Retry(c.Param("id"), req)
+	if err != nil {
+		if errors.Is(err, service.ErrDetectJobNotFound) {
+			response.NotFound(c, err.Error())
+			return
+		}
+		if errors.Is(err, service.ErrDetectJobBusy) {
+			response.Conflict(c, err.Error())
+			return
+		}
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Success(c, gin.H{"retried": n})
+}
+
 // History GET /detect/history —— 历史判定分页列表。
 func (h *ModelDetectHandler) History(c *gin.Context) {
 	page, pageSize := response.ParsePagination(c)

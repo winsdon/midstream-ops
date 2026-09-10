@@ -313,13 +313,13 @@ func checkHelloEntropy(ctx context.Context, c *Client, _ *runState) *CheckResult
 		return r.finish("采样样本不足")
 	}
 	unique := len(seen)
-	r.assert("采样多样性达到官方水平", unique >= 8, fmt.Sprintf("%d/%d 次不重复（成功 %d 次）", unique, rounds, okCount))
+	r.assert("采样多样性达到最低要求", helloEntropyPassed(unique), fmt.Sprintf("%d/%d 次不重复（成功 %d 次）", unique, rounds, okCount))
 	switch {
-	case unique >= 8:
-		r.AuthScore = 5
-	case unique <= 4:
+	case helloEntropyPassed(unique):
+		r.AuthScore = 1
+	case unique <= 3:
 		r.addEvidence("low_entropy", "回复高度模板化",
-			fmt.Sprintf("%d 次采样只有 %d 种回复", okCount, unique), ClassWrapper, 3)
+			fmt.Sprintf("%d 次采样只有 %d 种回复", okCount, unique), ClassWrapper, 1)
 	}
 	return r.finish(fmt.Sprintf("%d 次采样得到 %d 种不同回复", okCount, unique))
 }
@@ -366,13 +366,22 @@ func checkThinkingGradient(ctx context.Context, c *Client, st *runState) *CheckR
 		r.Status = StatusInconclusive
 		return r.finish("部分档位请求失败")
 	}
-	monotonic := chars[2] >= chars[1] && chars[1] >= chars[0]
-	r.assert("思考量随难度单调增长", monotonic, fmt.Sprintf("%v", chars))
+	monotonic := meaningfulThinkingGradient(chars)
+	r.assert("思考量随难度明显增长", monotonic, fmt.Sprintf("%v", chars))
 	r.diagnose("各档均带签名", sigCount == 3, fmt.Sprintf("%d/3 档观察到签名", sigCount))
 	if monotonic && sigCount >= 2 {
-		r.AuthScore = 5
+		r.AuthScore = 15
 	}
 	return r.finish(fmt.Sprintf("三档思考字符数 %v", chars))
+}
+
+func helloEntropyPassed(unique int) bool { return unique >= 4 }
+
+func meaningfulThinkingGradient(chars []int) bool {
+	if len(chars) != 3 || chars[0] <= 0 || chars[1] <= 0 || chars[2] <= 0 {
+		return false
+	}
+	return chars[1] >= chars[0]*3/2 && chars[2] >= chars[1]*3/2
 }
 
 // streamThinkingStats 汇总流里的思考字符数与签名长度。

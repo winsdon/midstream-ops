@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -230,9 +231,145 @@ func TestModelDetectReportsRunningCheckStatus(t *testing.T) {
 	if job.Status != DetectJobCompleted {
 		t.Fatalf("期望 completed，实际 %s", job.Status)
 	}
-	if len(job.Targets) != 1 || len(job.Targets[0].Checks) != 1 || job.Targets[0].Checks[0].Status == "running" {
+	if len(job.Targets) != 1 {
+		t.Fatal("目标结果缺失")
+	}
+	ping := findJobCheck(job.Targets[0], "ping")
+	if ping == nil || ping.Status == "running" {
 		t.Fatal("完成后不应仍是 running")
 	}
+}
+
+func TestModelDetectRetryRequestFailedCheck(t *testing.T) {
+	var mu sync.Mutex
+	fail := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		mu.Lock()
+		shouldFail := fail
+		mu.Unlock()
+		if shouldFail {
+			w.WriteHeader(502)
+			_ = json.NewEncoder(w).Encode(map[string]any{"type": "error",
+				"error": map[string]any{"type": "api_error", "message": "upstream"}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "msg_01TESTTESTTESTTESTTEST", "type": "message", "role": "assistant",
+			"model": "claude-opus-5", "stop_reason": "end_turn",
+			"usage":   map[string]any{"input_tokens": 1, "output_tokens": 1},
+			"content": []any{map[string]any{"type": "text", "text": "PONG"}},
+		})
+	}))
+	defer srv.Close()
+
+	svc := newDetectService()
+	jobID, err := svc.Start(context.Background(), DetectRunRequest{
+		Targets: []DetectTargetInput{{Name: "t", BaseURL: srv.URL, APIKey: "sk-xxxxxxxxxx"}},
+		Model:   "claude-opus-5", Checks: []string{"ping"}, Concurrency: 1,
+	})
+	if err != nil {
+		t.Fatalf("发起检测失败: %v", err)
+	}
+	job := waitDetectJob(t, svc, jobID, 10*time.Second)
+	if job.Status != DetectJobCompleted {
+		t.Fatalf("期望 completed，实际 %s", job.Status)
+	}
+	if len(job.Targets[0].Checks) != 1 || job.Targets[0].Checks[0].Status != "inconclusive" {
+		t.Fatalf("502 应记证据不足，实际 %+v", job.Targets[0].Checks)
+	}
+
+	idx := 0
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+	n, err := svc.Retry(jobID, DetectRetryRequest{CheckID: "ping", TargetIndex: &idx})
+	if err != nil {
+		t.Fatalf("重试应成功入队: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("应重试 1 项，实际 %d", n)
+	}
+	job = waitDetectJob(t, svc, jobID, 10*time.Second)
+	if job.Status != DetectJobCompleted {
+		t.Fatalf("重试后期望 completed，实际 %s", job.Status)
+	}
+	if job.Targets[0].Checks[0].Status != "passed" {
+		t.Fatalf("重试成功后应通过，实际 %s", job.Targets[0].Checks[0].Status)
+	}
+}
+
+func TestModelDetectRetryRejectsProtocolFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "msg_01TESTTESTTESTTESTTEST", "type": "message", "role": "assistant",
+			"model": "claude-opus-5", "stop_reason": "end_turn",
+			"content": []any{map[string]any{"type": "text", "text": "ok"}},
+		})
+	}))
+	defer srv.Close()
+	svc := newDetectService()
+	jobID, err := svc.Start(context.Background(), DetectRunRequest{
+		Targets: []DetectTargetInput{{Name: "t", BaseURL: srv.URL, APIKey: "sk-xxxxxxxxxx"}},
+		Model:   "claude-opus-5", Checks: []string{"param-strict"},
+	})
+	if err != nil {
+		t.Fatalf("发起检测失败: %v", err)
+	}
+	job := waitDetectJob(t, svc, jobID, 15*time.Second)
+	if job.Status != DetectJobCompleted {
+		t.Fatalf("期望 completed，实际 %s", job.Status)
+	}
+	idx := 0
+	_, err = svc.Retry(jobID, DetectRetryRequest{CheckID: "param-strict", TargetIndex: &idx})
+	if err == nil || !strings.Contains(err.Error(), "不是请求失败") {
+		t.Fatalf("协议失败不应允许重试，实际 %v", err)
+	}
+}
+
+func TestModelDetectRetryRejectsBusyJob(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "msg_01TESTTESTTESTTESTTEST", "type": "message", "role": "assistant",
+			"model": "claude-opus-5", "stop_reason": "end_turn",
+			"content": []any{map[string]any{"type": "text", "text": "ok"}},
+		})
+	}))
+	defer srv.Close()
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	svc := newDetectService()
+	jobID, err := svc.Start(context.Background(), DetectRunRequest{
+		Targets: []DetectTargetInput{{Name: "t", BaseURL: srv.URL, APIKey: "sk-xxxxxxxxxx"}},
+		Model:   "claude-opus-5", Checks: []string{"ping"},
+	})
+	if err != nil {
+		t.Fatalf("发起检测失败: %v", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("上游请求未发出")
+	}
+	if _, err := svc.Retry(jobID, DetectRetryRequest{}); !errors.Is(err, ErrDetectJobBusy) {
+		t.Fatalf("进行中的作业应拒绝重试，实际 %v", err)
+	}
+	close(release)
+	_ = waitDetectJob(t, svc, jobID, 10*time.Second)
 }
 
 func TestModelDetectConcurrencyRunsTargetsInParallel(t *testing.T) {

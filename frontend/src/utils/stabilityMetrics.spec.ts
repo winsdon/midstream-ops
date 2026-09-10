@@ -9,8 +9,14 @@ import {
   healthScoreClass,
   weightedAvg,
   aggregatePassiveRows,
-  passiveDetailFromRow
+  passiveDetailFromRow,
+  cardFromRow,
+  cardFromSection,
+  cellTip,
+  nextHeatmapSort,
+  sortHeatmapModels
 } from '@/utils/stabilityMetrics'
+import { cellTone, displayCells, liveToneFromCells } from '@/utils/stabilityTimeline'
 import type { PassiveRow } from '@/types'
 
 describe('accountHealthScore', () => {
@@ -259,5 +265,182 @@ describe('aggregatePassiveRows', () => {
     const rows = [row({ account_id: 1, requests: 5, groups: ['a'] })]
     aggregatePassiveRows(rows, 'x')
     expect(rows[0].groups).toEqual(['a'])
+  })
+})
+
+describe('cardFromRow / cardFromSection', () => {
+  const generatedAt = '2026-04-08T12:00:00.000Z'
+
+  function rowWithTl(
+    partial: Partial<PassiveRow> & Pick<PassiveRow, 'account_id' | 'requests'>
+  ): PassiveRow {
+    return {
+      account_name: 'n',
+      platform: '',
+      provider_id: 0,
+      provider_name: '',
+      groups: [],
+      success_count: partial.requests,
+      error_count: 0,
+      sla: 100,
+      duration_avg: null,
+      duration_p50: null,
+      duration_p90: null,
+      first_token_avg: null,
+      first_token_p50: null,
+      first_token_p90: null,
+      tokens_per_second: null,
+      cache_rate: null,
+      timeline: [],
+      ...partial
+    }
+  }
+
+  it('子行与外层行走同一套 cellTone / 色块色', () => {
+    const child = rowWithTl({
+      account_id: 1,
+      account_name: 'key-a',
+      requests: 10,
+      success_count: 8,
+      error_count: 2,
+      sla: 80,
+      timeline: [{ t: '2026-04-08T11:55:00.000Z', ok: 8, err: 2 }]
+    })
+    const inner = cardFromRow(child, '甲')
+    const outer = cardFromSection([child], '甲')
+    const innerCells = displayCells(inner.timeline, 60, generatedAt)
+    const outerCells = displayCells(outer.timeline, 60, generatedAt)
+    expect(liveToneFromCells(innerCells)).toBe(liveToneFromCells(outerCells))
+    expect(innerCells[11].color).toBe(outerCells[11].color)
+    expect(cellTone(inner.sla)).toBe(cellTone(outer.sla))
+  })
+
+  it('块级趋势同桶求和，不是平均', () => {
+    const a = rowWithTl({
+      account_id: 1,
+      requests: 9,
+      timeline: [{ t: '2026-04-08T11:59:00.000Z', ok: 9, err: 1 }]
+    })
+    const b = rowWithTl({
+      account_id: 2,
+      requests: 1,
+      timeline: [{ t: '2026-04-08T11:59:00.000Z', ok: 1, err: 9 }]
+    })
+    const outer = cardFromSection([a, b], '甲')
+    expect(outer.timeline[0]).toMatchObject({ t: '2026-04-08T11:59:00.000Z', ok: 10, err: 10 })
+    expect(outer.accountCount).toBe(2)
+  })
+
+  it('色块 tooltip 含健康分与分位数', () => {
+    const cells = displayCells(
+      [
+        {
+          t: '2026-04-08T11:55:00.000Z',
+          ok: 10,
+          err: 0,
+          first_token_avg: 6400,
+          first_token_p50: 8000,
+          first_token_p90: 10000,
+          duration_avg: 14700,
+          duration_p50: 5000,
+          duration_p90: 60000,
+          output_tokens: 10300,
+          duration_ms_sum: 1000,
+          input_tokens: 37,
+          cache_read_tokens: 963
+        }
+      ],
+      60,
+      generatedAt
+    )
+    const tip = cellTip(cells[11], { windowMinutes: 60, cellMinutes: 5 })
+    expect(tip.empty).toBe(false)
+    expect(tip.health).toBe(100)
+    expect(tip.sla).toBe(100)
+    expect(tip.errorRate).toBe(0)
+    expect(tip.firstTokenP50).toBe(8000)
+    expect(tip.tps).toBe(10300)
+    expect(tip.cache).toBeCloseTo(96.3, 0)
+    expect(tip.rpm).toBe(2)
+  })
+
+  it('不修改入参 timeline', () => {
+    const child = rowWithTl({
+      account_id: 1,
+      requests: 1,
+      timeline: [{ t: 't', ok: 1, err: 0 }]
+    })
+    cardFromRow(child, '')
+    cardFromSection([child], 'x')
+    expect(child.timeline).toEqual([{ t: 't', ok: 1, err: 0 }])
+  })
+})
+
+describe('nextHeatmapSort / sortHeatmapModels', () => {
+  function rowWithTl(
+    partial: Partial<PassiveRow> & Pick<PassiveRow, 'account_id' | 'requests'>
+  ): PassiveRow {
+    return {
+      account_name: 'n',
+      platform: '',
+      provider_id: 0,
+      provider_name: '',
+      groups: [],
+      success_count: partial.requests,
+      error_count: 0,
+      sla: 100,
+      duration_avg: null,
+      duration_p50: null,
+      duration_p90: null,
+      first_token_avg: null,
+      first_token_p50: null,
+      first_token_p90: null,
+      tokens_per_second: null,
+      cache_rate: null,
+      timeline: [],
+      ...partial
+    }
+  }
+
+  it('点当前列翻转方向', () => {
+    expect(nextHeatmapSort({ key: 'sla', order: 'asc' }, 'sla')).toEqual({ key: 'sla', order: 'desc' })
+    expect(nextHeatmapSort({ key: 'requests', order: 'desc' }, 'requests')).toEqual({
+      key: 'requests',
+      order: 'asc'
+    })
+  })
+
+  it('点新列：成功率/缓存/吞吐从升序起，请求数/首字从降序起', () => {
+    expect(nextHeatmapSort({ key: 'sla', order: 'asc' }, 'requests')).toEqual({
+      key: 'requests',
+      order: 'desc'
+    })
+    expect(nextHeatmapSort({ key: 'sla', order: 'asc' }, 'firstToken')).toEqual({
+      key: 'firstToken',
+      order: 'desc'
+    })
+    expect(nextHeatmapSort({ key: 'requests', order: 'desc' }, 'cache')).toEqual({
+      key: 'cache',
+      order: 'asc'
+    })
+    expect(nextHeatmapSort({ key: 'requests', order: 'desc' }, 'tps')).toEqual({
+      key: 'tps',
+      order: 'asc'
+    })
+  })
+
+  it('按缓存率升序，空值沉底', () => {
+    const rows = [
+      cardFromRow(rowWithTl({ account_id: 1, requests: 1, cache_rate: 80 }), ''),
+      cardFromRow(rowWithTl({ account_id: 2, requests: 1, cache_rate: null }), ''),
+      cardFromRow(rowWithTl({ account_id: 3, requests: 1, cache_rate: 10 }), '')
+    ]
+    expect(sortHeatmapModels(rows, 'cache', 'asc').map((r) => r.key)).toEqual(['3', '1', '2'])
+  })
+
+  it('不修改入参', () => {
+    const rows = [cardFromRow(rowWithTl({ account_id: 1, requests: 1, sla: 90 }), '')]
+    sortHeatmapModels(rows, 'sla', 'asc')
+    expect(rows[0].key).toBe('1')
   })
 })

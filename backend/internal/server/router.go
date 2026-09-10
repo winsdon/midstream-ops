@@ -224,6 +224,7 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 				auth.POST("/detect/run", h.Detect.Run)
 				auth.GET("/detect/jobs/:id", h.Detect.Job)
 				auth.POST("/detect/jobs/:id/cancel", h.Detect.Cancel)
+				auth.POST("/detect/jobs/:id/retry", h.Detect.Retry)
 				auth.GET("/detect/history", h.Detect.History)
 				auth.GET("/detect/history/:id", h.Detect.HistoryDetail)
 			}

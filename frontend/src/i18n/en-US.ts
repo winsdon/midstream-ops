@@ -406,6 +406,11 @@ export default {
 
     start: 'Start detection',
     cancel: 'Stop',
+    retry: 'Retry',
+    retryFailed: 'Retry failed requests ({n})',
+    retryHint: 'Only network errors / timeouts / 429 / 5xx can be retried; protocol failures would not yield new evidence',
+    retryNone: 'No request failures to retry',
+    retryFailedStart: 'Retry failed',
     running: 'Running',
     progress: '{done}/{total} checks done',
     idle: 'Pick targets and checks to begin',
@@ -536,6 +541,7 @@ export default {
     ftP95: 'TTFT P95',
     successRate: 'Success Rate',
     sortRequests: 'Request count',
+    windowRequests: 'In this window',
     avgTtft: 'Avg TTFT',
     avgTotal: 'Avg Duration',
     lastAt: 'Last Probe',
@@ -549,7 +555,32 @@ export default {
     time: 'Time',
     source: 'Source',
     result: 'Result',
-    viewTrend: 'Trend'
+    viewTrend: 'Trend',
+    availability: 'Availability',
+    availabilityTrend: 'Availability trend',
+    heatmapHint: 'Each row is a provider or group; each cell is a time bucket. Click a cell for accounts in that row.',
+    cellGranularity: '{n} buckets',
+    channelDim: 'Channel',
+    updatedAt: 'Updated {t}',
+    errorRateHint: 'Error rate {n}',
+    p50Hint: 'Window P50',
+    tpsHint: 'Output throughput',
+    cacheHint: 'Cache-read share',
+    rpmHint: 'Requests per minute',
+    bucketHint: '{start} – {end} · success {sla} · ok {ok} / err {err}',
+    timelinePast: 'Past',
+    timelineNow: 'Now',
+    live: {
+      operational: 'Operational',
+      degraded: 'Degraded',
+      failed: 'Failed',
+      empty: 'No traffic / too few samples'
+    },
+    tone: {
+      healthy: 'Healthy',
+      watch: 'Watch',
+      bad: 'Bad'
+    }
   },
   health: {
     state: 'Health',
@@ -1025,6 +1056,8 @@ export default {
       title: 'History',
       empty: 'No generations yet',
       emptyHint: 'Fill in a prompt on the left and submit — results will appear here.',
+      createdAt: 'Generated at',
+      elapsed: 'Elapsed',
       reuse: 'Reuse configuration',
       delete: 'Delete record',
       deleteTitle: 'Delete generation record',

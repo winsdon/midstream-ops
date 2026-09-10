@@ -127,11 +127,16 @@ func (h *StabilityHandler) Passive(c *gin.Context) {
 		return
 	}
 	window, minutes := parseWindow(c, defaultWindowMinutes)
-	since := time.Now().Add(-window)
+	now := time.Now().UTC().Truncate(time.Second)
+	since := now.Add(-window)
 	rows, err := h.pg.PassiveStability(c.Request.Context(), since)
 	if err != nil {
 		response.InternalError(c, "查询失败: "+err.Error())
 		return
+	}
+	byAcct := map[int64][]timelineDTO{}
+	if points, tlErr := h.pg.PassiveStabilityTimeline(c.Request.Context(), since, timelineBucket(minutes)); tlErr == nil {
+		byAcct = groupTimeline(points)
 	}
 	linkMap, nameByID := h.providerLookup(c.Request.Context())
 	groups := h.groupLookup(c.Request.Context())
@@ -156,9 +161,15 @@ func (h *StabilityHandler) Passive(c *gin.Context) {
 		}
 		attachProvider(item, r.AccountID, linkMap, nameByID)
 		attachGroups(item, r.AccountID, groups)
+		attachTimeline(item, byAcct[r.AccountID])
 		out = append(out, item)
 	}
-	response.Success(c, gin.H{"minutes": minutes, "items": out, "note": "SLA 排除业务限制；分位数仅来自成功请求"})
+	response.Success(c, gin.H{
+		"minutes":      minutes,
+		"generated_at": now.Format(time.RFC3339),
+		"items":        out,
+		"note":         "SLA 排除业务限制；分位数仅来自成功请求",
+	})
 }
 
 // Probes GET /stability/probes?account_id=&page=&page_size=
@@ -411,6 +422,63 @@ func probeDTO(pr *repository.ProbeResult) gin.H {
 		"error":        pr.Error,
 		"created_at":   pr.CreatedAt.Format("2006-01-02 15:04:05"),
 	}
+}
+
+// timelineBarCount 与前端趋势条格数一致。空桶由前端左补齐，后端只发有流量的桶。
+const timelineBarCount = 60
+
+type timelineDTO struct {
+	T               string   `json:"t"`
+	Ok              int64    `json:"ok"`
+	Err             int64    `json:"err"`
+	DurationAvg     *float64 `json:"duration_avg"`
+	DurationP50     *float64 `json:"duration_p50"`
+	DurationP90     *float64 `json:"duration_p90"`
+	FirstTokenAvg   *float64 `json:"first_token_avg"`
+	FirstTokenP50   *float64 `json:"first_token_p50"`
+	FirstTokenP90   *float64 `json:"first_token_p90"`
+	OutputTokens    int64    `json:"output_tokens"`
+	DurationMsSum   float64  `json:"duration_ms_sum"`
+	InputTokens     int64    `json:"input_tokens"`
+	CacheReadTokens int64    `json:"cache_read_tokens"`
+}
+
+// timelineBucket 窗口均分成 60 桶：5m→5s，1h→1min，24h→24min。
+func timelineBucket(minutes int) time.Duration {
+	if minutes <= 0 {
+		minutes = defaultWindowMinutes
+	}
+	return time.Duration(minutes) * time.Minute / timelineBarCount
+}
+
+func groupTimeline(points []repository.PassiveTimelinePoint) map[int64][]timelineDTO {
+	out := make(map[int64][]timelineDTO)
+	for _, p := range points {
+		out[p.AccountID] = append(out[p.AccountID], timelineDTO{
+			T:               p.Bucket.UTC().Format(time.RFC3339),
+			Ok:              p.Ok,
+			Err:             p.Err,
+			DurationAvg:     p.DurationAvg,
+			DurationP50:     p.DurationP50,
+			DurationP90:     p.DurationP90,
+			FirstTokenAvg:   p.FirstTokAvg,
+			FirstTokenP50:   p.FirstTokP50,
+			FirstTokenP90:   p.FirstTokP90,
+			OutputTokens:    p.OutputTokens,
+			DurationMsSum:   p.DurationMsSum,
+			InputTokens:     p.InputTokens,
+			CacheReadTokens: p.CacheReadTokens,
+		})
+	}
+	return out
+}
+
+func attachTimeline(item gin.H, points []timelineDTO) {
+	if points == nil {
+		item["timeline"] = []timelineDTO{}
+		return
+	}
+	item["timeline"] = points
 }
 
 // maxWindowMinutes 与旧 hours 上限（720 小时 = 30 天）等价。

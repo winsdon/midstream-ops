@@ -491,6 +491,24 @@ export interface PassiveRow {
   tokens_per_second: number | null
   /** 缓存命中率 0–100；无 token 样本为 null */
   cache_rate: number | null
+  /** 窗口内有流量的时间桶；空桶不发，前端左补齐到 60 */
+  timeline?: TimelinePoint[]
+}
+
+export interface TimelinePoint {
+  t: string
+  ok: number
+  err: number
+  duration_avg?: number | null
+  duration_p50?: number | null
+  duration_p90?: number | null
+  first_token_avg?: number | null
+  first_token_p50?: number | null
+  first_token_p90?: number | null
+  output_tokens?: number
+  duration_ms_sum?: number
+  input_tokens?: number
+  cache_read_tokens?: number
 }
 
 export interface ProbeResult {

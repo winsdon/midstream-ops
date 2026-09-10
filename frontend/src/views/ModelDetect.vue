@@ -32,6 +32,7 @@
           @update:concurrency="concurrency = $event"
           @start="confirmAndStart"
           @cancel="cancelRun"
+          @retry-failed="retryFailed"
         />
       </div>
 
@@ -68,8 +69,10 @@
               :runs="displayRuns"
               :checks="checks"
               :active-ids="activeCheckIds"
+              :allow-retry="!!job && !running"
               @select="openDetail"
               @export="exportReport"
+              @retry="retryOne"
             />
           </template>
         </template>
@@ -91,7 +94,9 @@
       :show="showDetail"
       :check="detailCheck"
       :target-name="detailTarget"
+      :allow-retry="!!job && !running"
       @close="showDetail = false"
+      @retry="retryDetail"
     />
 
     <ConfirmDialog
@@ -170,6 +175,7 @@ const historyTotal = ref(0)
 const showDetail = ref(false)
 const detailCheck = ref<DetectCheckResult | null>(null)
 const detailTarget = ref('')
+const detailTargetIndex = ref(0)
 const showHighCostConfirm = ref(false)
 
 const effectiveChecks = computed(() => withDependencies(checks.value, new Set(selected.value)))
@@ -340,7 +346,34 @@ async function cancelRun(): Promise<void> {
 function openDetail(payload: { run: DetectTargetRun; check: DetectCheckResult }): void {
   detailCheck.value = payload.check
   detailTarget.value = payload.run.name
+  detailTargetIndex.value = displayRuns.value.indexOf(payload.run)
   showDetail.value = true
+}
+
+async function retryOne(payload: { targetIndex: number; checkId: string }): Promise<void> {
+  await retryChecks({ target_index: payload.targetIndex, check_id: payload.checkId })
+}
+
+function retryDetail(): void {
+  if (!detailCheck.value) return
+  void retryChecks({ target_index: detailTargetIndex.value, check_id: detailCheck.value.id })
+}
+
+function retryFailed(): void {
+  void retryChecks({})
+}
+
+async function retryChecks(payload: { target_index?: number; check_id?: string }): Promise<void> {
+  if (!job.value) return
+  showDetail.value = false
+  running.value = true
+  try {
+    await detectApi.retry(job.value.id, payload)
+    startPolling(job.value.id)
+  } catch (e) {
+    running.value = false
+    app.showError(t('detect.retryFailedStart') + '：' + errorMessage(e))
+  }
 }
 
 async function openHistory(item: DetectHistoryItem): Promise<void> {

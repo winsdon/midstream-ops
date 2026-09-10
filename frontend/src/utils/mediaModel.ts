@@ -65,6 +65,18 @@ export function ticksToUSD(ticks: number): string {
   return (ticks / TICKS_PER_USD).toFixed(4)
 }
 
+/** 生成耗时展示：毫秒 / 秒 / 分秒。无效值返回 '-'。 */
+export function formatElapsed(ms?: number | null): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return '-'
+  if (ms < 1000) return Math.round(ms) + 'ms'
+  const sec = ms / 1000
+  if (sec < 10) return sec.toFixed(1) + 's'
+  if (sec < 60) return Math.round(sec) + 's'
+  const m = Math.floor(sec / 60)
+  const s = Math.round(sec % 60)
+  return `${m}m ${s}s`
+}
+
 /**
  * 图片计费档位：按最长边判定。
  *

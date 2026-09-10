@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"sub2api-account-monitor/internal/repository"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -108,6 +110,88 @@ func TestAttachGroupsSortsNames(t *testing.T) {
 	gs := item["groups"].([]string)
 	if len(gs) != 2 || gs[0] != "default" || gs[1] != "pro" {
 		t.Errorf("groups = %v, want sorted [default pro]", gs)
+	}
+}
+
+func TestTimelineBucketSplitsWindowInto60(t *testing.T) {
+	cases := []struct {
+		minutes int
+		want    time.Duration
+	}{
+		{5, 5 * time.Second},
+		{30, 30 * time.Second},
+		{60, time.Minute},
+		{360, 6 * time.Minute},
+		{1440, 24 * time.Minute},
+	}
+	for _, tt := range cases {
+		if got := timelineBucket(tt.minutes); got != tt.want {
+			t.Errorf("minutes=%d bucket=%v, want %v", tt.minutes, got, tt.want)
+		}
+	}
+}
+
+func TestTimelineBucketInvalidFallsBackToDefault(t *testing.T) {
+	want := time.Duration(defaultWindowMinutes) * time.Minute / timelineBarCount
+	if got := timelineBucket(0); got != want {
+		t.Errorf("minutes=0 bucket=%v, want %v", got, want)
+	}
+	if got := timelineBucket(-5); got != want {
+		t.Errorf("minutes=-5 bucket=%v, want %v", got, want)
+	}
+}
+
+func TestGroupTimelineEmptyIsEmptySliceNotNil(t *testing.T) {
+	item := gin.H{}
+	attachTimeline(item, nil)
+	pts, ok := item["timeline"].([]timelineDTO)
+	if !ok {
+		t.Fatalf("timeline type = %T, want []timelineDTO", item["timeline"])
+	}
+	if pts == nil {
+		t.Fatal("timeline is nil, want empty slice so JSON is []")
+	}
+	if len(pts) != 0 {
+		t.Errorf("timeline len = %d, want 0", len(pts))
+	}
+}
+
+func TestGroupTimelineByAccountKeepsTimeOrder(t *testing.T) {
+	t1 := time.Date(2026, 4, 8, 11, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Minute)
+	grouped := groupTimeline([]repository.PassiveTimelinePoint{
+		{AccountID: 1, Bucket: t1, Ok: 2, Err: 1},
+		{AccountID: 1, Bucket: t2, Ok: 4, Err: 0},
+		{AccountID: 2, Bucket: t1, Ok: 0, Err: 3},
+	})
+	if len(grouped[1]) != 2 {
+		t.Fatalf("account 1 points = %d, want 2", len(grouped[1]))
+	}
+	if grouped[1][0].T != t1.UTC().Format(time.RFC3339) || grouped[1][0].Ok != 2 || grouped[1][0].Err != 1 {
+		t.Errorf("first point = %+v", grouped[1][0])
+	}
+	if grouped[1][1].T != t2.UTC().Format(time.RFC3339) || grouped[1][1].Ok != 4 {
+		t.Errorf("second point = %+v", grouped[1][1])
+	}
+	if len(grouped[2]) != 1 || grouped[2][0].Err != 3 {
+		t.Errorf("account 2 = %+v", grouped[2])
+	}
+}
+
+func TestGroupTimelineCopiesLatencyFields(t *testing.T) {
+	p50 := 8000.0
+	grouped := groupTimeline([]repository.PassiveTimelinePoint{
+		{AccountID: 1, Bucket: time.Unix(0, 0).UTC(), Ok: 3, Err: 0, FirstTokP50: &p50, OutputTokens: 90, DurationMsSum: 3000, CacheReadTokens: 10, InputTokens: 40},
+	})
+	got := grouped[1][0]
+	if got.FirstTokenP50 == nil || *got.FirstTokenP50 != 8000 {
+		t.Errorf("first_token_p50 = %v, want 8000", got.FirstTokenP50)
+	}
+	if got.OutputTokens != 90 || got.DurationMsSum != 3000 {
+		t.Errorf("output/duration = %d/%v", got.OutputTokens, got.DurationMsSum)
+	}
+	if got.CacheReadTokens != 10 || got.InputTokens != 40 {
+		t.Errorf("cache/input = %d/%d", got.CacheReadTokens, got.InputTokens)
 	}
 }
 

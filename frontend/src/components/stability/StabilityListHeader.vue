@@ -2,6 +2,7 @@
   <div class="flex flex-wrap items-center justify-between gap-2">
     <div class="flex min-w-0 items-center gap-1.5">
       <button
+        v-if="showExpand"
         type="button"
         class="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 dark:text-dark-300 dark:hover:bg-dark-800/60"
         :title="allOpen ? t('stability.collapseAll') : t('stability.expandAll')"
@@ -50,11 +51,15 @@ import {
   type StabilitySortKey
 } from '@/utils/stabilitySections'
 
-defineProps<{
-  allOpen: boolean
-  hint?: string
-  sort: StabilitySort
-}>()
+withDefaults(
+  defineProps<{
+    allOpen: boolean
+    hint?: string
+    sort: StabilitySort
+    showExpand?: boolean
+  }>(),
+  { showExpand: true }
+)
 
 const emit = defineEmits<{
   (e: 'toggleAll'): void

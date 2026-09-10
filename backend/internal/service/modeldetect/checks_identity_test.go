@@ -43,3 +43,36 @@ func TestKiroDisownEvidenceIsInformationalOnly(t *testing.T) {
 		t.Fatalf("Kiro 归属否认不能增加 MaxPool/Kiro 分数：%v", verdict.Scores)
 	}
 }
+
+func TestKiroDisownIsPassedAsNonKiro(t *testing.T) {
+	res := &CheckResult{}
+	applyKiroOwnershipResult(res, false, false, false, true, false)
+	res.finish("test")
+	if res.Status != StatusPassed {
+		t.Fatalf("明确非 Kiro 时应通过，实际 %s", res.Status)
+	}
+	if len(res.Evidence) != 1 || res.Evidence[0].Class != ClassInfo || res.Evidence[0].Weight != 0 {
+		t.Fatalf("非 Kiro 证据不应参与分类加分：%+v", res.Evidence)
+	}
+}
+
+func TestKiroOwnershipFailsAsNonKiro(t *testing.T) {
+	res := &CheckResult{}
+	applyKiroOwnershipResult(res, true, false, false, false, false)
+	res.finish("test")
+	if res.Status != StatusFailed {
+		t.Fatalf("命中 Kiro 时应失败，实际 %s", res.Status)
+	}
+}
+
+func TestClaudeCodeSignalsDoNotIncreaseMaxPoolScore(t *testing.T) {
+	verdict := Classify([]*CheckResult{{
+		Evidence: []Evidence{
+			{Key: "cc_persona", Class: ClassInfo, Weight: 0},
+			{Key: "cc_prompt_leak", Class: ClassInfo, Weight: 0},
+		},
+	}})
+	if verdict.Scores[ClassMaxPool] != 0 {
+		t.Fatalf("Claude Code 证据不应增加 MaxPool 分数：%v", verdict.Scores)
+	}
+}

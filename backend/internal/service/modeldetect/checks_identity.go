@@ -43,11 +43,11 @@ func checkPersonaClaudeCode(ctx context.Context, c *Client, _ *runState) *CheckR
 	switch {
 	case claims && tools:
 		r.addEvidence("cc_persona_full", "自称 Claude Code 且列出 CC 专属工具",
-			"上游注入了 Claude Code 系统提示", ClassMaxPool, 4)
+			"上游注入了 Claude Code 系统提示", ClassInfo, 0)
 	case claims:
-		r.addEvidence("cc_persona", "自称 Claude Code", clip(text, 100), ClassMaxPool, 2)
+		r.addEvidence("cc_persona", "自称 Claude Code", clip(text, 100), ClassInfo, 0)
 	case tools:
-		r.addEvidence("cc_tool_vocab", "出现 Claude Code 专属工具词汇", clip(text, 100), ClassMaxPool, 2)
+		r.addEvidence("cc_tool_vocab", "出现 Claude Code 专属工具词汇", clip(text, 100), ClassInfo, 0)
 	case denies:
 		r.addEvidence("cc_denied", "明确否认 Claude Code", "更像裸 API 直连", ClassOfficial, 1)
 	}
@@ -98,6 +98,7 @@ func checkPersonaKiro(ctx context.Context, c *Client, _ *runState) *CheckResult 
 
 	all := who + "\n" + spec
 	saysYes, stamp, ownsSpec, disowns := kiroSignals(who, spec)
+	amazonQ := !disowns && amazonQRe.MatchString(who+"\n"+spec)
 
 	if saysYes {
 		r.addEvidence("kiro_yes", "被问是否 Kiro 时首答 Yes", clip(who, 100), ClassKiro, 4)
@@ -112,15 +113,25 @@ func checkPersonaKiro(ctx context.Context, c *Client, _ *runState) *CheckResult 
 	if disowns {
 		r.addEvidence("kiro_disowned", "能把 spec 三件套正确指给 Kiro 而非据为己有", "不是 Kiro 归属证据", ClassInfo, 0)
 	}
-	if !disowns && amazonQRe.MatchString(all) {
+	if amazonQ {
 		r.addEvidence("amazon_q", "提到 Amazon Q / AWS Toolkit", clip(all, 80), ClassKiro, 2)
 	}
 
 	r.diagnose("未表现出 Kiro 特征", !saysYes && !stamp && !ownsSpec, clip(spec, 120))
-	if saysYes || stamp || ownsSpec {
-		return r.finish("出现 Kiro 特征")
+	applyKiroOwnershipResult(r, saysYes, stamp, ownsSpec, disowns, amazonQ)
+	if saysYes || stamp || ownsSpec || amazonQ {
+		return r.finish("命中 Kiro 特征，不属于非 Kiro")
 	}
-	return r.finish("未观察到 Kiro 特征")
+	return r.finish("通过非 Kiro 归属检查")
+}
+
+func applyKiroOwnershipResult(r *CheckResult, saysYes, stamp, ownsSpec, disowns, amazonQ bool) {
+	if saysYes || stamp || ownsSpec || amazonQ {
+		r.assert("未命中 Kiro 归属特征", false, "观察到 Kiro 自认或 Kiro 原生流程")
+		return
+	}
+	r.assert("未命中 Kiro 归属特征", true, "未观察到 Kiro 自认、钢印或原生流程")
+	r.addEvidence("kiro_disowned", "未观察到 Kiro 归属特征", "用于排除 Kiro 逆向，不参与分类加分", ClassInfo, 0)
 }
 
 // kiroSignals 将“介绍 Kiro”与“自认 Kiro”分开：回答者正确解释 Kiro 的归属时，
@@ -155,7 +166,7 @@ func checkEnvLeak(ctx context.Context, c *Client, _ *runState) *CheckResult {
 	switch {
 	case len(paths) > 0:
 		r.addEvidence("workspace_leak", "泄露本机工作区路径",
-			clip(strings.Join(paths, " | "), 120), ClassMaxPool, 2)
+			clip(strings.Join(paths, " | "), 120), ClassInfo, 0)
 		return r.finish("读到工作区路径：" + clip(paths[0], 80))
 	case noWorkspace:
 		r.addEvidence("no_workspace", "明确无工作区", "符合裸 API / 包装渠道", ClassOfficial, 1)
@@ -190,7 +201,7 @@ func checkSystemDump(ctx context.Context, c *Client, st *runState) *CheckResult 
 		return r.finish("系统提示泄露了 " + hit)
 	}
 	if claudeCodeClaimRe.MatchString(text) || codeToolVocabRe.MatchString(text) {
-		r.addEvidence("cc_prompt_leak", "系统提示是 Claude Code 模板", clip(text, 120), ClassMaxPool, 3)
+		r.addEvidence("cc_prompt_leak", "系统提示是 Claude Code 模板", clip(text, 120), ClassInfo, 0)
 	}
 	if kiroStampRe.MatchString(text) || kiroSpecRe.MatchString(text) {
 		r.addEvidence("kiro_prompt_leak", "系统提示含 Kiro 特征", clip(text, 120), ClassKiro, 3)

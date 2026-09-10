@@ -36,6 +36,7 @@ func TestDetectRoutesRequireAuth(t *testing.T) {
 		{"发起检测", http.MethodPost, "/api/v1/detect/run"},
 		{"作业快照", http.MethodGet, "/api/v1/detect/jobs/abc"},
 		{"取消作业", http.MethodPost, "/api/v1/detect/jobs/abc/cancel"},
+		{"重试失败项", http.MethodPost, "/api/v1/detect/jobs/abc/retry"},
 		{"历史列表", http.MethodGet, "/api/v1/detect/history"},
 		{"历史详情", http.MethodGet, "/api/v1/detect/history/1"},
 	}

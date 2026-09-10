@@ -119,15 +119,19 @@ func checkPing(ctx context.Context, c *Client, st *runState) *CheckResult {
 		st.pingInput, st.pingCacheWrite, cacheReadTokens(usage)))
 }
 
-// analyzeMessageID 消息 id 形态。网关可以改写它，所以单独一条不定罪，
-// 但 msg_bdrk_ / req_vrtx_ 这类平台专属前缀几乎没人会主动伪造。
+// analyzeMessageID 消息 id 形态。网关可以改写它，所以单独一条不定罪。
+//
+// msg_bdrk_ 只值 2 分（够不到分类阈值）：贴一个前缀字符串的成本太低，实测有渠道
+// 顶着它却在模型回显、签名编码、错误报文三处全是第一方形态。真 Bedrock 由
+// auditBedrockCorroboration 凭独立旁证补足 3 分。req_vrtx_ 保持 5 分——
+// 它没出现过被冒用的情况。
 func analyzeMessageID(r *CheckResult, id string) {
 	switch {
 	case id == "":
 		r.diagnose("响应含消息 id", false, "缺失")
 		return
 	case strings.HasPrefix(id, "msg_bdrk_"):
-		r.addEvidence("msg_id_bedrock", "消息 id 为 msg_bdrk_ 前缀", id, ClassBedrock, 5)
+		r.addEvidence("msg_id_bedrock", "消息 id 为 msg_bdrk_ 前缀", id, ClassBedrock, 2)
 	case strings.Contains(id, "req_vrtx_"):
 		r.addEvidence("msg_id_vertex", "消息 id 含 req_vrtx_", id, ClassVertex, 5)
 	case strings.HasPrefix(id, "msg_") && strings.Contains(id[4:], "-"):

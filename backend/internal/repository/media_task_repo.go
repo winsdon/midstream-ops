@@ -257,9 +257,11 @@ func (r *MediaTaskRepo) MarkFailed(ctx context.Context, id int64, msg string) er
 }
 
 // SetStorageStatus 更新产物转存状态。
+//
+// 【不碰 updated_at】生成耗时用 created_at → updated_at。视频转存是异步的，
+// 可能持续几十秒；若这里刷新 updated_at，列表上的「耗时」就会把转存算进去。
 func (r *MediaTaskRepo) SetStorageStatus(ctx context.Context, id int64, status string) error {
-	return r.exec(ctx, `UPDATE media_tasks SET storage_status = ?,
-		updated_at = ? WHERE id = ?`, status, nowUTC(), id)
+	return r.exec(ctx, `UPDATE media_tasks SET storage_status = ? WHERE id = ?`, status, id)
 }
 
 // ListPendingStorage 列出转存未完成的已成功任务，供进程启动时补投。

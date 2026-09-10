@@ -101,25 +101,42 @@
         </details>
       </section>
     </div>
+    <template v-if="canRetry" #footer>
+      <button type="button" class="btn btn-secondary btn-md" @click="emit('close')">
+        {{ t('common.close') }}
+      </button>
+      <button type="button" class="btn btn-primary btn-md" :title="t('detect.retryHint')" @click="emit('retry')">
+        <Icon name="refresh" size="sm" />
+        {{ t('detect.retry') }}
+      </button>
+    </template>
   </BaseDialog>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Badge from '@/components/common/Badge.vue'
-import { labelVariant, statusVariant } from '@/utils/detectModel'
+import Icon from '@/components/icons/Icon.vue'
+import { isRequestFailed, labelVariant, statusVariant } from '@/utils/detectModel'
 import type { DetectCheckResult } from '@/types/detect'
 
 const { t } = useI18n()
 
-defineProps<{
+const props = defineProps<{
   show: boolean
   check: DetectCheckResult | null
   targetName: string
+  allowRetry?: boolean
 }>()
 
-const emit = defineEmits<{ (e: 'close'): void }>()
+const emit = defineEmits<{
+  (e: 'close'): void
+  (e: 'retry'): void
+}>()
+
+const canRetry = computed(() => !!props.allowRetry && isRequestFailed(props.check ?? undefined))
 
 function pretty(value: unknown): string {
   if (typeof value === 'string') return value

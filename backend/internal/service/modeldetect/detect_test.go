@@ -26,6 +26,21 @@ type fakeUpstream struct {
 	cacheWrite      int
 	cacheReadOffset int
 	callCount       int
+
+	// forgeCacheRead 在极小输入上伪造缓存命中（低于最小可缓存长度，物理上不可能）。
+	forgeCacheRead bool
+	// forgeZeroInput 把输入用量整体记进 cache_read，input_tokens 置 0（字段错位）。
+	forgeZeroInput bool
+	// forgeEmptyThinking 每次都返回带签名但正文为空的 thinking 块。
+	forgeEmptyThinking bool
+	// emptyThinkingOnce 只让第一个 thinking 块为空，之后正常返回正文
+	// （adaptive 的合法形态，不得误杀）。
+	emptyThinkingOnce bool
+	thinkingCount     int
+	// useRedactedThinking 返回合法的 redacted_thinking 保护形态。
+	useRedactedThinking bool
+	// bedrockPrefixOnly 只贴 msg_bdrk_ 前缀，不给任何 Bedrock 旁证。
+	bedrockPrefixOnly bool
 }
 
 func newFakeServer(t *testing.T, up *fakeUpstream) *httptest.Server {
@@ -114,6 +129,10 @@ func (up *fakeUpstream) reply(w http.ResponseWriter, body map[string]any) {
 		id = "msg_" + "6f1c2b7e-1111-4b0e-9e2a-abcdef123456"
 		toolID = "call_abc123"
 	}
+	// 只贴前缀不给旁证：id 顶着 msg_bdrk_，内核仍是第一方流水号。
+	if up.bedrockPrefixOnly {
+		id = "msg_bdrk_01ABCDEFGHIJKLMNOPQRSTUV"
+	}
 
 	usage := map[string]any{"input_tokens": 13, "output_tokens": 5}
 	if up.injectCache {
@@ -126,6 +145,16 @@ func (up *fakeUpstream) reply(w http.ResponseWriter, body map[string]any) {
 			usage["cache_read_input_tokens"] = 2400 + up.cacheReadOffset
 		}
 		up.mu.Unlock()
+	}
+	// 极小输入上伪造缓存命中：总输入远低于 Opus 5 的 512 门槛。
+	if up.forgeCacheRead {
+		usage["input_tokens"] = 13
+		usage["cache_read_input_tokens"] = 17
+	}
+	// 字段错位：输入被整体记成缓存读取。
+	if up.forgeZeroInput {
+		usage["input_tokens"] = 0
+		usage["cache_read_input_tokens"] = 17
 	}
 
 	// 工具调用
@@ -151,11 +180,33 @@ func (up *fakeUpstream) reply(w http.ResponseWriter, body map[string]any) {
 
 	// thinking
 	if mapOf(body["thinking"]) != nil && !hasThinkingBlock(body) {
+		think := map[string]any{
+			"type": "thinking", "thinking": "让我算一下……",
+			"signature": "SIGVALID_" + strings.Repeat("x", 40),
+		}
+		switch {
+		case up.forgeEmptyThinking:
+			// 有签名、无正文：签名是贴上去的
+			think = map[string]any{"type": "thinking", "thinking": "",
+				"signature": "SIGVALID_" + strings.Repeat("x", 40)}
+		case up.emptyThinkingOnce:
+			up.mu.Lock()
+			up.thinkingCount++
+			first := up.thinkingCount == 1
+			up.mu.Unlock()
+			if first {
+				think = map[string]any{"type": "thinking", "thinking": "",
+					"signature": "SIGVALID_" + strings.Repeat("x", 40)}
+			}
+		case up.useRedactedThinking:
+			// 官方的加密保护形态，本就没有明文正文，不得误杀
+			think = map[string]any{"type": "redacted_thinking", "data": strings.Repeat("z", 40)}
+		}
 		writeJSON(w, 200, map[string]any{
 			"id": id, "type": "message", "role": "assistant", "model": str(body["model"]),
 			"stop_reason": "end_turn", "usage": usage,
 			"content": []any{
-				map[string]any{"type": "thinking", "thinking": "让我算一下……", "signature": "SIGVALID_" + strings.Repeat("x", 40)},
+				think,
 				map[string]any{"type": "text", "text": "答案是 262。"},
 			},
 		})
@@ -426,6 +477,111 @@ func TestResolveCheckIDsAddsDependencies(t *testing.T) {
 	}
 }
 
+func TestRequestFailed(t *testing.T) {
+	if RequestFailed(&CheckResult{Status: StatusFailed, Exchanges: []*Exchange{{Status: 400}}}) {
+		t.Fatal("协议 400 不应算请求失败")
+	}
+	if RequestFailed(&CheckResult{Status: StatusPassed, Exchanges: []*Exchange{{Status: 200}}}) {
+		t.Fatal("成功项不应算请求失败")
+	}
+	if !RequestFailed(&CheckResult{Status: StatusInconclusive, Exchanges: []*Exchange{{Status: 429}}}) {
+		t.Fatal("429 应可重试")
+	}
+	if !RequestFailed(&CheckResult{Status: StatusInconclusive, Exchanges: []*Exchange{{Status: 502}}}) {
+		t.Fatal("5xx 应可重试")
+	}
+	if !RequestFailed(&CheckResult{Status: StatusInconclusive, Exchanges: []*Exchange{{NetworkError: "timeout"}}}) {
+		t.Fatal("网络错误应可重试")
+	}
+	if RequestFailed(&CheckResult{Status: StatusRunning, Exchanges: []*Exchange{{NetworkError: "x"}}}) {
+		t.Fatal("执行中的项还没结束，不能标成可重试")
+	}
+}
+
+func TestExpandRetryIDsFollowsSkippedDependents(t *testing.T) {
+	existing := []*CheckResult{
+		{ID: "ping", Status: StatusInconclusive, Exchanges: []*Exchange{{Status: 502}}},
+		{ID: "ping-again", Status: StatusInconclusive},
+	}
+	got := ExpandRetryIDs([]string{"ping"}, existing, []string{"ping", "ping-again", "stream"})
+	if indexOf(got, "ping") < 0 || indexOf(got, "ping-again") < 0 {
+		t.Fatalf("重试 ping 应带上因前置失败而没发出请求的 ping-again，实际 %v", got)
+	}
+	if indexOf(got, "stream") >= 0 {
+		t.Fatalf("未跑过的 stream 不应被带上: %v", got)
+	}
+}
+
+func TestRetryChecksReplacesOnlyRequested(t *testing.T) {
+	fails := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fails {
+			writeJSON(w, 502, map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": "boom"}})
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"id": "msg_01TESTTESTTESTTESTTEST", "type": "message", "role": "assistant",
+			"model": "claude-opus-5", "stop_reason": "end_turn",
+			"usage":   map[string]any{"input_tokens": 12, "output_tokens": 1},
+			"content": []any{map[string]any{"type": "text", "text": "PONG"}},
+		})
+	}))
+	defer srv.Close()
+	target, _ := Target{Name: "t", BaseURL: srv.URL, APIKey: "sk-test-key-1234567890", Model: "claude-opus-5"}.Normalize()
+	first := Run(context.Background(), target, []string{"ping"}, NewGate(1), nil)
+	if !RequestFailed(first.Checks[0]) {
+		t.Fatalf("首次应是请求失败，实际 %+v", first.Checks[0])
+	}
+	fails = false
+	second := RetryChecks(context.Background(), target, []string{"ping"}, first, NewGate(1), nil)
+	ping := findCheck(second.Checks, "ping")
+	if ping == nil {
+		t.Fatalf("重试后应仍有 ping 项，实际 %v", checkIDs(second.Checks))
+	}
+	if RequestFailed(ping) || ping.Status != StatusPassed {
+		t.Fatalf("重试成功后应通过，实际 status=%s", ping.Status)
+	}
+	// 重试不得把同一项叠成两份（跨项审计除外，它每次重算并替换）。
+	if got := countCheck(second.Checks, "ping"); got != 1 {
+		t.Fatalf("ping 应只有 1 份，实际 %d", got)
+	}
+	if got := countCheck(second.Checks, AuditCheckID); got > 1 {
+		t.Fatalf("审计项应只有 1 份，实际 %d", got)
+	}
+}
+
+// findCheck 按 id 取结果，缺失返回 nil。
+func findCheck(checks []*CheckResult, id string) *CheckResult {
+	for _, c := range checks {
+		if c != nil && c.ID == id {
+			return c
+		}
+	}
+	return nil
+}
+
+// countCheck 统计某个 id 出现几次。
+func countCheck(checks []*CheckResult, id string) int {
+	n := 0
+	for _, c := range checks {
+		if c != nil && c.ID == id {
+			n++
+		}
+	}
+	return n
+}
+
+// checkIDs 取所有结果的 id，用于失败信息。
+func checkIDs(checks []*CheckResult) []string {
+	out := make([]string, 0, len(checks))
+	for _, c := range checks {
+		if c != nil {
+			out = append(out, c.ID)
+		}
+	}
+	return out
+}
+
 func indexOf(list []string, v string) int {
 	for i, s := range list {
 		if s == v {
@@ -533,7 +689,7 @@ func TestRunEmitsRunningThenDone(t *testing.T) {
 		events = append(events, res.ID+":"+res.Status)
 		mu.Unlock()
 	})
-	if len(run.Checks) != 1 || run.Checks[0].Status == StatusRunning {
+	if ping := findCheck(run.Checks, "ping"); ping == nil || ping.Status == StatusRunning {
 		t.Fatalf("最终结果不应停留在 running: %+v", run.Checks)
 	}
 	mu.Lock()
@@ -687,5 +843,209 @@ func TestPresetsReferKnownChecks(t *testing.T) {
 	}
 	if !seen["cc_max"] || !seen["aws_bedrock"] {
 		t.Fatalf("缺少约定预设 id，实际 %v", seen)
+	}
+}
+
+// ---- 跨项审计 ----
+
+// auditOf 取审计结果，缺失即失败。
+func auditOf(t *testing.T, run *TargetRun) *CheckResult {
+	t.Helper()
+	res := findCheck(run.Checks, AuditCheckID)
+	if res == nil {
+		t.Fatalf("应产出跨项审计结果，实际 %v", checkIDs(run.Checks))
+	}
+	return res
+}
+
+// hasEvidenceKey 判断某个结果里是否出现指定证据。
+func hasEvidenceKey(res *CheckResult, key string) bool {
+	for _, ev := range res.Evidence {
+		if ev.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAuditRejectsImpossibleCacheRead 总输入低于最小可缓存长度却报缓存命中，
+// 物理上不可能，必须封顶真实性评分。这是客户样本里最硬的一条伤。
+func TestAuditRejectsImpossibleCacheRead(t *testing.T) {
+	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true,
+		forgeCacheRead: true}
+	run := runAgainst(t, up, []string{"ping"})
+
+	res := auditOf(t, run)
+	if !hasEvidenceKey(res, "usage_impossible_cache") {
+		t.Fatalf("应给出 usage_impossible_cache 证据，实际 %+v", res.Evidence)
+	}
+	if res.AuthCapReason == "" {
+		t.Fatal("不可能的缓存命中应封顶真实性评分")
+	}
+	if got := run.Verdict.Authenticity.Grade; got != GradeFake {
+		t.Fatalf("真实性应判 fake，实际 %s（score=%d）", got, run.Verdict.Authenticity.Score)
+	}
+}
+
+// TestAuditRejectsZeroInputWithCacheRead input_tokens=0 却有输出与缓存读取，
+// 说明输入被整体记进了 cache_read（字段错位）。
+func TestAuditRejectsZeroInputWithCacheRead(t *testing.T) {
+	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true,
+		forgeZeroInput: true}
+	run := runAgainst(t, up, []string{"ping"})
+
+	res := auditOf(t, run)
+	if !hasEvidenceKey(res, "usage_zero_input") {
+		t.Fatalf("应给出 usage_zero_input 证据，实际 %+v", res.Evidence)
+	}
+	if run.Verdict.Authenticity.Grade != GradeFake {
+		t.Fatalf("真实性应判 fake，实际 %s", run.Verdict.Authenticity.Grade)
+	}
+}
+
+// TestAuditRejectsEmptySignedThinking 整轮检测里带签名的 thinking 块全部无正文，
+// 说明这条渠道根本不会思考，签名是凭空贴上去的。
+func TestAuditRejectsEmptySignedThinking(t *testing.T) {
+	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true,
+		forgeEmptyThinking: true}
+	run := runAgainst(t, up, []string{"ping", "thinking-sig"})
+
+	res := auditOf(t, run)
+	if !hasEvidenceKey(res, "thinking_empty_signed") {
+		t.Fatalf("应给出 thinking_empty_signed 证据，实际 %+v", res.Evidence)
+	}
+	if run.Verdict.Authenticity.Grade != GradeFake {
+		t.Fatalf("真实性应判 fake，实际 %s", run.Verdict.Authenticity.Grade)
+	}
+}
+
+// TestAuditAllowsSomeEmptyThinking adaptive 模式下「已签名但无摘要正文」是合法形态。
+// 只要整轮里出现过思考正文，就不得因为某几次为空而定罪。
+func TestAuditAllowsSomeEmptyThinking(t *testing.T) {
+	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true,
+		emptyThinkingOnce: true}
+	run := runAgainst(t, up, []string{"ping", "thinking-sig", "thinking-gradient"})
+
+	res := auditOf(t, run)
+	if hasEvidenceKey(res, "thinking_empty_signed") {
+		t.Fatalf("出现过思考正文就不应定罪，实际 %+v", res.Evidence)
+	}
+	if run.Verdict.Authenticity.Capped {
+		t.Fatalf("不应封顶，原因 %v", run.Verdict.Authenticity.CapReason)
+	}
+}
+
+// TestAuditAllowsRedactedThinking redacted_thinking 是官方的加密保护形态，
+// 本就没有明文正文，不得误杀。
+func TestAuditAllowsRedactedThinking(t *testing.T) {
+	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true,
+		useRedactedThinking: true}
+	run := runAgainst(t, up, []string{"ping", "thinking-sig"})
+
+	res := auditOf(t, run)
+	if hasEvidenceKey(res, "thinking_empty_signed") {
+		t.Fatal("redacted_thinking 不应被判成空签名块")
+	}
+	if run.Verdict.Authenticity.Capped {
+		t.Fatalf("合法保护形态不应封顶，原因 %v", run.Verdict.Authenticity.CapReason)
+	}
+}
+
+// TestAuditPassesCleanOfficial 干净的官方渠道不得触发任何审计告警（防误杀）。
+func TestAuditPassesCleanOfficial(t *testing.T) {
+	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true}
+	run := runAgainst(t, up, []string{"ping", "thinking-sig", "sig-tamper"})
+
+	res := auditOf(t, run)
+	if res.AuthCapReason != "" {
+		t.Fatalf("干净渠道不应被封顶：%s", res.AuthCapReason)
+	}
+	for _, key := range []string{"usage_impossible_cache", "usage_zero_input", "thinking_empty_signed"} {
+		if hasEvidenceKey(res, key) {
+			t.Fatalf("干净渠道不应出现 %s", key)
+		}
+	}
+}
+
+// TestBedrockPrefixAloneIsNotEnough 只贴 msg_bdrk_ 前缀、无任何旁证的渠道，
+// 不得被判成 Bedrock——贴一个前缀字符串的成本太低。
+func TestBedrockPrefixAloneIsNotEnough(t *testing.T) {
+	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true,
+		bedrockPrefixOnly: true}
+	run := runAgainst(t, up, []string{"ping", "thinking-sig", "sig-tamper"})
+
+	if run.Verdict.Label == LabelBedrock {
+		t.Fatalf("仅凭前缀不应判 Bedrock，scores=%v", run.Verdict.Scores)
+	}
+	res := auditOf(t, run)
+	if !hasEvidenceKey(res, "bedrock_prefix_only") {
+		t.Fatalf("应指出前缀缺旁证，实际 %+v", res.Evidence)
+	}
+}
+
+// TestBedrockWithCorroborationStillClassifies 回归保护：带 x-amzn-* 与 tooluse_ 的
+// 真 Bedrock 渠道必须仍判 Bedrock，降权不能误杀真渠道。
+func TestBedrockWithCorroborationStillClassifies(t *testing.T) {
+	up := &fakeUpstream{behaviour: "bedrock", strictParams: true, signatureChecked: true}
+	run := runAgainst(t, up, []string{"ping", "tool-use", "thinking-sig", "sig-tamper"})
+
+	if run.Verdict.Label != LabelBedrock {
+		t.Fatalf("有旁证的 Bedrock 应判 aws_bedrock，实际 %s scores=%v",
+			run.Verdict.Label, run.Verdict.Scores)
+	}
+	res := auditOf(t, run)
+	if !hasEvidenceKey(res, "bedrock_corroborated") {
+		t.Fatalf("应给出 bedrock_corroborated 证据，实际 %+v", res.Evidence)
+	}
+	if run.Verdict.Confidence != ConfidenceHigh {
+		t.Fatalf("有旁证时置信度应为 high，实际 %s", run.Verdict.Confidence)
+	}
+}
+
+// TestParseSignatureShape 用两族真实样本验证签名形态归类。
+// 样本取自实测：Bedrock 内嵌公开模型 id + UUID，第一方内嵌内部代号。
+func TestParseSignatureShape(t *testing.T) {
+	const bedrockSig = "CAISuAIKpgEIERgCKkDwdNvB3RB+OxiKEVcsXwLxiSdHsXzQYtXXVyxj+5Aad9T+sxY0WZNF02RnQ0dI/5wXvLg3BCvqxHbkT3Rvx1dAMg1jbGF1ZGUtb3B1cy01OAFCCHRoaW5raW5nWiRkMWRlMTVlNy1jZWViLTRiYWYtOWI3MS1kOGE0MjNiY2IwZGVyEFmXpmOOcoaDAXn4SwAtQuSIAQGoAZil8dQGsAECEgxo1pRa0g58s4HHnw4aDG/l4Lo+E0n4vc+41iIw8aR5OZqyd3cPimrH9rqwVDmtjXLVZVOK7xmeOXb+vtHFfDWJnHoYfDDBDt5PYCJFKj/Lm/iV9VaFArzDVewwZ2Krummb6Ue5zzswWNUAd3JFATZRiDCPQ8FpmXlZA7uUk2zGzvqqljT/E8ysswbGWaAYAQ=="
+	const firstPartySig = "EsIDCmIIDxABGAIqQDVYDjprY+zhcKXcGeGZt0T0bOtXnZ2BF+aUwREzpA8DLPqKgVDL2gJmd0v0UugRMd9cJq8VldT9YVUhAJnwNeEyDGNsYXVkZS1ob25leTgAQgh0aGlua2luZxIMISnSIxBxeBzdeQ2GGgxGorabR0lT738SvwciMMMdiNS3vDBwx+L1lme4DQRdlo0nrNlE1ODQXgGPfXGI7kMT+mDYRci6CGndngnZXCqNAkghB1kJU5HBaiSGnKP8Vh+1O3pWnhE3I1cj3NE7uCJRkg3C+teTs//u8d2MFPHn2bjQHtrbAfSAC4bEsh1BjIvmisYyhdkh4QdtjTHcKDjhaFOvtWuG2bvNUGFBWwuqFsf9Yq9NBhdehchdFAVX5OBvZCBd4eS2Qm8d1+2Zx6w4T5nrHUczJpAJpVGLjpjPRYFeYY5nlumI2ScLyUH3EpZWVD8yLwRZVgpRXp8/Wajuri8Hw6pYJ+f+AJt1WfMp16PKR/Wskb1e1RhMRq9Ld7siIwun1T8v3jZwZxvykn2RTM+rE7QhMGuuaN5TFGL9axd1Z16mPrVh9TQSo9d6jw+ADoyKmgIbDo+yTi2rGAE="
+
+	cases := []struct {
+		name       string
+		sig        string
+		wantFamily string
+		wantLabel  string
+	}{
+		{"Bedrock 形态", bedrockSig, SigFamilyBedrock, "claude-opus-5"},
+		{"第一方形态", firstPartySig, SigFamilyFirstParty, "claude-honey"},
+		{"Vertex 前缀", "claude#abcdef", SigFamilyVertex, ""},
+		{"空签名", "", SigFamilyUnknown, ""},
+		{"非 base64", "!!!not-base64!!!", SigFamilyUnknown, ""},
+		{"随机字节", "3q2+7w==", SigFamilyUnknown, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseSignatureShape(tc.sig)
+			if got.Family != tc.wantFamily {
+				t.Fatalf("family 应为 %s，实际 %s（key=%q ref=%q）",
+					tc.wantFamily, got.Family, got.KeyLabel, got.RequestRef)
+			}
+			if tc.wantLabel != "" && got.KeyLabel != tc.wantLabel {
+				t.Fatalf("KeyLabel 应为 %q，实际 %q", tc.wantLabel, got.KeyLabel)
+			}
+		})
+	}
+}
+
+// TestAuditIsNotSelectable 审计项不发请求，不得出现在勾选目录与成本估算里。
+func TestAuditIsNotSelectable(t *testing.T) {
+	if _, ok := checkByID(AuditCheckID); ok {
+		t.Fatal("审计项不应出现在 Checks 目录里")
+	}
+	// 混在正常勾选里时应被静默丢弃（单独传它会退回默认集，那是既有的兜底行为）。
+	got := ResolveCheckIDs([]string{"ping", AuditCheckID})
+	if indexOf(got, AuditCheckID) >= 0 {
+		t.Fatalf("审计项不应被解析成可执行项，实际 %v", got)
+	}
+	if got := TotalRequests([]string{AuditCheckID}); got != 0 {
+		t.Fatalf("审计项不应计入请求成本，实际 %d", got)
 	}
 }

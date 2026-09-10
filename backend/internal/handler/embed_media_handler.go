@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"sub2api-account-monitor/internal/pkg/response"
 	"sub2api-account-monitor/internal/repository"
@@ -71,6 +72,8 @@ type mediaTaskDTO struct {
 	EstCostUSD   string `json:"est_cost_usd"`
 	ErrorMessage string `json:"error_message"`
 	CreatedAt    string `json:"created_at"`
+	// DurationMS 生成耗时。终态取 updated_at - created_at；进行中取 now - created_at。
+	DurationMS int64 `json:"duration_ms"`
 	// HasContent 指示产物是否可通过 /tasks/:id/content 取回。
 	//
 	// 只有视频通过代理端点取回，且只在转存完成前需要——转存成功后前端直接用
@@ -100,12 +103,69 @@ func toMediaTaskDTO(t repository.MediaTask, artifacts []repository.MediaArtifact
 		CostUSD:       service.FormatTicksUSD(t.CostTicks),
 		EstCostUSD:    service.FormatTicksUSD(t.EstCostTicks),
 		ErrorMessage:  t.ErrorMessage,
-		CreatedAt:     t.CreatedAt,
+		CreatedAt:     formatMediaTime(t.CreatedAt),
+		DurationMS:    taskDurationMS(t),
 		HasContent:    t.Status == repository.MediaStatusSucceeded && t.UpstreamRequestID != "",
 		ResultURL:     t.ResultURL,
 		Artifacts:     items,
 		StorageStatus: t.StorageStatus,
 	}
+}
+
+var mediaTimeLayouts = []string{
+	time.RFC3339Nano,
+	time.RFC3339,
+	"2006-01-02 15:04:05.999999999Z07:00",
+	"2006-01-02 15:04:05.999999Z07:00",
+	"2006-01-02 15:04:05Z07:00",
+	"2006-01-02 15:04:05.999999999Z07",
+	"2006-01-02 15:04:05.999999Z07",
+	"2006-01-02 15:04:05Z07",
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02 15:04:05",
+}
+
+func parseMediaTime(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range mediaTimeLayouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func formatMediaTime(raw string) string {
+	t, ok := parseMediaTime(raw)
+	if !ok {
+		return raw
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// taskDurationMS 计算生成耗时。
+//
+// 转存会改 storage_status 但不改 updated_at（见 MediaTaskRepo.SetStorageStatus），
+// 所以终态的 updated_at 就是生成完成时刻，而不是转存完成时刻。
+func taskDurationMS(t repository.MediaTask) int64 {
+	start, ok := parseMediaTime(t.CreatedAt)
+	if !ok {
+		return 0
+	}
+	end := time.Now()
+	if t.Status != repository.MediaStatusPending {
+		if updated, ok := parseMediaTime(t.UpdatedAt); ok {
+			end = updated
+		}
+	}
+	d := end.Sub(start).Milliseconds()
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 // Keys GET /api/v1/embed/media/keys（需嵌入会话）

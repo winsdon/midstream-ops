@@ -454,6 +454,7 @@ func (c *NewAPIClient) GetTokenUsage(
 }
 
 // GetTokensUsage 并发拉取多个 token 的区间用量，并发上限固定为 4。
+// 部分失败时同时返回成功项与错误，调用方必须显式处理错误，不能把缺失项当作零用量。
 func (c *NewAPIClient) GetTokensUsage(
 	ctx context.Context,
 	baseURL string,
@@ -505,7 +506,7 @@ func (c *NewAPIClient) GetTokensUsage(
 	}
 	wg.Wait()
 	if firstErr != nil {
-		return nil, firstErr
+		return out, firstErr
 	}
 	return out, nil
 }

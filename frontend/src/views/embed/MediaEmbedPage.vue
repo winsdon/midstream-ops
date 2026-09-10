@@ -401,6 +401,15 @@
               >
                 {{ task.model }}
               </span>
+              <span
+                class="shrink-0 font-mono text-[11px] tabular-nums text-gray-400 dark:text-dark-500"
+                :title="`${t('media.tasks.createdAt')} ${fmtDateTime(task.created_at)} · ${t('media.tasks.elapsed')} ${formatElapsed(task.duration_ms)}`"
+              >
+                {{ fmtDateTime(task.created_at) }}
+                <template v-if="(task.duration_ms ?? 0) > 0">
+                  · {{ formatElapsed(task.duration_ms) }}
+                </template>
+              </span>
               <span class="ml-auto shrink-0 font-mono text-xs font-medium tabular-nums text-gray-600 dark:text-dark-300">
                 ${{ task.cost_usd !== '0.0000' ? task.cost_usd : task.est_cost_usd }}
               </span>
@@ -575,6 +584,7 @@ import {
   splitRefImageInput,
   resetMediaFormForKind,
   ticksToUSD,
+  formatElapsed,
   validateMediaForm,
   IMAGE_MAX_N,
   IMAGE_SIZE_PRESETS,
@@ -591,6 +601,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import ImageLightbox from '@/components/common/ImageLightbox.vue'
 import Select from '@/components/common/Select.vue'
 import { useAppStore } from '@/stores/app'
+import { fmtDateTime } from '@/utils/format'
 
 const route = useRoute()
 const { t, locale } = useI18n()

@@ -18,6 +18,7 @@ import {
   uniquePublicImageURLs,
   appendRefImages,
   splitRefImageInput,
+  formatElapsed,
   newClientRequestID,
   IMAGE_MAX_N,
   PROMPT_MAX_LEN
@@ -449,6 +450,17 @@ describe('resetMediaFormForKind', () => {
       kind: 't2v',
       prompt: '保留这段提示词'
     })
+  })
+})
+
+describe('formatElapsed', () => {
+  it('formats generation duration for the history list', () => {
+    expect(formatElapsed(0)).toBe('0ms')
+    expect(formatElapsed(800)).toBe('800ms')
+    expect(formatElapsed(8200)).toBe('8.2s')
+    expect(formatElapsed(12300)).toBe('12s')
+    expect(formatElapsed(65000)).toBe('1m 5s')
+    expect(formatElapsed(-1)).toBe('-')
   })
 })
 

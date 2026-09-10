@@ -12,6 +12,7 @@ import {
   sameCheckSet,
   splitReasons,
   statusIcon,
+  isRequestFailed,
   targetKey,
   withDependencies
 } from '@/utils/detectModel'
@@ -160,6 +161,18 @@ describe('配色映射', () => {
       inconclusive: 0
     })
     expect(statusIcon('running')).toBe('…')
+  })
+})
+
+describe('isRequestFailed', () => {
+  it('网络错误 / 429 / 5xx 可重试，协议 400 不可重试', () => {
+    expect(isRequestFailed({ ...check('ping', 'inconclusive'), exchanges: [{ network_error: 'timeout' } as never] })).toBe(
+      true
+    )
+    expect(isRequestFailed({ ...check('ping', 'inconclusive'), exchanges: [{ status: 429 } as never] })).toBe(true)
+    expect(isRequestFailed({ ...check('ping', 'inconclusive'), exchanges: [{ status: 502 } as never] })).toBe(true)
+    expect(isRequestFailed({ ...check('param-strict', 'failed'), exchanges: [{ status: 200 } as never] })).toBe(false)
+    expect(isRequestFailed(check('ping', 'running'))).toBe(false)
   })
 })
 
