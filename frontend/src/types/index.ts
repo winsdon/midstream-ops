@@ -398,6 +398,31 @@ export interface StatsGroupRow {
   accounts?: StatsAccountRow[] | null
 }
 
+export interface StatsUserGroupRow {
+  group_id: number
+  group_name: string
+  rate_multiplier: number
+  requests: number
+  revenue: number
+  cost: number
+  profit: number
+  cost_matched: boolean
+}
+
+export interface StatsUserRow {
+  user_id: number
+  user_name: string
+  revenue: number
+  cost: number
+  /** 本维度恒为 0：运营成本是站点级固定成本，不摊到用户 */
+  operating_cost: number
+  profit: number
+  requests: number
+  cost_complete: boolean
+  accounts_missing: number
+  groups?: StatsUserGroupRow[] | null
+}
+
 // ---- 自营站运营成本 ----
 
 /** 运营成本类别（与后端 service 枚举一致） */

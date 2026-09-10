@@ -198,6 +198,7 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 			if h.Stats != nil {
 				auth.GET("/stats/providers", h.Stats.ByProvider)
 				auth.GET("/stats/groups", h.Stats.ByGroup)
+				auth.GET("/stats/users", h.Stats.ByUser)
 			}
 
 			if h.Rate != nil {

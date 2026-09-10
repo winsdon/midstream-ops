@@ -15,6 +15,11 @@
             :class="dim === 'group' ? 'bg-white text-primary-700 shadow-sm dark:bg-dark-700 dark:text-primary-300' : 'text-gray-500'"
             @click="setDim('group')"
           >{{ t('stats.byGroup') }}</button>
+          <button
+            class="rounded-md px-3 py-1.5 text-sm font-medium transition-colors"
+            :class="dim === 'user' ? 'bg-white text-primary-700 shadow-sm dark:bg-dark-700 dark:text-primary-300' : 'text-gray-500'"
+            @click="setDim('user')"
+          >{{ t('stats.byUser') }}</button>
         </div>
         <!-- 快捷范围 -->
         <div class="flex rounded-lg bg-gray-100 p-0.5 dark:bg-dark-800">
@@ -68,24 +73,48 @@
     <!-- 成本来源与新鲜度 -->
     <CostSyncBar v-if="!privacyMode" :sync="costSync" :complete="costComplete" :accounts-missing="accountsMissing" />
     <!-- 分组成本是分摊值，口径须显式说明 -->
-    <p v-if="!isProvider && !privacyMode" class="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-500 dark:bg-dark-800/50 dark:text-dark-400">
-      ⓘ {{ t('cost.groupCostApportioned') }}
+    <p v-if="costHintKey && !privacyMode" class="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-500 dark:bg-dark-800/50 dark:text-dark-400">
+      ⓘ {{ t(costHintKey) }}
     </p>
 
-    <!-- 图表：分类数据用柱状图，收益/成本/利润三系列并排 -->
-    <div class="card p-5">
-      <div v-if="loading" class="flex h-[320px] items-center justify-center"><LoadingState /></div>
-      <div v-else-if="privacyMode" class="flex h-[320px] items-center justify-center text-sm text-gray-400">
-        {{ t('privacy.hidden') }}
+    <!-- 图表：分类构成用环形分布，收益 / 利润各一张 -->
+    <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div class="card p-5">
+        <h2 class="mb-4 text-sm font-semibold text-gray-700 dark:text-dark-300">{{ t('stats.revenueShare') }}</h2>
+        <div v-if="loading" class="flex h-[280px] items-center justify-center"><LoadingState /></div>
+        <div v-else-if="privacyMode" class="flex h-[280px] items-center justify-center text-sm text-gray-400">
+          {{ t('privacy.hidden') }}
+        </div>
+        <div v-else-if="!revenueDist.length" class="flex h-[280px] items-center justify-center">
+          <EmptyState icon="chartBar" />
+        </div>
+        <DoughnutChart
+          v-else
+          :labels="revenueDist.map((s) => s.label)"
+          :data="revenueDist.map((s) => s.value)"
+          :colors="sliceColors(revenueDist.map((s) => s.label), t('stats.chartOthers'))"
+          :height="280"
+          :value-formatter="fmtMoney"
+        />
       </div>
-      <BarChart
-        v-else
-        :labels="chartLabels"
-        :datasets="chartDatasets"
-        :horizontal="false"
-        :height="320"
-        :value-formatter="fmtMoney"
-      />
+      <div class="card p-5">
+        <h2 class="mb-4 text-sm font-semibold text-gray-700 dark:text-dark-300">{{ t('stats.profitShare') }}</h2>
+        <div v-if="loading" class="flex h-[280px] items-center justify-center"><LoadingState /></div>
+        <div v-else-if="privacyMode" class="flex h-[280px] items-center justify-center text-sm text-gray-400">
+          {{ t('privacy.hidden') }}
+        </div>
+        <div v-else-if="!profitDist.length" class="flex h-[280px] items-center justify-center">
+          <EmptyState icon="chartBar" />
+        </div>
+        <DoughnutChart
+          v-else
+          :labels="profitDist.map((s) => s.label)"
+          :data="profitDist.map((s) => s.value)"
+          :colors="sliceColors(profitDist.map((s) => s.label), t('stats.chartOthers'))"
+          :height="280"
+          :value-formatter="fmtMoney"
+        />
+      </div>
     </div>
 
     <!-- 明细表：两维度同构，共用一套渲染 -->
@@ -96,16 +125,16 @@
             <tr>
               <SortableTh
                 sort-key="name" :active-key="sortKey" :order="sortOrder" @sort="sortBy"
-                :label="isProvider ? t('stats.provider') : t('stats.groupName')"
+                :label="nameHeader"
               />
               <SortableTh
-                v-if="!isProvider"
+                v-if="isGroup"
                 sort-key="rate" :active-key="sortKey" :order="sortOrder" @sort="sortBy"
                 :label="t('stats.rateMultiplier')"
               />
               <SortableTh
                 sort-key="accounts" :active-key="sortKey" :order="sortOrder" @sort="sortBy"
-                :label="t('stats.accounts')"
+                :label="isUser ? t('stats.groupCount') : t('stats.accounts')"
               />
               <SortableTh
                 class="text-right" align="right"
@@ -152,8 +181,8 @@
                   >{{ t('provider.selfOperated') }}</span>
                   <span v-else-if="!r.cost_complete" class="ml-1 text-amber-500" :title="t('cost.incomplete', { n: r.accounts_missing })">⚠</span>
                 </td>
-                <td v-if="!isProvider">×{{ r.rateMultiplier }}</td>
-                <td>{{ r.accounts.length }}</td>
+                <td v-if="isGroup">×{{ r.rateMultiplier }}</td>
+                <td>{{ r.children.length }}</td>
                 <td class="text-right">{{ displayMoney(r.revenue) }}</td>
                 <td class="text-right">
                   {{ displayMoney(r.cost) }}
@@ -167,24 +196,25 @@
                 <td><MarginCell :pct="r.margin" /></td>
                 <td class="text-right">{{ fmtNum(r.requests) }}</td>
               </tr>
-              <tr v-for="a in (expanded.has(r.key) ? r.accounts : [])" :key="r.key + 'a' + a.account_id"
+              <tr v-for="c in (expanded.has(r.key) ? r.children : [])" :key="r.key + 'c' + c.id"
                 class="bg-gray-50/60 dark:bg-dark-800/25">
                 <td class="pl-9 text-gray-600 dark:text-dark-300">
-                  {{ a.account_name }}
-                  <span v-if="!a.cost_matched" class="ml-1 text-xs text-amber-600 dark:text-amber-400" :title="t('cost.keyUnmatchedHint')">
+                  {{ c.name }}
+                  <span v-if="isUser && c.rateMultiplier" class="ml-1 text-xs text-gray-400">×{{ c.rateMultiplier }}</span>
+                  <span v-if="!c.cost_matched" class="ml-1 text-xs text-amber-600 dark:text-amber-400" :title="t('cost.keyUnmatchedHint')">
                     {{ t('cost.keyUnmatched') }}
                   </span>
                 </td>
-                <td v-if="!isProvider"></td>
-                <td class="font-mono text-xs text-gray-400">#{{ a.account_id }}</td>
-                <td class="text-right">{{ displayMoney(a.revenue) }}</td>
-                <td class="text-right">{{ a.cost_matched ? displayMoney(a.cost) : '-' }}</td>
-                <td class="text-right" :class="a.cost_matched && !privacyMode ? moneyClass(a.profit) : 'text-gray-400'">
-                  {{ a.cost_matched ? displayMoney(a.profit) : '-' }}
+                <td v-if="isGroup"></td>
+                <td class="font-mono text-xs text-gray-400">#{{ c.id }}</td>
+                <td class="text-right">{{ displayMoney(c.revenue) }}</td>
+                <td class="text-right">{{ c.cost_matched ? displayMoney(c.cost) : '-' }}</td>
+                <td class="text-right" :class="c.cost_matched && !privacyMode ? moneyClass(c.profit) : 'text-gray-400'">
+                  {{ c.cost_matched ? displayMoney(c.profit) : '-' }}
                 </td>
                 <!-- 成本未匹配 ⇒ 利润未知 ⇒ 利润率未知，与相邻利润格同进同退 -->
-                <td><MarginCell :pct="a.cost_matched ? profitMargin(a.revenue, a.profit) : null" /></td>
-                <td class="text-right">{{ fmtNum(a.requests) }}</td>
+                <td><MarginCell :pct="c.cost_matched ? profitMargin(c.revenue, c.profit) : null" /></td>
+                <td class="text-right">{{ fmtNum(c.requests) }}</td>
               </tr>
             </template>
           </tbody>
@@ -204,29 +234,29 @@ import { profitMargin } from '@/utils/profitMargin'
 import { useAppStore } from '@/stores/app'
 import { usePrivacyMoney } from '@/composables/usePrivacyMoney'
 import { useTableSort } from '@/composables/useTableSort'
-import BarChart, { type BarSeries } from '@/components/BarChart.vue'
+import DoughnutChart from '@/components/DoughnutChart.vue'
 import CostSyncBar from '@/components/CostSyncBar.vue'
 import MarginCell from '@/components/stats/MarginCell.vue'
 import TableState from '@/components/common/TableState.vue'
 import SortableTh from '@/components/common/SortableTh.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
-import { SERIES } from '@/utils/chartTheme'
-import type { CostSyncStatus, StatsAccountRow, StatsProviderRow, StatsGroupRow } from '@/types'
+import EmptyState from '@/components/common/EmptyState.vue'
+import { sliceColors } from '@/utils/chartTheme'
+import { buildDistribution } from '@/utils/statsDistribution'
+import type { CostSyncStatus, StatsProviderRow, StatsGroupRow, StatsUserRow } from '@/types'
 
 const { t } = useI18n()
 const app = useAppStore()
 const { privacyMode, displayMoney, displayMoneyClass } = usePrivacyMoney()
-const dim = ref<'provider' | 'group'>('provider')
+type StatsDim = 'provider' | 'group' | 'user'
+const dim = ref<StatsDim>('provider')
 const rangeKey = ref<'today' | '7' | '30' | 'custom'>('today')
 const startDate = ref(todayStr())
 const endDate = ref(todayStr())
-const rows = ref<(StatsProviderRow | StatsGroupRow)[]>([])
+const rows = ref<(StatsProviderRow | StatsGroupRow | StatsUserRow)[]>([])
 const costSync = ref<CostSyncStatus | null>(null)
 const expanded = ref(new Set<string>())
 const loading = ref(false)
-
-/** 图表最多展示的分类数，超出部分只在表格里出现 */
-const CHART_TOP = 15
 
 const ranges = [
   { key: 'today' as const, label: 'stats.rangeToday' },
@@ -235,17 +265,40 @@ const ranges = [
 ]
 
 const isProvider = computed(() => dim.value === 'provider')
+const isGroup = computed(() => dim.value === 'group')
+const isUser = computed(() => dim.value === 'user')
+const nameHeader = computed(() => {
+  if (isProvider.value) return t('stats.provider')
+  if (isGroup.value) return t('stats.groupName')
+  return t('stats.user')
+})
+const costHintKey = computed(() => {
+  if (isGroup.value) return 'cost.groupCostApportioned'
+  if (isUser.value) return 'cost.userCostApportioned'
+  return ''
+})
 
-/** 归一化后的表格行：两个维度的差异收敛到 key/name/rateMultiplier 三个字段 */
+interface ViewChild {
+  id: number
+  name: string
+  rateMultiplier: number
+  revenue: number
+  cost: number
+  profit: number
+  requests: number
+  cost_matched: boolean
+}
+
+/** 归一化后的表格行：三个维度的差异收敛到 key/name/children */
 interface ViewRow {
   key: string
   name: string
   rateMultiplier: number
   revenue: number
   cost: number
-  /** 站点级运营成本；分组维度恒为 0 */
+  /** 站点级运营成本；分组/用户维度恒为 0 */
   operatingCost: number
-  /** 自营站：显示身份标签而非成本不完整告警；分组维度恒为 false */
+  /** 自营站：显示身份标签而非成本不完整告警；分组/用户维度恒为 false */
   selfOperated: boolean
   profit: number
   /**
@@ -259,11 +312,37 @@ interface ViewRow {
   requests: number
   cost_complete: boolean
   accounts_missing: number
-  accounts: StatsAccountRow[]
+  children: ViewChild[]
 }
 
 const viewRows = computed<ViewRow[]>(() =>
   rows.value.map((r) => {
+    if ('user_id' in r) {
+      return {
+        key: 'u' + r.user_id,
+        name: r.user_name,
+        rateMultiplier: 1,
+        revenue: r.revenue,
+        cost: r.cost,
+        operatingCost: r.operating_cost || 0,
+        selfOperated: false,
+        profit: r.profit,
+        margin: profitMargin(r.revenue, r.profit),
+        requests: r.requests,
+        cost_complete: r.cost_complete,
+        accounts_missing: r.accounts_missing,
+        children: (r.groups || []).map((g) => ({
+          id: g.group_id,
+          name: g.group_name,
+          rateMultiplier: g.rate_multiplier,
+          revenue: g.revenue,
+          cost: g.cost,
+          profit: g.profit,
+          requests: g.requests,
+          cost_matched: g.cost_matched
+        }))
+      }
+    }
     const isG = 'group_id' in r
     return {
       key: isG ? 'g' + r.group_id : 'p' + r.provider,
@@ -278,12 +357,21 @@ const viewRows = computed<ViewRow[]>(() =>
       requests: r.requests,
       cost_complete: r.cost_complete,
       accounts_missing: r.accounts_missing,
-      accounts: r.accounts || []
+      children: (r.accounts || []).map((a) => ({
+        id: a.account_id,
+        name: a.account_name,
+        rateMultiplier: 0,
+        revenue: a.revenue,
+        cost: a.cost,
+        profit: a.profit,
+        requests: a.requests,
+        cost_matched: a.cost_matched
+      }))
     }
   })
 )
 
-const colCount = computed(() => (isProvider.value ? 7 : 8))
+const colCount = computed(() => (isGroup.value ? 8 : 7))
 
 /**
  * 表头排序只作用于父行：子账号明细挂在父行的 accounts 上，后端已按收益降序排好。
@@ -295,7 +383,7 @@ const colCount = computed(() => (isProvider.value ? 7 : 8))
 const { sortKey, sortOrder, sorted: sortedRows, toggle: sortBy } = useTableSort<ViewRow>(viewRows, {
   name: (r) => r.name,
   rate: (r) => r.rateMultiplier,
-  accounts: (r) => r.accounts.length,
+  accounts: (r) => r.children.length,
   revenue: (r) => r.revenue,
   cost: (r) => r.cost,
   profit: (r) => r.profit,
@@ -324,18 +412,20 @@ const accountsMissing = computed(() => viewRows.value.reduce((n, r) => n + r.acc
  */
 const totalMargin = computed(() => profitMargin(totals.value.revenue, totals.value.profit))
 
-const chartLabels = computed(() => viewRows.value.slice(0, CHART_TOP).map((r) => r.name))
-// 用 SERIES 常量而非字面量：收益恒 teal、成本恒红，与仪表盘语义配色一致
-// 成本柱取「实扣 + 运营成本」：利润柱已扣掉运营成本，成本柱若只画实扣，
-// 三根柱子的「收益 − 成本 = 利润」关系会对不上。表格里两者分行展示看构成，图上合并看关系。
-const chartDatasets = computed<BarSeries[]>(() => {
-  const top = viewRows.value.slice(0, CHART_TOP)
-  return [
-    { label: t('stats.revenue'), data: top.map((r) => r.revenue), color: SERIES.revenue },
-    { label: t('stats.cost'), data: top.map((r) => r.cost + r.operatingCost), color: SERIES.cost },
-    { label: t('stats.profit'), data: top.map((r) => r.profit), color: SERIES.profit }
-  ]
-})
+const othersLabel = computed(() => t('stats.chartOthers'))
+const revenueDist = computed(() =>
+  buildDistribution(
+    viewRows.value.map((r) => ({ label: r.name, value: r.revenue })),
+    { othersLabel: othersLabel.value }
+  )
+)
+// 环形图只能表达正份额，亏损行被丢掉，不进「其他」；明细仍在表格里。
+const profitDist = computed(() =>
+  buildDistribution(
+    viewRows.value.map((r) => ({ label: r.name, value: r.profit })),
+    { othersLabel: othersLabel.value }
+  )
+)
 
 function toggle(key: string) {
   // Set 原地改动不触发响应式，故重建一个新 Set
@@ -348,7 +438,7 @@ function toggle(key: string) {
   expanded.value = next
 }
 
-function setDim(d: 'provider' | 'group') {
+function setDim(d: StatsDim) {
   dim.value = d
   rows.value = []
   expanded.value = new Set()
@@ -370,7 +460,12 @@ async function load() {
   try {
     const s = startDate.value || undefined
     const e = endDate.value || undefined
-    const res = isProvider.value ? await statsApi.byProvider(s, e) : await statsApi.byGroup(s, e)
+    const res =
+      dim.value === 'provider'
+        ? await statsApi.byProvider(s, e)
+        : dim.value === 'group'
+          ? await statsApi.byGroup(s, e)
+          : await statsApi.byUser(s, e)
     rows.value = res.items || []
     costSync.value = res.cost_sync ?? null
   } catch (err) {

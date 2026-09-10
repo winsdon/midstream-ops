@@ -93,6 +93,55 @@ func (p *PG) AggregateUsageByGroupAccount(ctx context.Context, start, end time.T
 	return out, rows.Err()
 }
 
+// UserGroupAccountUsageRow 按「用户 × 分组 × 账号」聚合行。
+//
+// 上游实扣挂在账号上，一个账号可被多个用户、多个分组共用，拆到用户/分组
+// 需要与 ByGroup 相同的分摊权重；本行提供 CostWeight 作为原料。
+type UserGroupAccountUsageRow struct {
+	UserID         int64
+	UserName       string
+	GroupID        int64
+	GroupName      string
+	RateMultiplier float64
+	AccountID      int64
+	AccountName    string
+	Requests       int64
+	Revenue        float64
+	CostWeight     float64
+}
+
+// AggregateUsageByUserGroupAccount 在时间范围内按「用户 × 分组 × 账号」聚合。
+// 不滤 deleted_at：已删用户/账号/分组的历史流量仍须归属。
+func (p *PG) AggregateUsageByUserGroupAccount(ctx context.Context, start, end time.Time) ([]UserGroupAccountUsageRow, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT COALESCE(ul.user_id, 0),
+		       COALESCE(NULLIF(u.username, ''), NULLIF(u.email, ''),
+		         CASE WHEN COALESCE(ul.user_id, 0) = 0 THEN '(无用户)' ELSE '#' || COALESCE(ul.user_id, 0)::text END),
+		       ul.group_id, COALESCE(g.name,'(无分组)'), COALESCE(g.rate_multiplier,1),
+		       ul.account_id, COALESCE(a.name,''), COUNT(*),
+		       `+revenueExpr+`, COALESCE(SUM(ul.total_cost),0)
+		FROM usage_logs ul
+		LEFT JOIN users u ON u.id = ul.user_id
+		LEFT JOIN groups g ON g.id = ul.group_id
+		LEFT JOIN accounts a ON a.id = ul.account_id
+		WHERE ul.created_at >= $1 AND ul.created_at < $2
+		GROUP BY 1, 2, 3, 4, 5, 6, 7`, start, end)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UserGroupAccountUsageRow
+	for rows.Next() {
+		var r UserGroupAccountUsageRow
+		if err := rows.Scan(&r.UserID, &r.UserName, &r.GroupID, &r.GroupName, &r.RateMultiplier,
+			&r.AccountID, &r.AccountName, &r.Requests, &r.Revenue, &r.CostWeight); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // DailyTrendRow 日趋势行。
 type DailyTrendRow struct {
 	Day          string // YYYY-MM-DD（按指定时区）

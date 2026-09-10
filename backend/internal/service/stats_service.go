@@ -267,40 +267,54 @@ type GroupStat struct {
 // 免费模型 / 未计价请求的 total_cost 可能全为 0，此时按用量分摊会整个塌成 0，
 // 导致账号实扣无处安放、分组合计对不上供应商合计。
 func apportionShares(rows []repository.GroupAccountUsageRow) []float64 {
-	shares := make([]float64, len(rows))
-	if len(rows) == 0 {
+	return apportionSharesN(len(rows),
+		func(i int) float64 { return rows[i].CostWeight },
+		func(i int) int64 { return rows[i].Requests },
+	)
+}
+
+func apportionUserShares(rows []repository.UserGroupAccountUsageRow) []float64 {
+	return apportionSharesN(len(rows),
+		func(i int) float64 { return rows[i].CostWeight },
+		func(i int) int64 { return rows[i].Requests },
+	)
+}
+
+func apportionSharesN(n int, weight func(int) float64, requests func(int) int64) []float64 {
+	shares := make([]float64, n)
+	if n == 0 {
 		return shares
 	}
-	if len(rows) == 1 {
+	if n == 1 {
 		shares[0] = 1
 		return shares
 	}
 
 	var weightSum, reqSum float64
-	for _, r := range rows {
-		if r.CostWeight > 0 {
-			weightSum += r.CostWeight
+	for i := 0; i < n; i++ {
+		if w := weight(i); w > 0 {
+			weightSum += w
 		}
-		if r.Requests > 0 {
-			reqSum += float64(r.Requests)
+		if r := requests(i); r > 0 {
+			reqSum += float64(r)
 		}
 	}
 
 	switch {
 	case weightSum > 0:
-		for i, r := range rows {
-			if r.CostWeight > 0 {
-				shares[i] = r.CostWeight / weightSum
+		for i := 0; i < n; i++ {
+			if w := weight(i); w > 0 {
+				shares[i] = w / weightSum
 			}
 		}
 	case reqSum > 0:
-		for i, r := range rows {
-			if r.Requests > 0 {
-				shares[i] = float64(r.Requests) / reqSum
+		for i := 0; i < n; i++ {
+			if r := requests(i); r > 0 {
+				shares[i] = float64(r) / reqSum
 			}
 		}
 	default:
-		even := 1 / float64(len(rows))
+		even := 1 / float64(n)
 		for i := range shares {
 			shares[i] = even
 		}

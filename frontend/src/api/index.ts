@@ -34,6 +34,7 @@ import type {
   UpstreamConnection,
   StatsGroupRow,
   StatsProviderRow,
+  StatsUserRow,
   StrategySettings,
   StrategySettingsResult,
   TrendPoint
@@ -268,6 +269,13 @@ export const statsApi = {
     unwrap<{ start: string; end: string; items: StatsGroupRow[]; cost_sync?: CostSyncStatus | null }>(
       http.get<ApiResponse<{ start: string; end: string; items: StatsGroupRow[]; cost_sync?: CostSyncStatus | null }>>(
         '/stats/groups',
+        { params: { start, end } }
+      )
+    ),
+  byUser: (start?: string, end?: string) =>
+    unwrap<{ start: string; end: string; items: StatsUserRow[]; cost_sync?: CostSyncStatus | null }>(
+      http.get<ApiResponse<{ start: string; end: string; items: StatsUserRow[]; cost_sync?: CostSyncStatus | null }>>(
+        '/stats/users',
         { params: { start, end } }
       )
     )

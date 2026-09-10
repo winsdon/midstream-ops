@@ -259,6 +259,7 @@ export default {
   stats: {
     byProvider: 'By Provider',
     byGroup: 'By Group',
+    byUser: 'By User',
     revenue: 'Revenue',
     cost: 'Cost',
     profit: 'Profit',
@@ -266,12 +267,17 @@ export default {
     marginHint: 'Profit ÷ Revenue. <0 loss · 0-10% thin · 10-30% normal · >30% healthy',
     requests: 'Requests',
     accounts: 'Accounts',
+    groupCount: 'Groups',
     rateMultiplier: 'Rate',
     groupName: 'Group',
     provider: 'Provider',
+    user: 'User',
     rangeToday: 'Today',
     range7: 'Last 7 days',
-    range30: 'Last 30 days'
+    range30: 'Last 30 days',
+    revenueShare: 'Revenue share',
+    profitShare: 'Profit share',
+    chartOthers: 'Others'
   },
   // Cost basis: actual = upstream rate-discounted charge (real spend, drives profit); official = undiscounted upstream cost (reference only)
   cost: {
@@ -287,6 +293,7 @@ export default {
     interval: 'every {n} min',
     keysMatched: 'keys matched {matched}/{total}',
     groupCostApportioned: 'One account can serve multiple groups, and upstream records a single charge per account. Cost here is apportioned by each group\'s share of raw usage, so upstream charges match the "By Provider" view exactly. Operating cost of self-run sites is a site-level fixed cost and is not apportioned, so group profit totals run high',
+    userCostApportioned: 'One account can serve multiple users, and upstream records a single charge per account. Cost here is apportioned by each user\'s share of raw usage on that account, so upstream charges match the "By Provider" view. Operating cost of self-run sites is not apportioned to users',
     keyUnmatched: 'no upstream key',
     keyUnmatchedHint: 'This account name has no counterpart in the upstream key list, so its actual cost is unavailable',
     keyDetail: 'Upstream Cost Detail',

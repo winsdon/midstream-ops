@@ -259,6 +259,7 @@ export default {
   stats: {
     byProvider: '按供应商',
     byGroup: '按分组',
+    byUser: '按用户',
     revenue: '收益',
     cost: '成本',
     profit: '利润',
@@ -266,12 +267,17 @@ export default {
     marginHint: '利润 ÷ 收益。<0 亏损 · 0-10% 薄利 · 10-30% 正常 · >30% 良好',
     requests: '请求数',
     accounts: '账号数',
+    groupCount: '分组数',
     rateMultiplier: '倍率',
     groupName: '分组',
     provider: '供应商',
+    user: '用户',
     rangeToday: '今日',
     range7: '近 7 天',
-    range30: '近 30 天'
+    range30: '近 30 天',
+    revenueShare: '收益分布',
+    profitShare: '利润分布',
+    chartOthers: '其他'
   },
   // 成本口径：actual = 上游倍率折后实扣（真实付出，参与利润）；official = 上游未打折对照成本（仅对照）
   cost: {
@@ -287,6 +293,7 @@ export default {
     interval: '每 {n} 分钟同步',
     keysMatched: 'key 匹配 {matched}/{total}',
     groupCostApportioned: '一个账号可服务多个分组，上游只按账号记一笔实扣。此处成本按各分组的原始用量占比分摊估算，实扣合计与「按供应商」口径一致；但自营站的运营成本是站点级固定成本，不摊到分组，故分组利润合计会偏高',
+    userCostApportioned: '一个账号可被多个用户使用，上游只按账号记一笔实扣。此处成本按各用户在该账号内的原始用量占比分摊估算，实扣合计与「按供应商」口径一致；自营站运营成本不摊到用户',
     keyUnmatched: '未匹配上游 key',
     keyUnmatchedHint: '该账号名未能在上游 key 列表中找到对应项，其实扣成本无法获取',
     keyDetail: '上游成本明细',

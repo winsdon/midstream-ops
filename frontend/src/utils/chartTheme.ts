@@ -29,6 +29,25 @@ export const SERIES = {
   neutral: '#94a3b8'
 } as const
 
+/** 分类色板：环形分布图等多切片场景循环取用 */
+export const CATEGORY = [
+  '#14b8a6',
+  '#6366f1',
+  '#f59e0b',
+  '#10b981',
+  '#f97316',
+  '#8b5cf6',
+  '#06b6d4',
+  '#ec4899'
+] as const
+
+/** 「其他」桶用中性色，其余按色板循环 */
+export function sliceColors(labels: string[], othersLabel: string): string[] {
+  return labels.map((label, i) =>
+    label === othersLabel ? SERIES.neutral : CATEGORY[i % CATEGORY.length]
+  )
+}
+
 /** 面积填充色：在曲线色后追加 alpha 通道（约 12% 不透明度） */
 export function fillOf(color: string): string {
   return `${color}20`

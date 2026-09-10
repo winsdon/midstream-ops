@@ -72,3 +72,28 @@ func (h *StatsHandler) ByGroup(c *gin.Context) {
 		"cost_sync": syncStatus,
 	})
 }
+
+// ByUser GET /stats/users?start=&end=
+func (h *StatsHandler) ByUser(c *gin.Context) {
+	if !h.pg.Available() {
+		response.ServiceUnavailable(c, "线上数据库暂不可用")
+		return
+	}
+	start, end := resolveDayRange(c, h.cfg)
+	stats, err := h.statsSvc.ByUser(c.Request.Context(), start, end)
+	if err != nil {
+		response.InternalError(c, "查询失败: "+err.Error())
+		return
+	}
+	startDate, endDate := dateBounds(h.cfg, start, end)
+	syncStatus, err := h.statsSvc.CostSyncStatus(c.Request.Context())
+	if err != nil {
+		syncStatus = nil
+	}
+	response.Success(c, gin.H{
+		"start":     startDate,
+		"end":       endDate,
+		"items":     stats,
+		"cost_sync": syncStatus,
+	})
+}
