@@ -13,8 +13,8 @@ import { sortRows, type SortOrder } from '@/utils/tableSort'
 /** 时间窗口档位（分钟）。实时盯盘口径，对齐运维监控的 5m/30m/1h/6h/24h。 */
 export type WindowMinutes = 5 | 30 | 60 | 360 | 1440
 export const WINDOW_OPTIONS: readonly WindowMinutes[] = [5, 30, 60, 360, 1440]
-/** 默认窗口：近 1 小时。短到能看见正在发生的事，长到被动流量够样本。 */
-export const DEFAULT_WINDOW_MINUTES: WindowMinutes = 60
+/** 默认窗口：近 30 分钟。短到能看见正在发生的事，长到被动流量够样本。 */
+export const DEFAULT_WINDOW_MINUTES: WindowMinutes = 30
 
 /**
  * Select 不能用 '' 同时表示「全部」和「未归属/未分组」桶。
@@ -112,6 +112,38 @@ export function slaPercent(success: number, errorCount: number): number | null {
   const total = success + errorCount
   if (total <= 0) return null
   return (success / total) * 100
+}
+
+/**
+ * 账号健康分 0–100。对常见 3–8s 首字、≤1% 错误率不扣分。
+ * 色块与悬停数字共用这一分，避免「评分 60 却是绿块」。
+ */
+export function accountHealthScore(input: {
+  sla?: number | null
+  ttftP50?: number | null
+  errorRate?: number | null
+}): number {
+  const err =
+    input.errorRate != null && Number.isFinite(input.errorRate)
+      ? input.errorRate
+      : input.sla != null && Number.isFinite(input.sla)
+        ? 100 - input.sla
+        : 0
+  const penalty = errorPenalty(err) + ttftPenalty(input.ttftP50)
+  return Math.min(100, Math.max(0, Math.round(100 - penalty)))
+}
+
+function errorPenalty(errorRate: number): number {
+  if (!Number.isFinite(errorRate) || errorRate <= 1) return 0
+  if (errorRate <= 10) return ((errorRate - 1) / 9) * 40
+  return 50
+}
+
+function ttftPenalty(ttftP50?: number | null): number {
+  if (ttftP50 == null || !Number.isFinite(ttftP50) || ttftP50 < 0) return 0
+  if (ttftP50 < 10_000) return 0
+  if (ttftP50 <= 30_000) return ((ttftP50 - 10_000) / 20_000) * 30
+  return 40
 }
 
 /**

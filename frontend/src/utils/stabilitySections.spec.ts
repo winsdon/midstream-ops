@@ -6,6 +6,7 @@ import {
   applySectionSort,
   nextStabilitySort,
   allSectionsOpen,
+  DEFAULT_GROUPING,
   type GroupingMode,
   type StabilitySection
 } from '@/utils/stabilitySections'
@@ -72,6 +73,10 @@ describe('buildSections', () => {
   function keys(mode: GroupingMode) {
     return buildSections(rows, mode, gradeOf, passiveCounts).map((s) => s.key)
   }
+
+  it('默认按分组', () => {
+    expect(DEFAULT_GROUPING).toBe('group')
+  })
 
   it('按供应商分块不重复账号；未归属沉底', () => {
     const secs = buildSections(rows, 'provider', gradeOf, passiveCounts)

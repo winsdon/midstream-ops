@@ -40,6 +40,7 @@ export function allSectionsOpen(
 }
 
 export type GroupingMode = 'provider' | 'group'
+export const DEFAULT_GROUPING: GroupingMode = 'group'
 
 export interface Countable {
   success: number

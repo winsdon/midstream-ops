@@ -5,9 +5,11 @@
  */
 
 import type { PassiveRow, TimelinePoint } from '@/types'
-import { slaPercent } from '@/utils/stabilityModel'
+import { accountHealthScore, slaPercent } from '@/utils/stabilityModel'
 import { cellEndIso, mergeTimelines, type TimelineBar } from '@/utils/stabilityTimeline'
 import { sortRows, type SortOrder } from '@/utils/tableSort'
+
+export { accountHealthScore }
 
 export type HeatmapSortKey = 'sla' | 'requests' | 'firstToken' | 'tps' | 'cache'
 
@@ -27,7 +29,7 @@ export interface HeatmapSort {
 /** 成功率/缓存默认升序（差的在前）；请求数、首字默认降序（量大/更慢的在前）。 */
 const SORT_START_DESC: ReadonlySet<HeatmapSortKey> = new Set(['requests', 'firstToken'])
 
-export const DEFAULT_HEATMAP_SORT: HeatmapSort = { key: 'sla', order: 'asc' }
+export const DEFAULT_HEATMAP_SORT: HeatmapSort = { key: 'requests', order: 'desc' }
 
 export function nextHeatmapSort(current: HeatmapSort, clicked: HeatmapSortKey): HeatmapSort {
   if (current.key === clicked) {
@@ -260,48 +262,11 @@ export function rpm(requests: number, minutes: number): number | null {
   return requests / minutes
 }
 
-/**
- * 账号健康分 0–100。
- *
- * 对常见 3–8s 首字、≤1% 错误率不扣分（参考图 P50 5s / 错误率 0.38% 应是满分）。
- */
-export function accountHealthScore(input: {
-  sla?: number | null
-  ttftP50?: number | null
-  errorRate?: number | null
-}): number {
-  const err =
-    input.errorRate != null && Number.isFinite(input.errorRate)
-      ? input.errorRate
-      : input.sla != null && Number.isFinite(input.sla)
-        ? 100 - input.sla
-        : 0
-  const penalty = errorPenalty(err) + ttftPenalty(input.ttftP50)
-  return clamp(Math.round(100 - penalty), 0, 100)
-}
-
-function errorPenalty(errorRate: number): number {
-  if (!Number.isFinite(errorRate) || errorRate <= 1) return 0
-  if (errorRate <= 10) return ((errorRate - 1) / 9) * 40
-  return 50
-}
-
-function ttftPenalty(ttftP50?: number | null): number {
-  if (ttftP50 == null || !Number.isFinite(ttftP50) || ttftP50 < 0) return 0
-  if (ttftP50 < 10_000) return 0
-  if (ttftP50 <= 30_000) return ((ttftP50 - 10_000) / 20_000) * 30
-  return 40
-}
-
-function clamp(v: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, v))
-}
-
-/** ≥90 绿，<70 琥珀，中间中性。必须写完整字面量供 Tailwind 扫描。 */
+/** ≥90 绿，70–89 琥珀，<70 红。必须写完整字面量供 Tailwind 扫描。 */
 export function healthScoreClass(score: number): string {
   if (score >= 90) return 'font-semibold text-emerald-600 dark:text-emerald-400'
-  if (score < 70) return 'font-semibold text-amber-600 dark:text-amber-400'
-  return 'font-semibold text-gray-700 dark:text-dark-300'
+  if (score >= 70) return 'font-semibold text-amber-600 dark:text-amber-400'
+  return 'font-semibold text-red-600 dark:text-red-400'
 }
 
 export function formatRpm(v?: number | null): string {

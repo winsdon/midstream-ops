@@ -4,6 +4,7 @@ import {
   timelineBucketMs,
   displayCellCount,
   cellTone,
+  cellColor,
   barFromCounts,
   padTimeline,
   displayCells,
@@ -34,11 +35,13 @@ describe('displayCellCount', () => {
 })
 
 describe('cellTone', () => {
-  it('健康 ≥80 / 需关注 50–79 / 异常 <50', () => {
-    expect(cellTone(80)).toBe('healthy')
-    expect(cellTone(79.9)).toBe('watch')
-    expect(cellTone(50)).toBe('watch')
-    expect(cellTone(49.9)).toBe('bad')
+  it('健康 ≥90 / 需关注 70–89 / 异常 <70', () => {
+    expect(cellTone(90)).toBe('healthy')
+    expect(cellTone(89.9)).toBe('watch')
+    expect(cellTone(70)).toBe('watch')
+    expect(cellTone(69.9)).toBe('bad')
+    expect(cellTone(60)).toBe('bad')
+    expect(cellTone(30)).toBe('bad')
     expect(cellTone(0)).toBe('bad')
   })
 
@@ -48,8 +51,28 @@ describe('cellTone', () => {
   })
 })
 
+describe('cellColor', () => {
+  it('按图例 90/70 分档：80 不是绿，60 与 30 同为红档', () => {
+    const healthy = cellColor(100)
+    const watch = cellColor(80)
+    const bad = cellColor(60)
+    expect(cellColor(90)).toBe(healthy)
+    expect(cellColor(70)).toBe(watch)
+    expect(cellColor(30)).toBe(bad)
+    expect(cellColor(0)).toBe(bad)
+    expect(watch).not.toBe(healthy)
+    expect(bad).not.toBe(healthy)
+    expect(bad).not.toBe(watch)
+  })
+
+  it('无样本是灰色，不是红档', () => {
+    expect(cellColor(null)).not.toBe(cellColor(0))
+    expect(cellColor(null)).toBe(cellColor(Number.NaN))
+  })
+})
+
 describe('barFromCounts', () => {
-  it('空桶灰，满分绿，对半需关注', () => {
+  it('空桶灰，满分绿，60% 与 30% 都是异常', () => {
     const empty = barFromCounts(0, 0)
     expect(empty.tone).toBe('empty')
     expect(empty.color).toContain('229')
@@ -58,13 +81,15 @@ describe('barFromCounts', () => {
     expect(ok.tone).toBe('healthy')
     expect(ok.sla).toBe(100)
 
-    const watch = barFromCounts(6, 4)
-    expect(watch.tone).toBe('watch')
-    expect(watch.sla).toBe(60)
+    const mid = barFromCounts(6, 4)
+    expect(mid.tone).toBe('bad')
+    expect(mid.sla).toBe(60)
 
-    const bad = barFromCounts(0, 5)
+    const bad = barFromCounts(3, 7)
     expect(bad.tone).toBe('bad')
-    expect(bad.sla).toBe(0)
+    expect(bad.sla).toBe(30)
+    expect(bad.color).toBe(mid.color)
+    expect(bad.color).not.toBe(ok.color)
   })
 })
 
@@ -80,7 +105,7 @@ describe('padTimeline', () => {
     expect(bars).toHaveLength(TIMELINE_LENGTH)
     expect(bars[0].tone).toBe('empty')
     expect(bars[58].tone).toBe('healthy')
-    expect(bars[59].tone).toBe('watch')
+    expect(bars[59].tone).toBe('bad')
   })
 
   it('无点时 60 格全空', () => {
@@ -120,6 +145,16 @@ describe('displayCells', () => {
     ]
     const cells = displayCells(points, 60, generatedAt)
     expect(cells[11].first_token_p50).toBeCloseTo(1100)
+  })
+
+  it('成功率满分但首字 30s 不能算健康', () => {
+    const cells = displayCells(
+      [{ t: '2026-04-08T11:55:00.000Z', ok: 10, err: 0, first_token_p50: 30_000 }],
+      60,
+      generatedAt
+    )
+    expect(cells[11].sla).toBe(100)
+    expect(cells[11].tone).not.toBe('healthy')
   })
 })
 

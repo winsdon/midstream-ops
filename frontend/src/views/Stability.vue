@@ -1,19 +1,5 @@
 <template>
-  <div class="space-y-5">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <h1 class="text-xl font-bold text-gray-900 dark:text-white">{{ t('nav.stability') }}</h1>
-        <p v-if="generatedAt" class="mt-0.5 text-xs text-gray-400">
-          {{ t('stability.updatedAt', { t: formatUpdatedAt(generatedAt) }) }}
-        </p>
-      </div>
-      <button class="btn btn-secondary text-sm" :title="t('common.refresh')" @click="load">
-        <Icon name="refresh" size="sm" :class="passiveLoading && 'animate-spin'" />
-      </button>
-    </div>
-
-    <StabilitySortBar :sort="listSort" @update:sort="listSort = $event" />
-
+  <div class="space-y-3">
     <StabilityToolbar
       v-model:grouping="grouping"
       v-model:provider="providerFilter"
@@ -22,22 +8,26 @@
       v-model:minutes="minutes"
       :provider-opts="providerOpts"
       :group-opts="groupOpts"
-    />
+    >
+      <template #after-windows>
+        <StabilitySortBar :sort="listSort" @update:sort="listSort = $event" />
+      </template>
+      <template #end>
+        <p v-if="generatedAt" class="whitespace-nowrap text-[11px] text-gray-400">
+          {{ t('stability.updatedAt', { t: formatUpdatedAt(generatedAt) }) }}
+        </p>
+        <button class="btn btn-secondary text-sm" :title="t('common.refresh')" @click="load">
+          <Icon name="refresh" size="sm" :class="passiveLoading && 'animate-spin'" />
+        </button>
+      </template>
+    </StabilityToolbar>
 
     <StabilityKpiCards :kpis="kpis" />
 
     <div class="card overflow-hidden">
-      <div class="flex flex-wrap items-start justify-between gap-2 px-4 pt-4">
-        <div>
-          <h2 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('stability.availabilityTrend') }}</h2>
-          <p class="mt-0.5 text-xs text-gray-400">{{ t('stability.heatmapHint') }}</p>
-        </div>
-        <p class="text-[11px] text-gray-400">{{ t('stability.cellGranularity', { n: cellGranularity }) }}</p>
-      </div>
-
       <LoadingState v-if="passiveLoading && !passiveSections.length" />
       <EmptyState v-else-if="!passiveSections.length" icon="chart" />
-      <div v-else class="mt-3 overflow-x-auto pb-3">
+      <div v-else class="overflow-x-auto py-3">
         <div
           class="grid items-center gap-x-3 border-b border-gray-100 px-3 pb-2 text-[11px] font-medium uppercase tracking-wider text-gray-400 dark:border-dark-800"
           :style="HEATMAP_GRID"
@@ -66,17 +56,18 @@
         </div>
         <div class="mt-3 flex flex-wrap items-center gap-3 px-4 text-[11px] text-gray-400">
           <span class="inline-flex items-center gap-1">
-            <span class="h-2 w-2 rounded-full bg-emerald-500" />{{ t('stability.tone.healthy') }} ≥80
+            <span class="h-2 w-2 rounded-full bg-emerald-500" />{{ t('stability.tone.healthy') }} ≥{{ HEATMAP_HEALTH }}
           </span>
           <span class="inline-flex items-center gap-1">
-            <span class="h-2 w-2 rounded-full bg-amber-400" />{{ t('stability.tone.watch') }} 50–79
+            <span class="h-2 w-2 rounded-full bg-amber-400" />{{ t('stability.tone.watch') }} {{ HEATMAP_WATCH }}–{{ HEATMAP_HEALTH - 1 }}
           </span>
           <span class="inline-flex items-center gap-1">
-            <span class="h-2 w-2 rounded-full bg-red-500" />{{ t('stability.tone.bad') }} &lt;50
+            <span class="h-2 w-2 rounded-full bg-red-500" />{{ t('stability.tone.bad') }} &lt;{{ HEATMAP_WATCH }}
           </span>
           <span class="inline-flex items-center gap-1">
             <span class="h-2 w-2 rounded-full bg-gray-300" />{{ t('stability.live.empty') }}
           </span>
+          <span class="ml-auto">{{ t('stability.cellGranularity', { n: cellGranularity }) }}</span>
         </div>
       </div>
     </div>
@@ -115,6 +106,7 @@ import {
 import {
   buildSections,
   passiveCounts,
+  DEFAULT_GROUPING,
   type GroupingMode,
   type StabilitySection
 } from '@/utils/stabilitySections'
@@ -128,7 +120,14 @@ import {
   type StatusCardModel
 } from '@/utils/stabilityMetrics'
 import { slaPercent } from '@/utils/stabilityModel'
-import { HEATMAP_GRID, cellEndIso, displayCellCount, displayCells } from '@/utils/stabilityTimeline'
+import {
+  HEATMAP_GRID,
+  HEATMAP_HEALTH,
+  HEATMAP_WATCH,
+  cellEndIso,
+  displayCellCount,
+  displayCells
+} from '@/utils/stabilityTimeline'
 import LoadingState from '@/components/common/LoadingState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -142,7 +141,7 @@ import type { PassiveRow } from '@/types'
 const { t } = useI18n()
 const app = useAppStore()
 
-const grouping = ref<GroupingMode>('provider')
+const grouping = ref<GroupingMode>(DEFAULT_GROUPING)
 const minutes = ref<WindowMinutes>(DEFAULT_WINDOW_MINUTES)
 const providerFilter = ref<string | null>(null)
 const groupFilter = ref<string | null>(null)

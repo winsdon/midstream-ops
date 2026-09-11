@@ -1,15 +1,18 @@
 <template>
   <div class="flex flex-wrap items-center justify-between gap-2">
-    <div role="tablist" class="flex rounded-lg bg-gray-100 p-0.5 dark:bg-dark-800">
-      <button
-        v-for="m in WINDOW_OPTIONS" :key="m"
-        type="button" role="tab"
-        :aria-selected="minutes === m"
-        :class="pillClass(minutes === m)"
-        @click="emit('update:minutes', m)"
-      >
-        {{ t(`stability.win${m}`) }}
-      </button>
+    <div class="flex flex-wrap items-center gap-2">
+      <div role="tablist" class="flex rounded-lg bg-gray-100 p-0.5 dark:bg-dark-800">
+        <button
+          v-for="m in WINDOW_OPTIONS" :key="m"
+          type="button" role="tab"
+          :aria-selected="minutes === m"
+          :class="pillClass(minutes === m)"
+          @click="emit('update:minutes', m)"
+        >
+          {{ t(`stability.win${m}`) }}
+        </button>
+      </div>
+      <slot name="after-windows" />
     </div>
 
     <div class="flex flex-wrap items-center gap-2">
@@ -51,6 +54,7 @@
         :searchable="g.searchable"
         @update:model-value="g.onSelect"
       />
+      <slot name="end" />
     </div>
   </div>
 </template>

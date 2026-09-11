@@ -43,8 +43,8 @@ describe('窗口档位', () => {
     expect(WINDOW_OPTIONS).toEqual([5, 30, 60, 360, 1440])
   })
 
-  it('默认近 1 小时，且默认值必须是档位之一', () => {
-    expect(DEFAULT_WINDOW_MINUTES).toBe(60)
+  it('默认近 30 分钟，且默认值必须是档位之一', () => {
+    expect(DEFAULT_WINDOW_MINUTES).toBe(30)
     expect(WINDOW_OPTIONS).toContain(DEFAULT_WINDOW_MINUTES)
   })
 

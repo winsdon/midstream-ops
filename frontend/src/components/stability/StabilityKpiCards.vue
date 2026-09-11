@@ -15,7 +15,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { fmtMs, fmtNum, fmtPct } from '@/utils/format'
 import { formatTokenRate, formatRpm, type PageKpis } from '@/utils/stabilityMetrics'
-import { cellColor } from '@/utils/stabilityTimeline'
+import { cellColor, hslForPct } from '@/utils/stabilityTimeline'
 
 const props = defineProps<{
   kpis: PageKpis
@@ -55,7 +55,7 @@ const items = computed(() => {
       label: t('stability.cacheRate'),
       value: fmtPct(k.cacheRate, 1),
       hint: t('stability.cacheHint'),
-      color: cellColor(k.cacheRate)
+      color: hslForPct(k.cacheRate)
     },
     {
       label: t('stability.rpm'),

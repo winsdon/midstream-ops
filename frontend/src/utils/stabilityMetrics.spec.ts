@@ -14,7 +14,8 @@ import {
   cardFromSection,
   cellTip,
   nextHeatmapSort,
-  sortHeatmapModels
+  sortHeatmapModels,
+  DEFAULT_HEATMAP_SORT
 } from '@/utils/stabilityMetrics'
 import { cellTone, displayCells, liveToneFromCells } from '@/utils/stabilityTimeline'
 import type { PassiveRow } from '@/types'
@@ -117,11 +118,13 @@ describe('formatLatencyTriple', () => {
 })
 
 describe('healthScoreClass', () => {
-  it('≥90 绿色，<70 琥珀，中间中性', () => {
+  it('≥90 绿色，70–89 琥珀，<70 红色', () => {
     expect(healthScoreClass(95)).toContain('emerald')
     expect(healthScoreClass(90)).toContain('emerald')
-    expect(healthScoreClass(80)).toContain('gray')
-    expect(healthScoreClass(69)).toContain('amber')
+    expect(healthScoreClass(80)).toContain('amber')
+    expect(healthScoreClass(70)).toContain('amber')
+    expect(healthScoreClass(69)).toContain('red')
+    expect(healthScoreClass(30)).toContain('red')
   })
 })
 
@@ -401,6 +404,10 @@ describe('nextHeatmapSort / sortHeatmapModels', () => {
       ...partial
     }
   }
+
+  it('默认按请求次数降序', () => {
+    expect(DEFAULT_HEATMAP_SORT).toEqual({ key: 'requests', order: 'desc' })
+  })
 
   it('点当前列翻转方向', () => {
     expect(nextHeatmapSort({ key: 'sla', order: 'asc' }, 'sla')).toEqual({ key: 'sla', order: 'desc' })

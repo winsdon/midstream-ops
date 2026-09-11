@@ -1,12 +1,17 @@
 /**
- * 被动统计色块：细桶补齐、显示格合并、80/50 分档。
+ * 被动统计色块：细桶补齐、显示格合并、90/70 分档。
  *
  * 后端按 window/60 发稀疏点；前端先补成 60 细桶，再折成 10–20 个方角块
  * （密度对齐 sub2api 渠道监控 90m/5min 那种矩阵，而不是 60 根细条）。
  */
 
 import type { TimelinePoint } from '@/types'
-import { slaPercent, type WindowMinutes } from '@/utils/stabilityModel'
+import {
+  accountHealthScore,
+  PASSIVE_RATE_BANDS,
+  slaPercent,
+  type WindowMinutes
+} from '@/utils/stabilityModel'
 
 export type { TimelinePoint }
 
@@ -16,9 +21,9 @@ export const TIMELINE_LENGTH = 60
 export const HEATMAP_GRID =
   'grid-template-columns: minmax(10rem, 1.2fr) 4.5rem 4.5rem 5rem 5.5rem 4.5rem minmax(12rem, 2fr)'
 
-/** 截图图例：健康 ≥80 / 需关注 50–79 / 异常 <50。 */
-export const HEATMAP_HEALTH = 80
-export const HEATMAP_WATCH = 50
+/** 与被动卡同一套：健康 ≥90 / 需关注 70–89 / 异常 <70。 */
+export const HEATMAP_HEALTH = PASSIVE_RATE_BANDS[0]
+export const HEATMAP_WATCH = PASSIVE_RATE_BANDS[1]
 
 export type CellTone = 'healthy' | 'watch' | 'bad' | 'empty'
 
@@ -76,9 +81,21 @@ export const TONE_DOT: Record<CellTone, string> = {
 
 const EMPTY_COLOR = 'rgb(229 231 235)'
 
+/** 与页脚图例圆点同色：emerald-500 / amber-400 / red-500 / gray-200。 */
+export const TONE_COLOR: Record<CellTone, string> = {
+  healthy: 'rgb(16 185 129)',
+  watch: 'rgb(251 191 36)',
+  bad: 'rgb(239 68 68)',
+  empty: EMPTY_COLOR
+}
+
 export function cellColor(sla: number | null | undefined): string {
-  if (sla == null || Number.isNaN(sla)) return EMPTY_COLOR
-  return hslForPct(sla) ?? EMPTY_COLOR
+  return TONE_COLOR[cellTone(sla)]
+}
+
+function barScore(sla: number | null, ttftP50: number | null): number | null {
+  if (sla == null) return null
+  return accountHealthScore({ sla, ttftP50 })
 }
 
 function num(v?: number | null): number | null {
@@ -105,18 +122,20 @@ function wavg(a: number | null, aw: number, b: number | null, bw: number): numbe
 
 export function barFromPoint(p: TimelinePoint): Omit<TimelineBar, 't'> {
   const sla = slaPercent(p.ok, p.err)
-  const tone = cellTone(sla)
+  const firstTokenP50 = num(p.first_token_p50)
+  const score = barScore(sla, firstTokenP50)
+  const tone = cellTone(score)
   return {
     tone,
     sla,
-    color: cellColor(sla),
+    color: cellColor(score),
     ok: p.ok,
     err: p.err,
     duration_avg: num(p.duration_avg),
     duration_p50: num(p.duration_p50),
     duration_p90: num(p.duration_p90),
     first_token_avg: num(p.first_token_avg),
-    first_token_p50: num(p.first_token_p50),
+    first_token_p50: firstTokenP50,
     first_token_p90: num(p.first_token_p90),
     output_tokens: p.output_tokens ?? 0,
     duration_ms_sum: p.duration_ms_sum ?? 0,
@@ -133,17 +152,19 @@ function mergeBars(a: Omit<TimelineBar, 't'>, b: Omit<TimelineBar, 't'>): Omit<T
   const ok = a.ok + b.ok
   const err = a.err + b.err
   const sla = slaPercent(ok, err)
+  const firstTokenP50 = wavg(a.first_token_p50, a.ok, b.first_token_p50, b.ok)
+  const score = barScore(sla, firstTokenP50)
   return {
     ok,
     err,
     sla,
-    tone: cellTone(sla),
-    color: cellColor(sla),
+    tone: cellTone(score),
+    color: cellColor(score),
     duration_avg: wavg(a.duration_avg, a.ok, b.duration_avg, b.ok),
     duration_p50: wavg(a.duration_p50, a.ok, b.duration_p50, b.ok),
     duration_p90: wavg(a.duration_p90, a.ok, b.duration_p90, b.ok),
     first_token_avg: wavg(a.first_token_avg, a.ok, b.first_token_avg, b.ok),
-    first_token_p50: wavg(a.first_token_p50, a.ok, b.first_token_p50, b.ok),
+    first_token_p50: firstTokenP50,
     first_token_p90: wavg(a.first_token_p90, a.ok, b.first_token_p90, b.ok),
     output_tokens: sumField(a.output_tokens, b.output_tokens),
     duration_ms_sum: sumField(a.duration_ms_sum, b.duration_ms_sum),
@@ -242,7 +263,7 @@ export function liveToneFromCells(cells: readonly TimelineBar[]): CellTone {
   return 'empty'
 }
 
-/** 可用率红→黄→绿。与 sub2api hslForPct 同一公式。 */
+/** 连续红→黄→绿，给「越高越好」的数字（如缓存率）。色块走 cellColor 分档，不走这里。 */
 export function hslForPct(pct: number | null | undefined): string | undefined {
   if (pct === null || pct === undefined || Number.isNaN(pct)) return undefined
   const clamped = Math.max(0, Math.min(100, pct))
