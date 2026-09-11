@@ -344,3 +344,70 @@ export function mediaStatusClass(status: string): string {
       return 'badge-info'
   }
 }
+
+/** ChatGPT Images 2.5 系列可选模型。 */
+export const GPT_IMAGE_25_MODELS = ['gpt-image-2.5', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'] as const
+
+export function isGptImage25Model(name: string): boolean {
+  return name === 'gpt-image-2.5' || name === 'gpt-image-2.5-flare' || name === 'gpt-image-2.5-sunburst'
+}
+
+/**
+ * 模型定位文案的 i18n key。
+ *
+ * 模型名带点号（gpt-image-2.5-flare），不能直接当 vue-i18n 嵌套路径，
+ * 所以用这张显式表把名字映射到不含多余点的 key。
+ */
+export function mediaModelHintKey(name: string): string {
+  switch (name) {
+    case 'gpt-image-1':
+      return 'media.modelHints.gptImage1'
+    case 'gpt-image-1.5':
+      return 'media.modelHints.gptImage15'
+    case 'gpt-image-2':
+      return 'media.modelHints.gptImage2'
+    case 'gpt-image-2.5':
+      return 'media.modelHints.gptImage25'
+    case 'gpt-image-2.5-flare':
+      return 'media.modelHints.gptImage25Flare'
+    case 'gpt-image-2.5-sunburst':
+      return 'media.modelHints.gptImage25Sunburst'
+    case 'grok-imagine-image':
+      return 'media.modelHints.grokImagineImage'
+    case 'grok-imagine-image-quality':
+      return 'media.modelHints.grokImagineImageQuality'
+    case 'grok-imagine':
+      return 'media.modelHints.grokImagine'
+    case 'grok-imagine-video':
+      return 'media.modelHints.grokImagineVideo'
+    case 'grok-imagine-video-1.5':
+      return 'media.modelHints.grokImagineVideo15'
+    default:
+      return ''
+  }
+}
+
+/** 模型下拉的一项。 */
+export interface MediaModelSelectOption {
+  value: string
+  label: string
+  description?: string
+  kind?: 'group'
+  disabled?: boolean
+  [key: string]: unknown
+}
+
+/** 把当前 key 可用的模型编成下拉选项：每项底部带定位说明。 */
+export function mediaModelSelectOptions(
+  models: Array<{ name: string }>,
+  translate: (key: string) => string
+): MediaModelSelectOption[] {
+  return models.map((model) => {
+    const hintKey = mediaModelHintKey(model.name)
+    return {
+      value: model.name,
+      label: model.name,
+      description: hintKey ? translate(hintKey) : undefined
+    }
+  })
+}

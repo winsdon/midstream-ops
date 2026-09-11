@@ -13,6 +13,9 @@ import {
   modelsForKind,
   selectedModelOf,
   isVideoKind,
+  isGptImage25Model,
+  mediaModelHintKey,
+  mediaModelSelectOptions,
   needsUpload,
   needsImageURL,
   uniquePublicImageURLs,
@@ -470,5 +473,52 @@ describe('newClientRequestID', () => {
     const b = newClientRequestID()
     expect(a).toBeTruthy()
     expect(a).not.toBe(b)
+  })
+})
+
+describe('mediaModelSelectOptions', () => {
+  const copy: Record<string, string> = {
+    'media.modelHints.gptImage2': '通用生图',
+    'media.modelHints.gptImage25': '网页/App 产品：Sketch 手绘、模板、图上评论改图、分享提示词',
+    'media.modelHints.gptImage25Flare': '速度快，日常/批量',
+    'media.modelHints.gptImage25Sunburst': '更准、更慢，精修/成品',
+    'media.modelHints.grokImagineImage': '标准生图'
+  }
+  const translate = (key: string) => copy[key] ?? key
+
+  it('识别 2.5 系列模型', () => {
+    expect(isGptImage25Model('gpt-image-2.5')).toBe(true)
+    expect(isGptImage25Model('gpt-image-2.5-flare')).toBe(true)
+    expect(isGptImage25Model('gpt-image-2.5-sunburst')).toBe(true)
+    expect(isGptImage25Model('gpt-image-2')).toBe(false)
+  })
+
+  it('已知模型有定位文案 key，未知模型没有', () => {
+    expect(mediaModelHintKey('gpt-image-2.5')).toBe('media.modelHints.gptImage25')
+    expect(mediaModelHintKey('gpt-image-2.5-flare')).toBe('media.modelHints.gptImage25Flare')
+    expect(mediaModelHintKey('gpt-image-2.5-sunburst')).toBe('media.modelHints.gptImage25Sunburst')
+    expect(mediaModelHintKey('unknown-model')).toBe('')
+  })
+
+  it('gpt-image-2 之后是 gpt-image-2.5，每项底部带定位说明', () => {
+    const options = mediaModelSelectOptions(
+      [
+        { name: 'gpt-image-2' },
+        { name: 'gpt-image-2.5' },
+        { name: 'gpt-image-2.5-flare' },
+        { name: 'gpt-image-2.5-sunburst' }
+      ],
+      translate
+    )
+    expect(options).toEqual([
+      { value: 'gpt-image-2', label: 'gpt-image-2', description: '通用生图' },
+      {
+        value: 'gpt-image-2.5',
+        label: 'gpt-image-2.5',
+        description: '网页/App 产品：Sketch 手绘、模板、图上评论改图、分享提示词'
+      },
+      { value: 'gpt-image-2.5-flare', label: 'gpt-image-2.5-flare', description: '速度快，日常/批量' },
+      { value: 'gpt-image-2.5-sunburst', label: 'gpt-image-2.5-sunburst', description: '更准、更慢，精修/成品' }
+    ])
   })
 })

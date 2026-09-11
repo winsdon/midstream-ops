@@ -81,18 +81,24 @@
               :class="[
                 'select-option',
                 isGroupHeaderOption(option) && 'select-option-group',
+                getOptionDescription(option) && 'select-option-with-desc',
                 isSelected(option) && 'select-option-selected',
                 isOptionDisabled(option) && !isGroupHeaderOption(option) && 'select-option-disabled',
                 focusedIndex === index && !isGroupHeaderOption(option) && 'select-option-focused'
               ]"
             >
               <slot name="option" :option="option" :selected="isSelected(option)">
-                <span class="select-option-label">{{ getOptionLabel(option) }}</span>
+                <span class="select-option-text">
+                  <span class="select-option-label">{{ getOptionLabel(option) }}</span>
+                  <span v-if="getOptionDescription(option)" class="select-option-desc">
+                    {{ getOptionDescription(option) }}
+                  </span>
+                </span>
                 <Icon
-                  v-if="isSelected(option)"
+                  v-if="isSelected(option) && !isGroupHeaderOption(option)"
                   name="check"
                   size="sm"
-                  class="text-primary-500"
+                  class="mt-0.5 shrink-0 text-primary-500"
                   :stroke-width="2"
                 />
               </slot>
@@ -122,7 +128,9 @@ const instanceId = `select-${Math.random().toString(36).substring(2, 9)}`
 export interface SelectOption {
   value: string | number | boolean | null
   label: string
+  description?: string
   disabled?: boolean
+  kind?: string
   [key: string]: unknown
 }
 
@@ -212,6 +220,13 @@ const getOptionLabel = (option: any): string => {
   return String(option ?? '')
 }
 
+const getOptionDescription = (option: any): string => {
+  if (typeof option === 'object' && option !== null && option.description) {
+    return String(option.description)
+  }
+  return ''
+}
+
 const isOptionDisabled = (option: any): boolean => {
   if (typeof option === 'object' && option !== null) {
     return !!option.disabled
@@ -243,7 +258,11 @@ const filteredOptions = computed(() => {
   const opts = props.options as any[]
   if (!isSearchable.value || !searchQuery.value) return opts
   const query = searchQuery.value.toLowerCase()
-  return opts.filter((opt) => getOptionLabel(opt).toLowerCase().includes(query))
+  return opts.filter((opt) => {
+    const label = getOptionLabel(opt).toLowerCase()
+    const desc = getOptionDescription(opt).toLowerCase()
+    return label.includes(query) || desc.includes(query)
+  })
 })
 
 const isSelected = (option: any): boolean => getOptionValue(option) === props.modelValue
@@ -486,6 +505,10 @@ onUnmounted(() => {
   pointer-events: auto !important;
 }
 
+.select-dropdown-portal .select-option-with-desc {
+  @apply items-start;
+}
+
 .select-dropdown-portal .select-option-selected {
   @apply bg-primary-50 dark:bg-primary-900/20;
   @apply text-primary-700 dark:text-primary-300;
@@ -502,16 +525,27 @@ onUnmounted(() => {
 .select-dropdown-portal .select-option-group {
   @apply cursor-default select-none;
   @apply bg-gray-50 dark:bg-dark-900;
-  @apply text-[11px] font-bold uppercase tracking-wider;
-  @apply text-gray-500 dark:text-gray-400;
+  @apply text-gray-600 dark:text-gray-300;
 }
 
 .select-dropdown-portal .select-option-group:hover {
   @apply bg-gray-50 dark:bg-dark-900;
 }
 
+.select-dropdown-portal .select-option-text {
+  @apply flex min-w-0 flex-1 flex-col items-stretch gap-0.5 text-left;
+}
+
 .select-dropdown-portal .select-option-label {
-  @apply flex-1 min-w-0 truncate text-left;
+  @apply min-w-0 truncate text-left;
+}
+
+.select-dropdown-portal .select-option-group .select-option-label {
+  @apply text-xs font-semibold tracking-normal text-gray-500 dark:text-dark-400;
+}
+
+.select-dropdown-portal .select-option-desc {
+  @apply max-w-sm whitespace-normal text-xs font-normal leading-relaxed text-gray-500 dark:text-dark-400;
 }
 
 .select-dropdown-portal .select-empty {

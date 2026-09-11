@@ -153,9 +153,18 @@ func TestGrokImageModelsUseAspectRatio(t *testing.T) {
 
 // OpenAI 格式图片走 size，传 aspect_ratio 应被拒——端点不认这个字段。
 func TestOpenAIImageModelsUsePixelSize(t *testing.T) {
-	got := ClassifyModels("openai", true, []string{"gpt-image-2"}, nil)
-	if len(got) != 1 || got[0].SizeMode != SizeModePixelSize {
-		t.Fatalf("gpt-image-2 应为 size 模式，实得 %v", got)
+	names := []string{"gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"}
+	got := ClassifyModels("openai", true, names, nil)
+	if len(got) != len(names) {
+		t.Fatalf("应返回 %d 个 GPT 生图模型，实得 %d", len(names), len(got))
+	}
+	for _, opt := range got {
+		if opt.SizeMode != SizeModePixelSize {
+			t.Fatalf("%s 应为 size 模式，实得 %q", opt.Name, opt.SizeMode)
+		}
+		if opt.Capability != MediaCapImage {
+			t.Fatalf("%s 应为图片能力", opt.Name)
+		}
 	}
 
 	base := MediaGenerateParams{
@@ -167,10 +176,34 @@ func TestOpenAIImageModelsUsePixelSize(t *testing.T) {
 		t.Fatalf("合法 size 不应被拒: %v", err)
 	}
 
+	for _, name := range []string{"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"} {
+		p := base
+		p.Model = name
+		p.Size = "1024x1024"
+		if err := ValidateGenerateParams(p); err != nil {
+			t.Fatalf("%s 合法参数不应被拒: %v", name, err)
+		}
+	}
+
 	bad := base
 	bad.AspectRatio = "16:9"
 	if err := ValidateGenerateParams(bad); err == nil {
 		t.Fatal("给 OpenAI 格式模型传 aspect_ratio 应被拒绝")
+	}
+}
+
+// 空 mapping 的 openai 分组回落平台默认表，2.5 系列必须在列，
+// 否则用户有模型却在生图页看不到。
+func TestClassifyModelsIncludesGptImage25Defaults(t *testing.T) {
+	got := ClassifyModels("openai", true, nil, nil)
+	seen := map[string]bool{}
+	for _, opt := range got {
+		seen[opt.Name] = true
+	}
+	for _, name := range []string{"gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"} {
+		if !seen[name] {
+			t.Fatalf("openai 默认模型表缺少 %s", name)
+		}
 	}
 }
 

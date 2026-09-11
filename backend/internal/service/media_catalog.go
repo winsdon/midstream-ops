@@ -154,9 +154,12 @@ var mediaModels = map[string]mediaModelSpec{
 	// OpenAI 格式图片：size 为真实 WxH，按最长边分档计费。
 	// 标准价由 sub2api 内嵌的 LiteLLM 表决定，本站查不到，故 ImagePriceUSD 为 nil：
 	// 只有分组配了 image_price_* 时才能给出预估。
-	"gpt-image-1":   {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
-	"gpt-image-1.5": {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
-	"gpt-image-2":   {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
+	"gpt-image-1":            {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
+	"gpt-image-1.5":          {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
+	"gpt-image-2":            {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
+	"gpt-image-2.5":          {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
+	"gpt-image-2.5-flare":    {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
+	"gpt-image-2.5-sunburst": {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
 	// Gemini 图片模型走 /v1beta 原生协议，与 /v1/images/generations 不兼容，
 	// 故不纳入——列在这里只会让用户选中后收到 404。
 }

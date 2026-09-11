@@ -76,7 +76,34 @@
                     :options="modelOptions"
                     :searchable="currentModels.length > 5"
                     @change="syncModelDefaults"
-                  />
+                  >
+                    <template #option="{ option, selected }">
+                      <span class="flex min-w-0 flex-1 flex-col items-start gap-0.5 pr-2">
+                        <span
+                          v-if="option.kind === 'group'"
+                          class="text-xs font-semibold text-gray-600 dark:text-dark-300"
+                        >{{ option.label }}</span>
+                        <span
+                          v-else
+                          class="inline-flex max-w-full truncate rounded-md px-1.5 py-0.5 font-mono text-[12px] font-medium"
+                          :class="String(option.value).startsWith('gpt-image-')
+                            ? 'bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300'
+                            : 'bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-dark-200'"
+                        >{{ option.label }}</span>
+                        <span
+                          v-if="option.description"
+                          class="text-xs leading-relaxed text-gray-500 dark:text-dark-400"
+                        >{{ option.description }}</span>
+                      </span>
+                      <Icon
+                        v-if="selected && option.kind !== 'group'"
+                        name="check"
+                        size="sm"
+                        class="mt-0.5 shrink-0 text-primary-500"
+                        :stroke-width="2"
+                      />
+                    </template>
+                  </Select>
                   <p v-if="!currentModels.length" class="input-hint text-amber-600 dark:text-amber-400">
                     {{ t('media.errors.noModelForKind') }}
                   </p>
@@ -87,6 +114,9 @@
                   >
                     <Icon name="exclamationTriangle" size="xs" class="mt-0.5 shrink-0" />
                     <span>{{ t('media.form.downgradeHint', { model: downgradeTarget }) }}</span>
+                  </p>
+                  <p v-else-if="selectedModelHint" class="input-hint mt-1.5">
+                    {{ selectedModelHint }}
                   </p>
                 </div>
               </div>
@@ -574,6 +604,8 @@ import {
   emptyMediaForm,
   estimateTicks,
   isVideoKind,
+  mediaModelHintKey,
+  mediaModelSelectOptions,
   mediaStatusClass,
   modelsForKind,
   needsImageURL,
@@ -701,7 +733,11 @@ const keyOptions = computed(() => keys.value.map((key) => ({
   value: key.id,
   label: `${key.name} · ${key.platform === 'openai' ? 'chatgpt' : key.platform}`
 })))
-const modelOptions = computed(() => currentModels.value.map((model) => ({ value: model.name, label: model.name })))
+const modelOptions = computed(() => mediaModelSelectOptions(currentModels.value, (key) => t(key)))
+const selectedModelHint = computed(() => {
+  const key = mediaModelHintKey(form.value.model)
+  return key ? t(key) : ''
+})
 const imageSizeOptions = computed(() =>
   IMAGE_SIZE_PRESETS.map((preset) => ({
     value: preset.value,

@@ -1069,6 +1069,19 @@ export default {
       imageNotRetained: '本次图片未能转存，刷新页面后无法预览。',
       videoExpired: '视频产物未能转存且已从上游过期，无法再获取。'
     },
+    modelHints: {
+      gptImage1: '早期 GPT 生图',
+      gptImage15: '上一世代 GPT 生图',
+      gptImage2: '通用生图',
+      gptImage25: '网页/App 产品：Sketch 手绘、模板、图上评论改图、分享提示词',
+      gptImage25Flare: '速度快，日常/批量',
+      gptImage25Sunburst: '更准、更慢，精修/成品',
+      grokImagineImage: '标准生图',
+      grokImagineImageQuality: '更高质量生图',
+      grokImagine: '高质量生图（按 image-quality 计费）',
+      grokImagineVideo: '标准生视频',
+      grokImagineVideo15: '更高质量生视频'
+    },
     errors: {
       notConfigured: '生图功能未启用',
       noKeys: '没有可用的 Key',

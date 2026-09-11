@@ -1072,6 +1072,19 @@ export default {
       imageNotRetained: 'These images were not archived, so the preview is unavailable after a refresh.',
       videoExpired: 'The video was not archived and has expired upstream, so it can no longer be fetched.'
     },
+    modelHints: {
+      gptImage1: 'Early GPT image model',
+      gptImage15: 'Previous-gen GPT image model',
+      gptImage2: 'General-purpose image generation',
+      gptImage25: 'Web/App: sketching, templates, in-image comments, sharing prompts',
+      gptImage25Flare: 'Fast — daily / batch work',
+      gptImage25Sunburst: 'More accurate, slower — polish / final art',
+      grokImagineImage: 'Standard image generation',
+      grokImagineImageQuality: 'Higher-quality images',
+      grokImagine: 'High-quality images (billed as image-quality)',
+      grokImagineVideo: 'Standard video generation',
+      grokImagineVideo15: 'Higher-quality video'
+    },
     errors: {
       notConfigured: 'Generation is not enabled',
       noKeys: 'No usable key',
