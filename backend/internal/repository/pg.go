@@ -46,7 +46,20 @@ func (p *PG) Ping(ctx context.Context) error {
 }
 
 // Available 报告 PG 是否可用。
-func (p *PG) Available() bool { return p.up.Load() }
+func (p *PG) Available() bool {
+	if p == nil {
+		return false
+	}
+	return p.up.Load()
+}
+
+// SetAvailableForTest 打开或关闭 Available 标记。
+// 生产只由 Ping 更新该标记；测试用来打开成本同步分支，而不真正连上游 PG。
+func (p *PG) SetAvailableForTest(v bool) {
+	if p != nil {
+		p.up.Store(v)
+	}
+}
 
 // Pool 暴露底层连接池供查询使用。
 func (p *PG) Pool() *pgxpool.Pool { return p.pool }

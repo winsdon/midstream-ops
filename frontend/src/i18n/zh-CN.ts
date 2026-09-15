@@ -189,6 +189,8 @@ export default {
     leaveBlankKeep: '留空表示不修改',
     passwordPlaceholder: '留空则不修改现有密码',
     loginCooldown: '登录冷却中，至 {time}',
+    costSyncError: '成本同步失败：{error}',
+    costSyncFailing: '成本同步未完成（余额仍可采集）',
     syncHealthy: '采集正常',
     syncFailing: '连续失败 {n} 次',
     syncNever: '尚未采集',

@@ -189,6 +189,8 @@ export default {
     leaveBlankKeep: 'Leave blank to keep unchanged',
     passwordPlaceholder: 'Leave blank to keep existing password',
     loginCooldown: 'Login cooldown until {time}',
+    costSyncError: 'Cost sync failed: {error}',
+    costSyncFailing: 'Cost sync incomplete (balance collection still works)',
     syncHealthy: 'Sync healthy',
     syncFailing: '{n} consecutive failures',
     syncNever: 'Never synced',

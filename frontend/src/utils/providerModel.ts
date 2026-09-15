@@ -50,6 +50,19 @@ export function providerStatus(p: Provider): ProviderStatus {
   return 'connected'
 }
 
+/** 卡片/列表告警：余额错误 > 登录冷却 > 成本同步失败。成本失败不改变站点状态。 */
+export type ProviderAlert =
+  | { kind: 'balance'; error: string }
+  | { kind: 'cooldown'; until: string }
+  | { kind: 'cost'; error: string }
+
+export function providerAlert(p: Provider): ProviderAlert | null {
+  if (p.last_balance_error) return { kind: 'balance', error: p.last_balance_error }
+  if (p.login_cooldown_until) return { kind: 'cooldown', until: p.login_cooldown_until }
+  if (p.cost_last_error) return { kind: 'cost', error: p.cost_last_error }
+  return null
+}
+
 /**
  * 排序用今日消费。
  * 该值来自余额快照 metrics，未纳入监控的站点恒为空——返回 null 让它们排末尾，

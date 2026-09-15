@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -210,6 +211,122 @@ func TestSyncAllRespectsConcurrencyLimit(t *testing.T) {
 	}
 	if peak < 2 {
 		t.Errorf("并发峰值 = %d，说明退化成串行了", peak)
+	}
+}
+
+// newNewAPICostTimeoutStub 伪装 new-api 站：登录和余额成功，单个 token 用量接口失败。
+// 这是咩咩类故障的最小复现：/log/self/stat?type=2 超时/5xx，站点本身是通的。
+func newNewAPICostTimeoutStub(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/user/login":
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: "s", Path: "/"})
+			_, _ = w.Write([]byte(`{"success":true,"data":{"id":1,"quota":500000}}`))
+		case r.URL.Path == "/api/status":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota_per_unit":500000}}`))
+		case r.URL.Path == "/api/user/self":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"id":1,"username":"m","quota":500000,"used_quota":0}}`))
+		case r.URL.Path == "/api/user/self/groups":
+			_, _ = w.Write([]byte(`{"success":true,"data":{}}`))
+		case r.URL.Path == "/api/log/self/stat":
+			if r.URL.Query().Get("type") == "2" {
+				w.WriteHeader(http.StatusGatewayTimeout)
+				_, _ = w.Write([]byte(`timeout`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":0,"rpm":0}}`))
+		case strings.HasSuffix(r.URL.Path, "/key"):
+			_, _ = w.Write([]byte(`{"success":true,"data":{"key":"sk-heavy"}}`))
+		case strings.HasPrefix(r.URL.Path, "/api/token/"):
+			_, _ = w.Write([]byte(`{"success":true,"data":{"items":[{"id":1902,"name":"heavy","group":"Grok heavy","status":1}],"total":1}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"message":"not found"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestSyncOneCostFailureDoesNotRecordSiteFailure 余额成功、单个 token 用量失败时：
+// 站点采集记成功（不打红、不退避），成本错误留在 cost_sync_state。
+func TestSyncOneCostFailureDoesNotRecordSiteFailure(t *testing.T) {
+	store := newTestStore(t)
+	box := &secretbox.Box{}
+	providerRepo := repository.NewProviderRepo(store, box)
+	balanceRepo := repository.NewBalanceRepo(store)
+	collectorRepo := repository.NewCollectorStateRepo(store)
+	rateRepo := repository.NewRateRepo(store)
+	costRepo := repository.NewUpstreamCostRepo(store)
+	pg := &repository.PG{}
+	pg.SetAvailableForTest(true)
+
+	cfg := &config.Config{Location: time.UTC}
+	cfg.Balance.TimeoutSeconds = 5
+	cfg.Cost.TimeoutSeconds = 5
+
+	svc := NewProviderSyncService(
+		providerRepo, collectorRepo,
+		NewBalanceService(providerRepo, balanceRepo, cfg),
+		NewCostSyncService(providerRepo, costRepo, pg, cfg),
+		NewRateService(rateRepo, pg),
+		pg,
+	)
+
+	srv := newNewAPICostTimeoutStub(t)
+	p, err := providerRepo.Create(context.Background(), repository.CreateParams{
+		Name:          "咩咩",
+		BalanceType:   "sub2api",
+		Platform:      "new-api",
+		AuthMode:      "password",
+		BaseURL:       srv.URL,
+		LoginEmail:    "a@b.c",
+		LoginPassword: "pw",
+		RechargeRate:  1,
+	})
+	if err != nil {
+		t.Fatalf("建供应商失败: %v", err)
+	}
+
+	ctx := context.Background()
+	if _, err := collectorRepo.RecordFailure(ctx, p.ID, taskSync, "旧的成本超时", nil); err != nil {
+		t.Fatalf("预置失败记录: %v", err)
+	}
+
+	outcome, err := svc.SyncOne(ctx, p.ID, false, false)
+	if err != nil {
+		t.Fatalf("SyncOne 返回错误: %v", err)
+	}
+	if outcome == nil || outcome.Err != nil {
+		t.Fatalf("余额已成功时 outcome.Err 应为 nil，得到 %v", outcome)
+	}
+	if outcome.Snapshot == nil || outcome.Snapshot.Balance == nil {
+		t.Fatal("余额快照应写入")
+	}
+
+	st, err := collectorRepo.Get(ctx, p.ID, taskSync)
+	if err != nil {
+		t.Fatalf("读 collector_state: %v", err)
+	}
+	if st.ConsecutiveFailures != 0 {
+		t.Errorf("consecutive_failures = %d，期望 0（成本失败不应打红站点）", st.ConsecutiveFailures)
+	}
+	if st.LastSuccessAt == nil {
+		t.Error("last_success_at 应被写入")
+	}
+	if st.NextEligibleAt != nil {
+		t.Errorf("不应写入退避解禁时刻，得到 %v", st.NextEligibleAt)
+	}
+
+	costStates, err := costRepo.SyncStates(ctx)
+	if err != nil {
+		t.Fatalf("读 cost_sync_state: %v", err)
+	}
+	cs := costStates[p.ID]
+	if cs.LastError == nil || *cs.LastError == "" {
+		t.Fatal("成本错误应留在 cost_sync_state.last_error")
 	}
 }
 

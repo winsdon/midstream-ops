@@ -32,6 +32,21 @@ func TestProviderDTOUsesConfiguredLocationForBalanceUpdate(t *testing.T) {
 	}
 }
 
+func TestCostLastErrorOmitsEmpty(t *testing.T) {
+	if got := costLastError(repository.CostSyncState{}); got != nil {
+		t.Fatalf("空状态应省略, 得到 %v", got)
+	}
+	blank := "  "
+	if got := costLastError(repository.CostSyncState{LastError: &blank}); got != nil {
+		t.Fatalf("空白错误应省略, 得到 %v", got)
+	}
+	msg := "token 用量请求失败: timeout"
+	got := costLastError(repository.CostSyncState{LastError: &msg})
+	if got == nil || *got != msg {
+		t.Fatalf("应透出成本错误, 得到 %v", got)
+	}
+}
+
 func TestSyncStateDTOUsesConfiguredLocation(t *testing.T) {
 	loc, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {

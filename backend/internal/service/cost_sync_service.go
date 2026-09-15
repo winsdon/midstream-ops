@@ -464,6 +464,14 @@ func (s *CostSyncService) KeyCosts(ctx context.Context, providerID int64, startD
 	return s.costRepo.KeyCosts(ctx, providerID, startDate, endDate)
 }
 
+// SyncStates 返回全部供应商的成本同步状态（供应商列表挂 cost_last_error 用）。
+func (s *CostSyncService) SyncStates(ctx context.Context) (map[int64]repository.CostSyncState, error) {
+	if s == nil || s.costRepo == nil {
+		return map[int64]repository.CostSyncState{}, nil
+	}
+	return s.costRepo.SyncStates(ctx)
+}
+
 // SyncState 返回某供应商的成本同步状态；无记录时返回零值（LastSyncedAt 为 nil）。
 func (s *CostSyncService) SyncState(ctx context.Context, providerID int64) (repository.CostSyncState, error) {
 	states, err := s.costRepo.SyncStates(ctx)
@@ -479,6 +487,9 @@ func (s *CostSyncService) SyncState(ctx context.Context, providerID int64) (repo
 
 // accountFingerprints 返回 sha256(api_key) → 账号 的映射。
 func (s *CostSyncService) accountFingerprints(ctx context.Context) (map[string]repository.AccountKeyFingerprint, error) {
+	if s.pg == nil || s.pg.Pool() == nil {
+		return map[string]repository.AccountKeyFingerprint{}, nil
+	}
 	list, err := s.pg.ListAccountKeyFingerprints(ctx)
 	if err != nil {
 		return nil, err

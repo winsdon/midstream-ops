@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   isLowBalance, sortProviders, providerStatus, filterProviders, statusOptions,
+  providerAlert,
   type ProviderSortKey
 } from '@/utils/providerModel'
 import type { Provider } from '@/types'
@@ -129,6 +130,47 @@ describe('sortProviders — 不监控站点沉底', () => {
     for (const key of ['name', 'todayCostDesc', 'balanceDesc', 'balanceAsc'] as ProviderSortKey[]) {
       expect(names(sortProviders(list, key))).toEqual(['a', 'b', 'c'])
     }
+  })
+})
+
+describe('providerAlert — 卡片/列表告警优先级', () => {
+  it('余额错误优先于冷却和成本错误', () => {
+    const p = provider({
+      name: 'x',
+      last_balance_error: 'login rejected',
+      login_cooldown_until: '2026-09-15 10:00:00',
+      cost_last_error: 'token timeout'
+    })
+    expect(providerAlert(p)).toEqual({ kind: 'balance', error: 'login rejected' })
+  })
+
+  it('无余额错误时展示登录冷却', () => {
+    const p = provider({
+      name: 'x',
+      login_cooldown_until: '2026-09-15 10:00:00',
+      cost_last_error: 'token timeout'
+    })
+    expect(providerAlert(p)).toEqual({ kind: 'cooldown', until: '2026-09-15 10:00:00' })
+  })
+
+  it('余额正常时把成本同步失败展示为告警，而不是站点异常', () => {
+    const p = provider({
+      name: '咩咩',
+      cost_last_error: 'token 用量请求失败: timeout',
+      sync_state: { consecutive_failures: 0, last_success_at: '2026-09-14 19:56:00' }
+    })
+    expect(providerStatus(p)).toBe('connected')
+    expect(providerAlert(p)).toEqual({
+      kind: 'cost',
+      error: 'token 用量请求失败: timeout'
+    })
+  })
+
+  it('全正常时无告警', () => {
+    expect(providerAlert(provider({
+      name: 'ok',
+      sync_state: { consecutive_failures: 0, last_success_at: 'x' }
+    }))).toBeNull()
   })
 })
 

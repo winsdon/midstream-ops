@@ -52,6 +52,8 @@ export interface Provider {
   account_count: number
   created_at: string
   sync_state?: ProviderSyncState | null
+  /** 成本同步错误。余额成功时站点仍算已连接，卡片单独提示这条。 */
+  cost_last_error?: string | null
   // 上游站点指标（USD 原值，前端按 recharge_rate 折 CNY）
   today_cost?: number | null
   total_cost?: number | null

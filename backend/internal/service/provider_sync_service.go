@@ -218,9 +218,13 @@ func (s *ProviderSyncService) SyncOne(ctx context.Context, providerID int64, man
 		s.syncUpstreamRates(ctx, p)
 
 		if s.pg.Available() {
-			// 成本同步：复用同一登录态，按平台分发 per-key 实扣接口。
-			syncErr = s.syncCost(ctx, p, backfill)
-			outcome.CostSynced = syncErr == nil
+			// 成本同步失败不记站点失败：单个 token 的 /log/self/stat 超时
+			// 若写入 collector_state，会把健康点打红，并触发退避把余额采集一并推迟。
+			if costErr := s.syncCost(ctx, p, backfill); costErr != nil {
+				log.Printf("[sync] 供应商 %s 成本同步失败（余额已采集，不记站点失败）: %v", p.Name, costErr)
+			} else {
+				outcome.CostSynced = true
+			}
 		}
 	}
 

@@ -73,6 +73,8 @@ type providerDTO struct {
 
 	// 采集健康（collector_state；无记录时为 nil）
 	SyncState *syncStateDTO `json:"sync_state,omitempty"`
+	// 成本同步错误。与站点异常解耦：余额成功时健康点仍为已连接，卡片单独提示。
+	CostLastError *string `json:"cost_last_error,omitempty"`
 }
 
 // snapshotMetrics 余额快照 metrics JSON 中本页关心的字段。
@@ -96,6 +98,14 @@ func formatProviderTime(t time.Time, loc *time.Location) string {
 		loc = time.Local
 	}
 	return t.In(loc).Format("2006-01-02 15:04:05")
+}
+
+// costLastError 把成本同步错误带到列表 DTO。空白视为无错误，避免卡片刷一条空告警。
+func costLastError(st repository.CostSyncState) *string {
+	if st.LastError == nil || strings.TrimSpace(*st.LastError) == "" {
+		return nil
+	}
+	return st.LastError
 }
 
 func toSyncStateDTO(st repository.CollectorState, loc *time.Location) *syncStateDTO {
@@ -161,6 +171,10 @@ func (h *ProviderHandler) List(c *gin.Context) {
 	}
 	countMap, _ := h.svc.AccountCountMap(c.Request.Context())
 	states, _ := h.syncSvc.States(c.Request.Context())
+	var costStates map[int64]repository.CostSyncState
+	if h.costSvc != nil {
+		costStates, _ = h.costSvc.SyncStates(c.Request.Context())
+	}
 	// 批量取最新快照，解析出今日消费/历史累计（次要数据，失败不影响列表）
 	snaps, _ := h.balanceSvc.LatestSnapshots(c.Request.Context())
 
@@ -169,6 +183,9 @@ func (h *ProviderHandler) List(c *gin.Context) {
 		d := toDTO(p, countMap[p.ID], h.cfg.Location)
 		if st, ok := states[p.ID]; ok {
 			d.SyncState = toSyncStateDTO(st, h.cfg.Location)
+		}
+		if cs, ok := costStates[p.ID]; ok {
+			d.CostLastError = costLastError(cs)
 		}
 		if snap, ok := snaps[p.ID]; ok && snap.Metrics != nil {
 			var m snapshotMetrics

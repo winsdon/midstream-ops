@@ -135,7 +135,11 @@
                 <Badge :variant="balanceTypeVariant(p.balance_type)">
                   {{ balanceTypeLabel(p.balance_type) }}
                 </Badge>
-                <div v-if="p.balance_type === 'sub2api' && p.last_balance_error" class="mt-0.5 max-w-[180px] truncate text-xs text-red-500" :title="p.last_balance_error">⚠ {{ p.last_balance_error }}</div>
+                <div
+                  v-if="p.balance_type === 'sub2api' && providerAlert(p)"
+                  class="mt-0.5 max-w-[180px] truncate text-xs text-amber-600 dark:text-amber-400"
+                  :title="listAlertText(p)"
+                >⚠ {{ listAlertText(p) }}</div>
               </td>
               <td>
                 <span v-if="p.last_balance !== null && p.last_balance !== undefined" :class="isLowBalance(p, defaultBalanceThreshold) ? 'font-semibold text-red-600' : 'font-semibold text-gray-900 dark:text-white'">
@@ -808,7 +812,7 @@ import ProviderGroupsDialog from '@/components/provider/ProviderGroupsDialog.vue
 import OperatingCostDialog from '@/components/provider/OperatingCostDialog.vue'
 import Select from '@/components/common/Select.vue'
 import {
-  searchProviders, filterProviders, sortProviders, providerStatus, isLowBalance,
+  searchProviders, filterProviders, sortProviders, providerStatus, providerAlert, isLowBalance,
   platformOptions, statusOptions, balanceTypeOptions,
   type ProviderSortKey, type ProviderStatus
 } from '@/utils/providerModel'
@@ -1016,12 +1020,23 @@ function healthDotClass(p: Provider): string {
       return HEALTH_DOT_GRAY
   }
 }
+function listAlertText(p: Provider): string {
+  const a = providerAlert(p)
+  if (!a) return ''
+  if (a.kind === 'balance') return a.error
+  if (a.kind === 'cooldown') return t('provider.loginCooldown', { time: a.until })
+  return t('provider.costSyncError', { error: a.error })
+}
+
 function healthTitle(p: Provider): string {
   if (providerStatus(p) === 'credentialsPending') return t('provider.credentialsMissing')
   const st = p.sync_state
   if (!st || (!st.last_run_at && !st.last_success_at)) return t('provider.syncNever')
   if (st.consecutive_failures > 0) {
     return t('provider.syncFailing', { n: st.consecutive_failures }) + (st.last_error ? '\n' + st.last_error : '')
+  }
+  if (p.cost_last_error) {
+    return t('provider.costSyncFailing') + '\n' + p.cost_last_error
   }
   return t('provider.syncHealthy') + (st.last_success_at ? ' · ' + st.last_success_at : '')
 }

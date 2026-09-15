@@ -53,19 +53,13 @@
       </button>
     </div>
 
-    <!-- 错误提示 -->
+    <!-- 错误提示：余额/冷却算站点问题；成本失败单独提示，不改状态徽标 -->
     <div
-      v-if="provider.last_balance_error"
+      v-if="alert"
       class="mt-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300"
     >
       <Icon name="exclamationTriangle" size="sm" class="mt-0.5 flex-shrink-0" />
-      <span class="line-clamp-2">{{ provider.last_balance_error }}</span>
-    </div>
-    <div
-      v-else-if="provider.login_cooldown_until"
-      class="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300"
-    >
-      {{ t('provider.loginCooldown', { time: provider.login_cooldown_until }) }}
+      <span class="line-clamp-2">{{ alertText }}</span>
     </div>
 
     <!-- 底部：更新时间 + 操作 -->
@@ -123,7 +117,7 @@ import type { Provider } from '@/types'
 import Icon from '@/components/icons/Icon.vue'
 import Badge from '@/components/common/Badge.vue'
 import MetricCell from '@/components/MetricCell.vue'
-import { isLowBalance, providerStatus, type ProviderStatus } from '@/utils/providerModel'
+import { isLowBalance, providerAlert, providerStatus, type ProviderStatus } from '@/utils/providerModel'
 
 const { t } = useI18n()
 
@@ -185,6 +179,14 @@ const STATUS_LABELS: Record<ProviderStatus, string> = {
 const status = computed(() => providerStatus(props.provider))
 const statusVariant = computed(() => STATUS_VARIANTS[status.value])
 const statusLabel = computed(() => t(STATUS_LABELS[status.value]))
+const alert = computed(() => providerAlert(props.provider))
+const alertText = computed(() => {
+  const a = alert.value
+  if (!a) return ''
+  if (a.kind === 'balance') return a.error
+  if (a.kind === 'cooldown') return t('provider.loginCooldown', { time: a.until })
+  return t('provider.costSyncError', { error: a.error })
+})
 </script>
 
 <style scoped>
