@@ -46,6 +46,7 @@ import type {
   DetectHistoryItem,
   DetectJob,
   DetectPreset,
+  DetectBaselinePayload,
   DetectRetryPayload,
   DetectRunPayload,
   DetectRunResult
@@ -435,6 +436,11 @@ export const detectApi = {
       )
     ),
   /** 可检测的 anthropic 账号；后端只返回展示字段，密钥不出后端 */
+  baseline: () => unwrap<{ baseline: import('@/types/detect').DetectBaseline | null }>(http.get<ApiResponse<{ baseline: import('@/types/detect').DetectBaseline | null }>>('/detect/baseline')),
+  createBaseline: (payload: DetectBaselinePayload) =>
+    unwrap<import('@/types/detect').DetectBaseline>(
+      http.post<ApiResponse<import('@/types/detect').DetectBaseline>>('/detect/baseline', payload)
+    ),
   accounts: () =>
     unwrap<{ items: DetectAccount[]; total: number }>(
       http.get<ApiResponse<{ items: DetectAccount[]; total: number }>>('/detect/accounts')

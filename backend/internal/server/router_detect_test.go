@@ -33,6 +33,8 @@ func TestDetectRoutesRequireAuth(t *testing.T) {
 	}{
 		{"检测项清单", http.MethodGet, "/api/v1/detect/checks"},
 		{"可检测账号", http.MethodGet, "/api/v1/detect/accounts"},
+		{"当前基准", http.MethodGet, "/api/v1/detect/baseline"},
+		{"生成基准", http.MethodPost, "/api/v1/detect/baseline"},
 		{"发起检测", http.MethodPost, "/api/v1/detect/run"},
 		{"作业快照", http.MethodGet, "/api/v1/detect/jobs/abc"},
 		{"取消作业", http.MethodPost, "/api/v1/detect/jobs/abc/cancel"},

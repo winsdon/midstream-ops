@@ -71,7 +71,8 @@ func (p *PG) ListUserKeys(ctx context.Context, userID string) ([]PGUserKey, erro
 		       COALESCE(g.id,0), COALESCE(g.name,''), COALESCE(g.platform,''),
 		       COALESCE(g.allow_image_generation,false),
 		       COALESCE(gm.models, '{}'),
-		       COALESCE(g.models_list_config,'{}'::jsonb)
+		       -- Optional upstream column; older schemas have no custom model list.
+		       COALESCE(to_jsonb(g) -> 'models_list_config','{}'::jsonb)
 		FROM api_keys k
 		LEFT JOIN groups g      ON g.id = k.group_id AND g.deleted_at IS NULL AND g.status = 'active'
 		LEFT JOIN group_models gm ON gm.group_id = g.id

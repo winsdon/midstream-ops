@@ -94,7 +94,8 @@ func main() {
 	provisionSvc := service.NewProvisionService(providerRepo, connRepo, linkRepo, pg, balanceSvc)
 	// 上游 Claude 渠道检测：判断某条上游到底是 Max 号池 / Bedrock / Kiro / 伪装
 	detectRepo := repository.NewModelDetectionRepo(store)
-	detectSvc := service.NewModelDetectService(detectRepo, pg, linkRepo, providerRepo)
+	baselineRepo := repository.NewModelDetectionBaselineRepo(store)
+	detectSvc := service.NewModelDetectServiceWithBaseline(detectRepo, baselineRepo, pg, linkRepo, providerRepo)
 
 	// 系统设置（策略/通知，monitor 库持久化 + 热更新）
 	settingsSvc, err := service.NewSettingsService(settingsRepo)

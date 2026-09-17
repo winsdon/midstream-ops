@@ -324,79 +324,7 @@ func checkHelloEntropy(ctx context.Context, c *Client, _ *runState) *CheckResult
 	return r.finish(fmt.Sprintf("%d 次采样得到 %d 种不同回复", okCount, unique))
 }
 
-// checkThinkingGradient 三档难度的思考量是否随难度增长。
-// 固定注入 thinking 的假实现往往三档一样长，或者干脆没有签名。
-func checkThinkingGradient(ctx context.Context, c *Client, st *runState) *CheckResult {
-	meta, _ := checkByID("thinking-gradient")
-	r := newResult(meta)
-	tasks := []struct {
-		level int
-		q     string
-	}{
-		{1, "What is 2+2?"},
-		{2, "Find all integer solutions to x^2 - y^2 = 45 where x,y > 0. Show your work."},
-		{3, "Design a lock-free MPMC queue in C++. Discuss the ABA problem, memory ordering, and a correctness proof sketch in detail."},
-	}
-	var chars []int
-	sigCount := 0
-	for _, t := range tasks {
-		ex := c.PostStream(ctx, KindMessages, map[string]any{
-			"model": c.Target().Model, "max_tokens": 8000, "stream": true,
-			"thinking": st.profile.ThinkingParam("summarized"),
-			"messages": []map[string]any{{"role": "user", "content": t.q}},
-		})
-		r.Exchanges = append(r.Exchanges, ex)
-		r.DurationMs += ex.DurationMs
-		if !ex.OK() {
-			r.diagnose(fmt.Sprintf("第 %d 档请求成功", t.level), false, describeFailure(ex))
-			chars = append(chars, -1)
-			continue
-		}
-		thinkChars, sigLen := streamThinkingStats(ex.Events)
-		chars = append(chars, thinkChars)
-		if sigLen > 0 {
-			sigCount++
-		}
-		r.diagnose(fmt.Sprintf("第 %d 档产生思考", t.level), thinkChars > 0,
-			fmt.Sprintf("thinking %d 字符，签名 %d 字符，首字 %s", thinkChars, sigLen, fmtMsPtr(ex.TTFTMs)))
-	}
-
-	valid := len(chars) == 3 && chars[0] >= 0 && chars[1] >= 0 && chars[2] >= 0
-	if !valid {
-		r.Status = StatusInconclusive
-		return r.finish("部分档位请求失败")
-	}
-	monotonic := meaningfulThinkingGradient(chars)
-	r.assert("思考量随难度明显增长", monotonic, fmt.Sprintf("%v", chars))
-	r.diagnose("各档均带签名", sigCount == 3, fmt.Sprintf("%d/3 档观察到签名", sigCount))
-	if monotonic && sigCount >= 2 {
-		r.AuthScore = 15
-	}
-	return r.finish(fmt.Sprintf("三档思考字符数 %v", chars))
-}
-
 func helloEntropyPassed(unique int) bool { return unique >= 4 }
-
-func meaningfulThinkingGradient(chars []int) bool {
-	if len(chars) != 3 || chars[0] <= 0 || chars[1] <= 0 || chars[2] <= 0 {
-		return false
-	}
-	return chars[1] >= chars[0]*3/2 && chars[2] >= chars[1]*3/2
-}
-
-// streamThinkingStats 汇总流里的思考字符数与签名长度。
-func streamThinkingStats(events []SSEEvent) (thinkChars, sigLen int) {
-	for _, ev := range events {
-		delta := mapOf(ev.Data["delta"])
-		switch str(delta["type"]) {
-		case "thinking_delta":
-			thinkChars += len(str(delta["thinking"]))
-		case "signature_delta":
-			sigLen += len(str(delta["signature"]))
-		}
-	}
-	return
-}
 
 // checkSlope 输出 token 与词数之比。
 // 正常在 1.2-2.5；显著偏高说明渠道在未被请求的情况下强制注入了 thinking，

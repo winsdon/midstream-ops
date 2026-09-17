@@ -56,6 +56,8 @@ type DetectTargetInput struct {
 
 // DetectRunRequest 发起检测的请求。
 type DetectRunRequest struct {
+	Owner        string              `json:"-"`
+	BaselineID   *int64              `json:"baseline_id"`
 	Targets      []DetectTargetInput `json:"targets"`
 	Model        string              `json:"model"`
 	AuthMode     string              `json:"auth_mode"`
@@ -64,6 +66,16 @@ type DetectRunRequest struct {
 	TimeoutMs    int                 `json:"timeout_ms"`
 	// Concurrency 同时执行几项检测（跨目标共享）。0 / 缺省按 3；超出 1–10 夹紧，不 400。
 	Concurrency int `json:"concurrency"`
+}
+
+// DetectBaselineRequest 独立生成基准：只选账号，不依赖当轮检测目标。
+type DetectBaselineRequest struct {
+	Owner        string            `json:"-"`
+	AccountID    *int64            `json:"account_id"`
+	Model        string            `json:"model"`
+	AuthMode     string            `json:"auth_mode"`
+	ExtraHeaders map[string]string `json:"extra_headers"`
+	TimeoutMs    int               `json:"timeout_ms"`
 }
 
 // DetectRetryRequest 重试作业里请求失败的检测项。
@@ -77,6 +89,7 @@ type DetectRetryRequest struct {
 
 // DetectJob 一次检测作业的进度与结果快照（可直接序列化给前端）。
 type DetectJob struct {
+	BaselineID  *int64                   `json:"baseline_id,omitempty"`
 	ID          string                   `json:"id"`
 	Status      string                   `json:"status"`
 	Checks      []string                 `json:"checks"`
@@ -92,6 +105,7 @@ type DetectJob struct {
 // ModelDetectService 编排渠道检测：解析目标 → 按并发度执行 → 落库 → 供前端轮询。
 type ModelDetectService struct {
 	repo         *repository.ModelDetectionRepo
+	baselineRepo *repository.ModelDetectionBaselineRepo
 	pg           *repository.PG
 	linkRepo     *repository.ProviderAccountRepo
 	providerRepo *repository.ProviderRepo
@@ -102,16 +116,21 @@ type ModelDetectService struct {
 
 // detectJob 是作业的内部形态：快照 + 取消钩子。
 type detectJob struct {
-	mu      sync.RWMutex
-	snap    DetectJob
-	cancel  context.CancelFunc
-	targets []modeldetect.Target // 含密钥，只留在进程内供重试，不进快照
+	mu       sync.RWMutex
+	snap     DetectJob
+	cancel   context.CancelFunc
+	targets  []modeldetect.Target // 含密钥，只留在进程内供重试，不进快照
+	baseline *modeldetect.BaselineStats
 }
 
 // NewModelDetectService 创建服务。
-func NewModelDetectService(repo *repository.ModelDetectionRepo, pg *repository.PG,
+func NewModelDetectService(repo *repository.ModelDetectionRepo, pg *repository.PG, linkRepo *repository.ProviderAccountRepo, providerRepo *repository.ProviderRepo) *ModelDetectService {
+	return NewModelDetectServiceWithBaseline(repo, nil, pg, linkRepo, providerRepo)
+}
+
+func NewModelDetectServiceWithBaseline(repo *repository.ModelDetectionRepo, baselineRepo *repository.ModelDetectionBaselineRepo, pg *repository.PG,
 	linkRepo *repository.ProviderAccountRepo, providerRepo *repository.ProviderRepo) *ModelDetectService {
-	return &ModelDetectService{repo: repo, pg: pg, linkRepo: linkRepo,
+	return &ModelDetectService{repo: repo, baselineRepo: baselineRepo, pg: pg, linkRepo: linkRepo,
 		providerRepo: providerRepo, jobs: map[string]*detectJob{}}
 }
 
@@ -170,6 +189,83 @@ func (s *ModelDetectService) ListAccounts(ctx context.Context) ([]DetectAccount,
 	return out, nil
 }
 
+// GetBaseline 返回当前用户的基准快照。
+func (s *ModelDetectService) GetBaseline(ctx context.Context, owner string) (*repository.ModelDetectionBaseline, error) {
+	if s.baselineRepo == nil {
+		return nil, repository.ErrBaselineNotFound
+	}
+	return s.baselineRepo.Get(ctx, owner)
+}
+
+// CreateBaseline 使用指定账号生成并覆盖当前用户基准，不依赖当轮检测目标。
+func (s *ModelDetectService) CreateBaseline(ctx context.Context, owner string, req DetectBaselineRequest) (*repository.ModelDetectionBaseline, error) {
+	if owner == "" {
+		return nil, errors.New("未识别当前用户")
+	}
+	if req.AccountID == nil || *req.AccountID <= 0 {
+		return nil, errors.New("生成基准时必须选择一个账号")
+	}
+	targets, err := s.resolveTargets(ctx, DetectRunRequest{
+		Targets:      []DetectTargetInput{{AccountID: req.AccountID}},
+		Model:        req.Model,
+		AuthMode:     req.AuthMode,
+		ExtraHeaders: req.ExtraHeaders,
+		TimeoutMs:    req.TimeoutMs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	target := targets[0]
+	stats, ex := modeldetect.CaptureBaseline(ctx, modeldetect.NewClient(target))
+	b := buildBaselineRecord(owner, target, stats, ex)
+	if s.baselineRepo == nil {
+		return nil, errors.New("基准存储未配置")
+	}
+	if err := s.baselineRepo.Upsert(ctx, b); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+func buildBaselineRecord(owner string, target modeldetect.Target, stats *modeldetect.BaselineStats, ex *modeldetect.Exchange) *repository.ModelDetectionBaseline {
+	b := &repository.ModelDetectionBaseline{
+		Owner: owner, AccountID: target.AccountID, TargetFP: TargetFingerprint(target.BaseURL, target.APIKey),
+		TargetName: target.Name, BaseURL: target.BaseURL, Model: target.Model,
+		TemplateVersion: modeldetect.BaselineTemplateVersion, Status: "failed",
+	}
+	if ex != nil {
+		b.Error = ex.ErrorText()
+		b.Report, _ = json.Marshal(map[string]any{"exchange": ex})
+	}
+	if stats != nil {
+		b.Status = "passed"
+		b.QualityOK = stats.QualityOK
+		b.InputTokens = stats.InputTokens
+		b.OutputTokens = stats.OutputTokens
+		b.ThinkingTokens = stats.ThinkingTokens
+		b.ThinkingChars = stats.ThinkingChars
+		b.TTFTMs = stats.TTFTMs
+		b.DurationMs = stats.DurationMs
+		b.ResponseSummary = stats.ResponseSummary
+		b.Error = ""
+	}
+	if len(b.Report) == 0 {
+		b.Report = json.RawMessage(`{}`)
+	}
+	return b
+}
+
+func baselineStatsFromRow(b *repository.ModelDetectionBaseline) *modeldetect.BaselineStats {
+	if b == nil {
+		return nil
+	}
+	return &modeldetect.BaselineStats{
+		Model: b.Model, QualityOK: b.QualityOK, InputTokens: b.InputTokens, OutputTokens: b.OutputTokens,
+		ThinkingTokens: b.ThinkingTokens, ThinkingChars: b.ThinkingChars, TTFTMs: b.TTFTMs,
+		DurationMs: b.DurationMs, ResponseSummary: b.ResponseSummary,
+	}
+}
+
 // Start 解析目标并异步执行检测，返回作业 id。
 //
 // 目标解析在返回前完成：地址不合法、账号查不到这类错误应当立刻反馈，
@@ -187,6 +283,14 @@ func (s *ModelDetectService) Start(ctx context.Context, req DetectRunRequest) (s
 		return "", err
 	}
 	checks := modeldetect.ResolveCheckIDs(req.Checks)
+	var baseline *modeldetect.BaselineStats
+	var baselineID *int64
+	if s.baselineRepo != nil && req.Owner != "" {
+		if b, e := s.baselineRepo.Get(ctx, req.Owner); e == nil && b.Status == "passed" {
+			baselineID = &b.ID
+			baseline = baselineStatsFromRow(b)
+		}
+	}
 
 	jobID, err := newJobID()
 	if err != nil {
@@ -197,12 +301,13 @@ func (s *ModelDetectService) Start(ctx context.Context, req DetectRunRequest) (s
 	concurrency := clampDetectConcurrency(req.Concurrency)
 	job := &detectJob{
 		snap: DetectJob{
-			ID: jobID, Status: DetectJobRunning, Checks: checks,
+			BaselineID: baselineID,
+			ID:         jobID, Status: DetectJobRunning, Checks: checks,
 			Total: len(targets) * len(checks), Concurrency: concurrency,
 			CreatedAt: now, UpdatedAt: now,
 		},
 		cancel:  cancel,
-		targets: targets,
+		targets: targets, baseline: baseline,
 	}
 	for _, t := range targets {
 		job.snap.Targets = append(job.snap.Targets, &modeldetect.TargetRun{
@@ -309,7 +414,7 @@ func (s *ModelDetectService) run(ctx context.Context, job *detectJob,
 			if ctx.Err() != nil {
 				return
 			}
-			result := modeldetect.Run(ctx, target, checks, gate, func(res *modeldetect.CheckResult) {
+			result := modeldetect.RunWithBaseline(ctx, target, checks, gate, job.baseline, func(res *modeldetect.CheckResult) {
 				job.onCheckProgress(i, res)
 			})
 			job.setTargetResult(i, result)
@@ -458,7 +563,7 @@ func (s *ModelDetectService) runRetry(ctx context.Context, job *detectJob, plan 
 				return
 			}
 			prev, _ := job.targetSnapshot(item.index)
-			result := modeldetect.RetryChecks(ctx, item.target, item.checks, prev, gate, func(res *modeldetect.CheckResult) {
+			result := modeldetect.RetryChecksWithBaseline(ctx, item.target, item.checks, prev, gate, job.baseline, func(res *modeldetect.CheckResult) {
 				job.onCheckProgress(item.index, res)
 			})
 			job.setTargetResult(item.index, result)

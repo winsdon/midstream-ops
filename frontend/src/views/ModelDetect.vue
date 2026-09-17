@@ -13,6 +13,16 @@
           @change="onTargetChange"
         />
 
+        <DetectBaselinePanel
+          :accounts="accounts"
+          :accounts-loading="accountsLoading"
+          :accounts-error="accountsError"
+          :baseline="baseline"
+          :loading="baselineLoading"
+          :test-model="runOptions.model"
+          @generate="createBaseline"
+        />
+
         <DetectCheckPicker
           :checks="checks"
           :defaults="defaults"
@@ -117,6 +127,7 @@ import { errorMessage } from '@/api/client'
 import { useAppStore } from '@/stores/app'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import DetectTargetPanel from '@/components/detect/DetectTargetPanel.vue'
+import DetectBaselinePanel from '@/components/detect/DetectBaselinePanel.vue'
 import DetectCheckPicker from '@/components/detect/DetectCheckPicker.vue'
 import DetectRunBar from '@/components/detect/DetectRunBar.vue'
 import DetectVerdictCard from '@/components/detect/DetectVerdictCard.vue'
@@ -125,8 +136,10 @@ import DetectCheckDrawer from '@/components/detect/DetectCheckDrawer.vue'
 import DetectHistoryTable from '@/components/detect/DetectHistoryTable.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import { DEFAULT_DETECT_CONCURRENCY, estimateRequests, highCostSelection, withDependencies } from '@/utils/detectModel'
+import { baselineApplies, sameBaselineModel } from '@/utils/detectBaseline'
 import type {
   DetectAccount,
+  DetectBaseline,
   DetectCheckMeta,
   DetectCheckResult,
   DetectHistoryItem,
@@ -155,6 +168,8 @@ const resultTab = ref<(typeof RESULT_TABS)[number]>('result')
 const accounts = ref<DetectAccount[]>([])
 const accountsLoading = ref(false)
 const accountsError = ref('')
+const baseline = ref<DetectBaseline | null>(null)
+const baselineLoading = ref(false)
 
 const targets = ref<DetectTargetInput[]>([])
 const runOptions = ref({ model: '', authMode: 'both', timeoutMs: 90000, extraHeaders: {} as Record<string, string> })
@@ -250,6 +265,34 @@ async function loadAccounts(): Promise<void> {
   }
 }
 
+async function loadBaseline(): Promise<void> {
+  try { baseline.value = (await detectApi.baseline()).baseline } catch (e) { app.showError(t('detect.loadFailed') + '：' + errorMessage(e)) }
+}
+
+async function createBaseline(accountId: number): Promise<void> {
+  if (!accountId) return
+  baselineLoading.value = true
+  try {
+    baseline.value = await detectApi.createBaseline({
+      account_id: accountId,
+      model: runOptions.value.model,
+      auth_mode: runOptions.value.authMode,
+      extra_headers: runOptions.value.extraHeaders,
+      timeout_ms: runOptions.value.timeoutMs
+    })
+    if (baseline.value.status === 'passed' && baseline.value.quality_ok) {
+      app.showSuccess(t('detect.baselineCreated'))
+    } else {
+      const status = baseline.value.exchange?.status
+      app.showError(t('detect.baselineFailed') + (status && status >= 400 ? `（HTTP ${status}）` : ''))
+    }
+  } catch (e) {
+    app.showError(t('detect.runFailed') + '：' + errorMessage(e))
+  } finally {
+    baselineLoading.value = false
+  }
+}
+
 async function loadHistory(page = 1): Promise<void> {
   historyLoading.value = true
   try {
@@ -287,11 +330,19 @@ async function startRun(): Promise<void> {
   historyRun.value = null
   job.value = null
   try {
+    const applies = baselineApplies(baseline.value, runOptions.value.model)
+    if (baseline.value && !sameBaselineModel(baseline.value.model, runOptions.value.model)) {
+      app.showWarning(t('detect.baselineModelMismatch', {
+        baseline: baseline.value.model,
+        current: runOptions.value.model || t('detect.modelEmpty')
+      }))
+    }
     const res = await detectApi.run({
       targets: targets.value,
       model: runOptions.value.model,
       auth_mode: runOptions.value.authMode,
       checks: selected.value,
+      baseline_id: applies ? baseline.value?.id : undefined,
       extra_headers: runOptions.value.extraHeaders,
       timeout_ms: runOptions.value.timeoutMs,
       concurrency: concurrency.value
@@ -410,6 +461,7 @@ function exportReport(): void {
 onMounted(() => {
   void loadChecks()
   void loadAccounts()
+  void loadBaseline()
   void loadHistory(1)
 })
 

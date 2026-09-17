@@ -32,6 +32,48 @@ func (h *ModelDetectHandler) Checks(c *gin.Context) {
 	})
 }
 
+// Baseline GET /detect/baseline —— 当前用户已保存的 CCMax 基准（含脱敏报文）。
+func (h *ModelDetectHandler) Baseline(c *gin.Context) {
+	owner := c.GetString("username")
+	b, err := h.svc.GetBaseline(c.Request.Context(), owner)
+	if err != nil {
+		if errors.Is(err, repository.ErrBaselineNotFound) {
+			response.Success(c, gin.H{"baseline": nil})
+			return
+		}
+		response.InternalError(c, "查询基准失败: "+err.Error())
+		return
+	}
+	response.Success(c, gin.H{"baseline": baselineDTO(b)})
+}
+
+// CreateBaseline POST /detect/baseline —— 按账号生成并覆盖基准。
+func (h *ModelDetectHandler) CreateBaseline(c *gin.Context) {
+	var req service.DetectBaselineRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "请求体格式错误: "+err.Error())
+		return
+	}
+	req.Owner = c.GetString("username")
+	b, err := h.svc.CreateBaseline(c.Request.Context(), req.Owner, req)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Success(c, baselineDTO(b))
+}
+
+func baselineDTO(b *repository.ModelDetectionBaseline) gin.H {
+	dto := gin.H{"id": b.ID, "account_id": b.AccountID, "target_fp": b.TargetFP, "target_name": b.TargetName, "base_url": b.BaseURL, "model": b.Model, "template_version": b.TemplateVersion, "status": b.Status, "quality_ok": b.QualityOK, "input_tokens": b.InputTokens, "output_tokens": b.OutputTokens, "thinking_tokens": b.ThinkingTokens, "thinking_chars": b.ThinkingChars, "ttft_ms": b.TTFTMs, "duration_ms": b.DurationMs, "response_summary": b.ResponseSummary, "error": b.Error, "created_at": b.CreatedAt.Local().Format("2006-01-02 15:04:05")}
+	var report map[string]json.RawMessage
+	if json.Unmarshal(b.Report, &report) == nil {
+		if ex, ok := report["exchange"]; ok {
+			dto["exchange"] = json.RawMessage(ex)
+		}
+	}
+	return dto
+}
+
 // Accounts GET /detect/accounts —— 可检测的 anthropic 账号（不含密钥）。
 func (h *ModelDetectHandler) Accounts(c *gin.Context) {
 	items, err := h.svc.ListAccounts(c.Request.Context())
@@ -49,6 +91,7 @@ func (h *ModelDetectHandler) Accounts(c *gin.Context) {
 // Run POST /detect/run —— 发起检测作业。
 func (h *ModelDetectHandler) Run(c *gin.Context) {
 	var req service.DetectRunRequest
+	req.Owner = c.GetString("username")
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "请求体格式错误: "+err.Error())
 		return

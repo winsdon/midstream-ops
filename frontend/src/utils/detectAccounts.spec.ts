@@ -4,6 +4,7 @@ import {
   groupDetectAccounts,
   isDetectGroupAllSelected,
   searchDetectAccounts,
+  pickSingleDetectAccount,
   toggleDetectGroup
 } from '@/utils/detectAccounts'
 import type { DetectAccount } from '@/types/detect'
@@ -94,5 +95,16 @@ describe('toggleDetectGroup', () => {
 
   it('空组切换是空操作', () => {
     expect(toggleDetectGroup({ name: 'x', ungrouped: false, accounts: [] }, [1], 10)).toEqual([1])
+  })
+})
+
+describe('pickSingleDetectAccount', () => {
+  it('选中另一个账号时替换，只保留一个', () => {
+    expect(pickSingleDetectAccount(2, [1])).toEqual([2])
+    expect(pickSingleDetectAccount(3, [])).toEqual([3])
+  })
+
+  it('再点已选项则清空', () => {
+    expect(pickSingleDetectAccount(2, [2])).toEqual([])
   })
 })

@@ -154,8 +154,40 @@ export interface DetectTargetInput {
   api_key?: string
 }
 
+
+export interface DetectBaseline {
+  id: number
+  account_id?: number | null
+  target_fp: string
+  target_name: string
+  base_url: string
+  model: string
+  template_version: string
+  status: string
+  quality_ok: boolean
+  input_tokens: number
+  output_tokens: number
+  thinking_tokens: number
+  thinking_chars: number
+  ttft_ms: number
+  duration_ms: number
+  response_summary?: string
+  error?: string
+  created_at: string
+  exchange?: DetectExchange | null
+}
+
+export interface DetectBaselinePayload {
+  account_id: number
+  model?: string
+  auth_mode?: string
+  extra_headers?: Record<string, string>
+  timeout_ms?: number
+}
+
 export interface DetectRunPayload {
   targets: DetectTargetInput[]
+  baseline_id?: number
   model?: string
   auth_mode?: string
   checks?: string[]

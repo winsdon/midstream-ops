@@ -11,8 +11,9 @@ import (
 	"unicode/utf8"
 )
 
-// browserUA 供应商 sub2api 站点前置 WAF 会拦非浏览器 UA，必须伪装浏览器。
-const browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+// claudeCLIUA 用于 Claude 协议检测：部分上游对浏览器 UA 的 Messages 请求返回 HTML 404。
+// 采用已验证可用的 CLI 标识；供应商有其他要求时仍可通过 ExtraHeaders 覆盖。
+const claudeCLIUA = "claude-cli/2.1.0 (external, cli)"
 
 // redacted 报告中替换凭据的占位符。
 const redacted = "••••••••"
@@ -97,7 +98,7 @@ func (c *Client) headers(stream bool) map[string]string {
 	h := map[string]string{
 		"content-type":      "application/json",
 		"anthropic-version": "2023-06-01",
-		"user-agent":        browserUA,
+		"user-agent":        claudeCLIUA,
 	}
 	if stream {
 		h["accept"] = "text/event-stream"

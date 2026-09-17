@@ -222,6 +222,8 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 			if h.Detect != nil {
 				auth.GET("/detect/checks", h.Detect.Checks)
 				auth.GET("/detect/accounts", h.Detect.Accounts)
+				auth.GET("/detect/baseline", h.Detect.Baseline)
+				auth.POST("/detect/baseline", h.Detect.CreateBaseline)
 				auth.POST("/detect/run", h.Detect.Run)
 				auth.GET("/detect/jobs/:id", h.Detect.Job)
 				auth.POST("/detect/jobs/:id/cancel", h.Detect.Cancel)

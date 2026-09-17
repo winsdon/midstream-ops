@@ -147,7 +147,8 @@ func newResult(meta Check) *CheckResult {
 // 只有真正互相依赖的项才读它：签名篡改要复用上一步拿到的 thinking 块，
 // count_tokens 要和基础请求的 input_tokens 对齐。
 type runState struct {
-	profile ThinkingProfile
+	profile  ThinkingProfile
+	baseline *BaselineStats
 
 	// pingUsage 基础请求的 usage，用于估算注入量与缓存命中。
 	pingUsage      map[string]any
@@ -217,7 +218,7 @@ var Checks = []Check{
 	{ID: "prompt-cache", Title: "Prompt Cache 正负对照", Group: GroupCapability, Default: false, Cost: CostHigh, Requests: 3},
 	{ID: "hello-entropy", Title: "采样熵", Group: GroupCapability, Default: false, Cost: CostHigh, Requests: 10,
 		Note: "10 次 Hello/Hi，去重回复过少说明是模板响应"},
-	{ID: "thinking-gradient", Title: "thinking 难度梯度", Group: GroupCapability, Default: false, Cost: CostHigh, Requests: 3},
+	{ID: "baseline-quality", Title: "CCMax 基准对照", Group: GroupCapability, Default: true, Cost: CostHigh, Requests: 1, Note: "与已保存的真实 CCMax 基准比较质量、输出 token 与 thinking"},
 	{ID: "slope", Title: "输出斜率", Group: GroupCapability, Default: false, Cost: CostMedium, Requests: 1,
 		Note: "token/词 比例异常说明被强制注入 thinking 或 tokenizer 不同"},
 }
@@ -245,8 +246,8 @@ var handlers = map[string]CheckFunc{
 	"strict-schema":     checkStrictSchema,
 	"prompt-cache":      checkPromptCache,
 	"hello-entropy":     checkHelloEntropy,
-	"thinking-gradient": checkThinkingGradient,
 	"slope":             checkSlope,
+	"baseline-quality":  checkBaselineQuality,
 	"quality-baseline":  checkQualityBaseline,
 }
 
@@ -286,7 +287,7 @@ var Presets = []Preset{
 		Checks: []string{
 			"models", "ping", "ping-again",
 			"param-strict", "max-tokens-strict", "thinking-sig", "sig-tamper", "stream", "count-tokens",
-			"persona-cc", "env-leak", "sys-dump", "caller-system", "model-meta", "quality-baseline",
+			"persona-cc", "env-leak", "sys-dump", "caller-system", "model-meta", "quality-baseline", "baseline-quality",
 		},
 	},
 	{

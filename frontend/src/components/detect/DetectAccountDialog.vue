@@ -1,7 +1,7 @@
 <template>
-  <BaseDialog :show="show" :title="t('detect.pickAccounts')" width="wide" @close="emit('close')">
+  <BaseDialog :show="show" :title="title || t('detect.pickAccounts')" width="wide" @close="emit('close')">
     <div class="space-y-3">
-      <div class="flex rounded-xl bg-gray-100 p-1 dark:bg-dark-800">
+      <div v-if="multiple" class="flex rounded-xl bg-gray-100 p-1 dark:bg-dark-800">
         <button
           v-for="tab in TABS"
           :key="tab"
@@ -52,7 +52,10 @@
             <p class="truncate px-1 text-xs font-medium text-gray-600 dark:text-dark-300">
               {{ g.ungrouped ? t('detect.ungrouped') : g.name }}
             </p>
-            <label class="mt-1 flex cursor-pointer items-center gap-2 px-1 text-xs text-gray-500">
+            <label
+              v-if="multiple"
+              class="mt-1 flex cursor-pointer items-center gap-2 px-1 text-xs text-gray-500"
+            >
               <input
                 type="checkbox"
                 class="checkbox"
@@ -88,7 +91,7 @@
         </div>
       </template>
 
-      <div v-else class="space-y-3">
+      <div v-else-if="multiple" class="space-y-3">
         <slot name="manual" />
       </div>
     </div>
@@ -117,6 +120,7 @@ import Icon from '@/components/icons/Icon.vue'
 import {
   groupDetectAccounts,
   isDetectGroupAllSelected,
+  pickSingleDetectAccount,
   searchDetectAccounts,
   toggleDetectGroup,
   type DetectAccountGroup
@@ -126,14 +130,19 @@ import type { DetectAccount } from '@/types/detect'
 
 const TABS = ['account', 'manual'] as const
 
-const props = defineProps<{
-  show: boolean
-  accounts: DetectAccount[]
-  accountsLoading: boolean
-  accountsError: string
-  selectedIds: number[]
-  mode: 'account' | 'manual'
-}>()
+const props = withDefaults(
+  defineProps<{
+    show: boolean
+    accounts: DetectAccount[]
+    accountsLoading: boolean
+    accountsError: string
+    selectedIds: number[]
+    mode: 'account' | 'manual'
+    multiple?: boolean
+    title?: string
+  }>(),
+  { multiple: true, title: '' }
+)
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -153,7 +162,7 @@ watch(
 
 const grouped = computed(() => groupDetectAccounts(props.accounts))
 const visibleGroups = computed(() => searchDetectAccounts(grouped.value, query.value))
-const atCap = computed(() => props.selectedIds.length >= MAX_DETECT_TARGETS)
+const atCap = computed(() => props.multiple && props.selectedIds.length >= MAX_DETECT_TARGETS)
 
 const visibleIdSet = computed(() => {
   const ids = new Set<number>()
@@ -168,6 +177,7 @@ const hiddenCount = computed(
 )
 
 const countText = computed(() => {
+  if (!props.multiple) return t('detect.selectedAccounts', { n: props.selectedIds.length })
   if (atCap.value) return t('detect.atMaxTargets', { n: MAX_DETECT_TARGETS })
   if (props.mode === 'account' && hiddenCount.value > 0) {
     return t('detect.selectedHidden', {
@@ -184,6 +194,10 @@ function onToggleGroup(g: DetectAccountGroup): void {
 }
 
 function toggleOne(id: number): void {
+  if (!props.multiple) {
+    emit('update:selectedIds', pickSingleDetectAccount(id, props.selectedIds))
+    return
+  }
   if (props.selectedIds.includes(id)) {
     emit(
       'update:selectedIds',

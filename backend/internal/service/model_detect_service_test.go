@@ -11,6 +11,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"sub2api-account-monitor/internal/repository"
+	"sub2api-account-monitor/internal/service/modeldetect"
 )
 
 // 手填目标不依赖线上库，可以在没有 PG 的机器上完整跑通检测链路。
@@ -508,5 +511,59 @@ func TestTargetFingerprintStableAndKeySensitive(t *testing.T) {
 	}
 	if len(a) != 16 || strings.Contains(a, "sk-") {
 		t.Fatalf("指纹形态异常: %s", a)
+	}
+}
+
+func TestCreateBaselineRequiresAccount(t *testing.T) {
+	svc := newDetectService()
+	_, err := svc.CreateBaseline(context.Background(), "alice", DetectBaselineRequest{Model: "claude-opus-5"})
+	if err == nil || !strings.Contains(err.Error(), "账号") {
+		t.Fatalf("缺账号应报错，实际 %v", err)
+	}
+}
+
+func TestBuildBaselineRecordStoresExchange(t *testing.T) {
+	target := modeldetect.Target{Name: "ccmax", BaseURL: "https://api.example.com", APIKey: "sk-test-key-value", Model: "claude-opus-5"}
+	ex := &modeldetect.Exchange{
+		Method: "POST", URL: "https://api.example.com/v1/messages",
+		RequestBody: map[string]any{"model": "claude-opus-5"},
+		Raw:         `{"stop_reason":"end_turn"}`,
+	}
+	stats := &modeldetect.BaselineStats{Model: "claude-opus-5", QualityOK: true, OutputTokens: 10}
+	b := buildBaselineRecord("alice", target, stats, ex)
+	if b.Model != "claude-opus-5" || b.Status != "passed" || !b.QualityOK {
+		t.Fatalf("record=%+v", b)
+	}
+	var report map[string]json.RawMessage
+	if err := json.Unmarshal(b.Report, &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report["exchange"]) == 0 || !strings.Contains(string(report["exchange"]), "v1/messages") {
+		t.Fatalf("report missing exchange: %s", b.Report)
+	}
+}
+
+func TestBuildBaselineRecordKeepsExchangeOnFailure(t *testing.T) {
+	target := modeldetect.Target{Name: "ccmax", BaseURL: "https://api.example.com", APIKey: "sk-test-key-value", Model: "claude-opus-5"}
+	ex := &modeldetect.Exchange{NetworkError: "timeout", Raw: "nope"}
+	b := buildBaselineRecord("alice", target, nil, ex)
+	if b.Status != "failed" {
+		t.Fatalf("status=%s", b.Status)
+	}
+	var report map[string]json.RawMessage
+	if err := json.Unmarshal(b.Report, &report); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(report["exchange"]), "timeout") {
+		t.Fatalf("failed baseline should keep exchange: %s", b.Report)
+	}
+}
+
+func TestBaselineStatsFromRowCopiesModel(t *testing.T) {
+	st := baselineStatsFromRow(&repository.ModelDetectionBaseline{
+		Model: "claude-opus-5", Status: "passed", QualityOK: true, OutputTokens: 12, ThinkingTokens: 8,
+	})
+	if st == nil || st.Model != "claude-opus-5" || st.OutputTokens != 12 {
+		t.Fatalf("stats=%+v", st)
 	}
 }

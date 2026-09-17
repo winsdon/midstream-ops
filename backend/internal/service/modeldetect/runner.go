@@ -116,6 +116,10 @@ func runningResult(meta Check) *CheckResult {
 // 这样 ping-again / 签名篡改仍能读到上一档写入的状态，同时互不依赖的项不再排队。
 // onProgress 在检测项开始（status=running）和结束时各回调一次，供上层增量推送。
 func Run(ctx context.Context, target Target, checkIDs []string, gate *Gate, onProgress func(*CheckResult)) *TargetRun {
+	return RunWithBaseline(ctx, target, checkIDs, gate, nil, onProgress)
+}
+
+func RunWithBaseline(ctx context.Context, target Target, checkIDs []string, gate *Gate, baseline *BaselineStats, onProgress func(*CheckResult)) *TargetRun {
 	run := &TargetRun{
 		Name: target.Name, BaseURL: target.BaseURL, Model: target.Model,
 		AuthMode: target.AuthMode, AccountID: target.AccountID, ProviderID: target.ProviderID,
@@ -123,7 +127,7 @@ func Run(ctx context.Context, target Target, checkIDs []string, gate *Gate, onPr
 	}
 
 	client := NewClient(target)
-	st := &runState{profile: ResolveProfile(target.Model)}
+	st := &runState{profile: ResolveProfile(target.Model), baseline: baseline}
 	ids := ResolveCheckIDs(checkIDs)
 	if gate == nil {
 		gate = NewGate(1)
@@ -226,6 +230,10 @@ func Run(ctx context.Context, target Target, checkIDs []string, gate *Gate, onPr
 // 从 previous 的成功结果里恢复共享状态（签名块、ping usage），避免为了
 // 重试一项把已经通过的前置再打一遍。
 func RetryChecks(ctx context.Context, target Target, checkIDs []string, previous *TargetRun, gate *Gate, onProgress func(*CheckResult)) *TargetRun {
+	return RetryChecksWithBaseline(ctx, target, checkIDs, previous, gate, nil, onProgress)
+}
+
+func RetryChecksWithBaseline(ctx context.Context, target Target, checkIDs []string, previous *TargetRun, gate *Gate, baseline *BaselineStats, onProgress func(*CheckResult)) *TargetRun {
 	run := cloneTargetRun(previous)
 	run.Error = ""
 	run.FinishedAt = nil
@@ -243,7 +251,7 @@ func RetryChecks(ctx context.Context, target Target, checkIDs []string, previous
 	}
 
 	client := NewClient(target)
-	st := &runState{profile: ResolveProfile(target.Model)}
+	st := &runState{profile: ResolveProfile(target.Model), baseline: baseline}
 	hydrateRunState(st, run.Checks, ids)
 	if gate == nil {
 		gate = NewGate(1)

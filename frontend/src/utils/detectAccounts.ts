@@ -115,3 +115,9 @@ export function toggleDetectGroup(
   }
   return next
 }
+
+/** 单选：点另一项则替换，再点已选项则清空。 */
+export function pickSingleDetectAccount(id: number, selected: readonly number[]): number[] {
+  if (selected.length === 1 && selected[0] === id) return []
+  return [id]
+}

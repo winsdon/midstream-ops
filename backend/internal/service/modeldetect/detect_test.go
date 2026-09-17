@@ -815,6 +815,21 @@ func TestModelMatchesRequested(t *testing.T) {
 	}
 }
 
+func TestThinkingGradientRemoved(t *testing.T) {
+	if _, ok := checkByID("thinking-gradient"); ok {
+		t.Fatal("thinking-gradient 不应继续出现在检测目录")
+	}
+	if _, ok := handlers["thinking-gradient"]; ok {
+		t.Fatal("thinking-gradient 不应继续注册 handler")
+	}
+	for _, preset := range Presets {
+		for _, id := range preset.Checks {
+			if id == "thinking-gradient" {
+				t.Fatalf("预设 %s 不应引用 thinking-gradient", preset.ID)
+			}
+		}
+	}
+}
 func TestPresetsReferKnownChecks(t *testing.T) {
 	known := map[string]bool{}
 	for _, c := range Checks {
@@ -924,7 +939,7 @@ func TestAuditRejectsEmptySignedThinking(t *testing.T) {
 func TestAuditAllowsSomeEmptyThinking(t *testing.T) {
 	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true,
 		emptyThinkingOnce: true}
-	run := runAgainst(t, up, []string{"ping", "thinking-sig", "thinking-gradient"})
+	run := runAgainst(t, up, []string{"ping", "thinking-sig", "quality-baseline"})
 
 	res := auditOf(t, run)
 	if hasEvidenceKey(res, "thinking_empty_signed") {
