@@ -91,6 +91,7 @@ describe('buildSections', () => {
     const jia = buildSections(rows, 'provider', gradeOf, passiveCounts).find((s) => s.key === '甲')!
     expect(jia.successCount).toBe(140)
     expect(jia.errorCount).toBe(10)
+    expect(jia.requestCount).toBe(140)
     expect(jia.sla).toBeCloseTo((140 / 150) * 100)
     expect(jia.grade).toBe('warn')
   })
@@ -164,8 +165,25 @@ describe('applySectionSort', () => {
       'requests',
       'desc'
     )
-    // 甲 150、乙 20、空桶 5
+    // 甲 140 成功、乙 10 成功、空桶 5；失败不计入请求次数
     expect(secs.map((s) => s.key)).toEqual(['甲', '乙', ''])
+    expect(secs.find((s) => s.key === '甲')!.requestCount).toBe(140)
+    expect(secs.find((s) => s.key === '乙')!.requestCount).toBe(10)
+  })
+
+  it('请求次数排序只看成功数，失败多的块不会排到前面', () => {
+    const mixed = [
+      r(1, '失败多', ['g'], 10, 100, 'bad'),
+      r(2, '成功多', ['g'], 50, 0, 'good')
+    ]
+    const secs = applySectionSort(
+      buildSections(mixed, 'provider', gradeOf, passiveCounts),
+      'requests',
+      'desc'
+    )
+    expect(secs.map((s) => s.key)).toEqual(['成功多', '失败多'])
+    expect(secs[0].requestCount).toBe(50)
+    expect(secs[1].requestCount).toBe(10)
   })
 
   it('供应商块不再拆内层，排序只动外层', () => {

@@ -296,7 +296,7 @@ interface ViewRow {
   rateMultiplier: number
   revenue: number
   cost: number
-  /** 站点级运营成本；分组/用户维度恒为 0 */
+  /** 站点级运营成本；分组/用户维度按用量分摊 */
   operatingCost: number
   /** 自营站：显示身份标签而非成本不完整告警；分组/用户维度恒为 false */
   selfOperated: boolean

@@ -305,7 +305,7 @@ async function loadPassive() {
         groups: r.groups ?? [],
         success_count: success,
         error_count: error,
-        requests: success + error,
+        requests: success,
         sla: r.sla ?? null,
         timeline: r.timeline ?? []
       }

@@ -121,6 +121,7 @@ func (h *StabilityHandler) SetHealthDisabled(c *gin.Context) {
 
 // Passive GET /stability/passive?minutes=
 // 被动口径：真实流量的耗时/首字分位数 + SLA（失败来自 ops_error_logs，排除业务限制）。
+// 请求数只计成功（usage_logs）；失败只进 error_count 与 SLA 分母，不进请求数。
 func (h *StabilityHandler) Passive(c *gin.Context) {
 	if !h.pg.Available() {
 		response.ServiceUnavailable(c, "线上数据库暂不可用")
@@ -146,7 +147,7 @@ func (h *StabilityHandler) Passive(c *gin.Context) {
 			"account_id":        r.AccountID,
 			"account_name":      r.AccountName,
 			"platform":          r.Platform,
-			"requests":          totalPassiveRequests(r.Requests, r.ErrorCount),
+			"requests":          r.Requests,
 			"success_count":     r.Requests,
 			"error_count":       r.ErrorCount,
 			"sla":               slaPercent(r.Requests, r.ErrorCount),
@@ -168,7 +169,7 @@ func (h *StabilityHandler) Passive(c *gin.Context) {
 		"minutes":      minutes,
 		"generated_at": now.Format(time.RFC3339),
 		"items":        out,
-		"note":         "SLA 排除业务限制；分位数仅来自成功请求",
+		"note":         "SLA 排除业务限制；请求数仅计成功；分位数仅来自成功请求",
 	})
 }
 
@@ -371,11 +372,6 @@ func attachGroups(item gin.H, accountID int64, groups map[int64][]string) {
 	cp := append([]string(nil), gs...)
 	sort.Strings(cp)
 	item["groups"] = cp
-}
-
-// totalPassiveRequests 窗口内总请求数。usage_logs 只记成功，失败在 ops_error_logs。
-func totalPassiveRequests(success, errCount int64) int64 {
-	return success + errCount
 }
 
 // slaPercent 流量 SLA（0–100）。成功+失败均为 0 时返回 nil，前端渲染成「-」。

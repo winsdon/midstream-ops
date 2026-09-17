@@ -26,7 +26,7 @@ type UserGroupStat struct {
 // UserStat 按用户归并的统计（展开为分组明细）。
 //
 // 成本口径与按分组相同：账号实扣按该账号内各用户×分组的裸用量占比分摊。
-// 运营成本是站点级固定成本，本维度恒为 0。
+// 运营成本按同一权重摊到用户；当期零流量站点进「(无流量)」桶。
 type UserStat struct {
 	UserID          int64           `json:"user_id"`
 	UserName        string          `json:"user_name"`
@@ -44,15 +44,30 @@ func assembleUserStats(
 	rows []repository.UserGroupAccountUsageRow,
 	costs map[int64]repository.AccountCost,
 	exempt map[int64]bool,
+	opByAccount map[int64]float64,
+	leftoverOp float64,
 ) []UserStat {
 	if len(rows) == 0 {
-		return []UserStat{}
+		if leftoverOp == 0 {
+			return []UserStat{}
+		}
+		return []UserStat{{
+			UserID:        idleOpCostID,
+			UserName:      idleOpCostBucket,
+			OperatingCost: leftoverOp,
+			Profit:        -leftoverOp,
+			CostComplete:  true,
+			Groups:        []UserGroupStat{},
+		}}
 	}
 	if costs == nil {
 		costs = map[int64]repository.AccountCost{}
 	}
 	if exempt == nil {
 		exempt = map[int64]bool{}
+	}
+	if opByAccount == nil {
+		opByAccount = map[int64]float64{}
 	}
 
 	byAccount := make(map[int64][]repository.UserGroupAccountUsageRow)
@@ -72,6 +87,7 @@ func assembleUserStats(
 		requests        int64
 		revenue         float64
 		cost            float64
+		operatingCost   float64
 		groups          map[int64]*groupAcc
 		missingAccounts map[int64]struct{}
 	}
@@ -83,6 +99,7 @@ func assembleUserStats(
 		shares := apportionUserShares(acctRows)
 		c, matched := costs[accountID]
 		costMatched := matched || exempt[accountID]
+		acctOp := opByAccount[accountID]
 		for i, r := range acctRows {
 			u, ok := users[r.UserID]
 			if !ok {
@@ -111,6 +128,7 @@ func assembleUserStats(
 			u.requests += r.Requests
 			u.revenue += r.Revenue
 			u.cost += cost
+			u.operatingCost += acctOp * shares[i]
 			if !costMatched && r.Requests > 0 {
 				u.missingAccounts[accountID] = struct{}{}
 				g.stat.CostMatched = false
@@ -133,13 +151,20 @@ func assembleUserStats(
 			Requests:        u.requests,
 			Revenue:         u.revenue,
 			Cost:            u.cost,
-			Profit:          u.revenue - u.cost,
+			OperatingCost:   u.operatingCost,
+			Profit:          u.revenue - u.cost - u.operatingCost,
 			CostComplete:    len(u.missingAccounts) == 0,
 			AccountsMissing: len(u.missingAccounts),
 			Groups:          groups,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].UserID == idleOpCostID {
+			return false
+		}
+		if out[j].UserID == idleOpCostID {
+			return true
+		}
 		if out[i].UserID == 0 {
 			return false
 		}
@@ -148,13 +173,23 @@ func assembleUserStats(
 		}
 		return out[i].Revenue > out[j].Revenue
 	})
+	if leftoverOp != 0 {
+		out = append(out, UserStat{
+			UserID:        idleOpCostID,
+			UserName:      idleOpCostBucket,
+			OperatingCost: leftoverOp,
+			Profit:        -leftoverOp,
+			CostComplete:  true,
+			Groups:        []UserGroupStat{},
+		})
+	}
 	return out
 }
 
 // ByUser 按用户统计收益/成本/利润，展开为分组明细。
 //
 // 成本由账号实扣按该账号内各用户×分组的裸用量占比分摊，合计与按供应商口径的实扣一致。
-// 运营成本不摊到用户。
+// 运营成本按同一权重摊到用户。
 func (s *StatsService) ByUser(ctx context.Context, start, end time.Time) ([]UserStat, error) {
 	rows, err := s.pg.AggregateUsageByUserGroupAccount(ctx, start, end)
 	if err != nil {
@@ -165,5 +200,6 @@ func (s *StatsService) ByUser(ctx context.Context, start, end time.Time) ([]User
 	if err != nil {
 		return nil, err
 	}
-	return assembleUserStats(rows, costs, exemptAccts), nil
+	opByAccount, leftoverOp := s.periodOpCostByAccount(ctx, start, end, userAccountOpShares(rows))
+	return assembleUserStats(rows, costs, exemptAccts, opByAccount, leftoverOp), nil
 }

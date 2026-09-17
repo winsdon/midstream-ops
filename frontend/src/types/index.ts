@@ -383,15 +383,15 @@ export interface StatsProviderRow {
 }
 
 // 分组成本为分摊值：上游按 key（≈账号）计一笔实扣，一个账号可服务多个分组，
-// 故按各分组在该账号内的原始用量占比拆分。分摊不产生也不吞掉成本，
-// 分组合计与「按供应商」维度的合计严格一致。字段集与 StatsProviderRow 同构。
+// 故按各分组在该账号内的原始用量占比拆分实扣与运营成本。
+// 分摊不产生也不吞掉成本，分组合计与「按供应商」维度的合计严格一致。
 export interface StatsGroupRow {
   group_id: number
   group_name: string
   rate_multiplier: number
   revenue: number
   cost: number
-  /** 本维度恒为 0：运营成本是站点级固定成本，不摊到分组 */
+  /** 按该站点账号用量占比摊到分组；当期零流量站点记在「(无流量)」行 */
   operating_cost: number
   profit: number
   requests: number
@@ -416,7 +416,7 @@ export interface StatsUserRow {
   user_name: string
   revenue: number
   cost: number
-  /** 本维度恒为 0：运营成本是站点级固定成本，不摊到用户 */
+  /** 按该站点账号用量占比摊到用户；当期零流量站点记在「(无流量)」行 */
   operating_cost: number
   profit: number
   requests: number
@@ -500,7 +500,7 @@ export interface PassiveRow {
   provider_name: string
   /** 本站分组名。空数组 = 未分组 */
   groups: string[]
-  /** 窗口内总请求数 = success_count + error_count */
+  /** 窗口内成功请求数（usage_logs）；失败不计入，失败走 error_count */
   requests: number
   /** 成功请求数（usage_logs）；SLA 分子 */
   success_count: number

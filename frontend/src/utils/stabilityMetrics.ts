@@ -99,7 +99,7 @@ export function cardFromRow(row: PassiveRow, subtitle: string): StatusCardModel 
     durationP50: row.duration_p50,
     tokensPerSecond: row.tokens_per_second,
     cacheRate: row.cache_rate,
-    requests: row.requests,
+    requests: row.success_count,
     successCount: row.success_count,
     errorCount: row.error_count,
     timeline: [...(row.timeline ?? [])]
@@ -194,7 +194,7 @@ export function passiveDetailFromRow(row: PassiveRow): PassiveDetail {
     platform: row.platform,
     provider_name: row.provider_name,
     groups: [...(row.groups ?? [])],
-    requests: row.success_count + row.error_count,
+    requests: row.success_count,
     success_count: row.success_count,
     error_count: row.error_count,
     sla: row.sla,
@@ -235,7 +235,7 @@ export function aggregatePassiveRows(rows: readonly PassiveRow[], title: string)
     provider_name: uniqueStrings(providers).join(' · '),
     groups: uniqueStrings(groups),
     accountCount: rows.length,
-    requests: success + error,
+    requests: success,
     success_count: success,
     error_count: error,
     sla: slaPercent(success, error),
@@ -257,6 +257,7 @@ export function errorRatePercent(success: number, errorCount: number): number | 
   return (errorCount / total) * 100
 }
 
+/** 每分钟成功请求数。调用方只传入成功次数。 */
 export function rpm(requests: number, minutes: number): number | null {
   if (!Number.isFinite(requests) || !Number.isFinite(minutes) || minutes <= 0) return null
   return requests / minutes
@@ -338,7 +339,7 @@ export function cellTip(
     durationP90: bar.duration_p90,
     tps: tpsOf(bar.output_tokens, bar.duration_ms_sum),
     cache: cacheOf(bar.cache_read_tokens, bar.input_tokens),
-    rpm: rpm(bar.ok + bar.err, opts.cellMinutes)
+    rpm: rpm(bar.ok, opts.cellMinutes)
   }
 }
 

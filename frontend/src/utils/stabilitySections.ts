@@ -58,7 +58,7 @@ export interface StabilitySection<T> {
   successCount: number
   errorCount: number
   accountCount: number
-  /** SLA 分母：成功 + 失败（被动）或探测总次数（主动） */
+  /** 成功请求数（被动）或探测成功次数（主动）；失败不计入 */
   requestCount: number
   grade: RowGrade
 }
@@ -127,7 +127,7 @@ function makeSection<T extends FilterableRow>(
     successCount: success,
     errorCount: error,
     accountCount: rows.length,
-    requestCount: success + error,
+    requestCount: success,
     grade: rows.length === 0 ? 'unknown' : worst
   }
 }

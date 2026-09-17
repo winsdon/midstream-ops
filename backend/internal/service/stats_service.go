@@ -61,9 +61,8 @@ type statBucket struct {
 	AccountsMissing int  `json:"accounts_missing"`
 	// OperatingCost 站点级运营成本（自营站手工录入的买号/订阅/服务器支出）。
 	//
-	// 它是固定成本，不随用量变化，也不属于任何分组，故只在「按供应商」维度有值，
-	// 分组维度恒为 0。字段仍留在共用桶里：ProviderStat/GroupStat 形状一致
-	// 让前端能共用一套渲染逻辑，这个收益大于一个恒零字段的成本。
+	// 按供应商：整笔挂在站点桶上。按分组/用户：按该站点账号的用量占比分摊；
+	// 当期零流量站点进「(无流量)」桶，避免合计对不上。
 	OperatingCost float64       `json:"operating_cost"`
 	Accounts      []AccountStat `json:"accounts"`
 }
@@ -251,9 +250,8 @@ func (s *StatsService) dateBounds(start, end time.Time) (string, string) {
 // 故 Cost 为分摊值：按各分组在该账号内的原始 token 消耗（裸 total_cost，不含分组倍率）
 // 占比，把账号实扣摊到分组。分摊不产生也不吞掉成本，分组的实扣合计 ≡ 按供应商口径的实扣合计。
 //
-// 但分组的**利润**合计会高于按供应商口径：自营站的运营成本是站点级固定成本，
-// 不摊到分组（买号/服务器不属于任何分组，按用量强行分摊是虚假精度；且零用量站点
-// 没有任何分组能承载它，成本会凭空消失）。OperatingCost 在本维度恒为 0。
+// 运营成本按该站点账号的用量占比摊到分组；当期零流量站点进「(无流量)」桶。
+// 分摊不产生也不吞掉成本，分组的运营成本合计 ≡ 按供应商口径。
 type GroupStat struct {
 	GroupID        int64   `json:"group_id"`
 	GroupName      string  `json:"group_name"`
@@ -334,6 +332,26 @@ func (s *StatsService) ByGroup(ctx context.Context, start, end time.Time) ([]Gro
 	if err != nil {
 		return nil, err
 	}
+	opByAccount, leftoverOp := s.periodOpCostByAccount(ctx, start, end, groupAccountOpShares(rows))
+	return assembleGroupStats(rows, costs, exemptAccts, opByAccount, leftoverOp), nil
+}
+
+func assembleGroupStats(
+	rows []repository.GroupAccountUsageRow,
+	costs map[int64]repository.AccountCost,
+	exempt map[int64]bool,
+	opByAccount map[int64]float64,
+	leftoverOp float64,
+) []GroupStat {
+	if costs == nil {
+		costs = map[int64]repository.AccountCost{}
+	}
+	if exempt == nil {
+		exempt = map[int64]bool{}
+	}
+	if opByAccount == nil {
+		opByAccount = map[int64]float64{}
+	}
 
 	// 先按账号归拢：分摊比例只在同一账号内部才有意义
 	byAccount := make(map[int64][]repository.GroupAccountUsageRow)
@@ -350,7 +368,8 @@ func (s *StatsService) ByGroup(ctx context.Context, start, end time.Time) ([]Gro
 		acctRows := byAccount[accountID]
 		shares := apportionShares(acctRows)
 		c, matched := costs[accountID]
-		exempt := exemptAccts[accountID]
+		exemptAcct := exempt[accountID]
+		acctOp := opByAccount[accountID]
 		for i, r := range acctRows {
 			b, exists := buckets[r.GroupID]
 			if !exists {
@@ -363,6 +382,7 @@ func (s *StatsService) ByGroup(ctx context.Context, start, end time.Time) ([]Gro
 				buckets[r.GroupID] = b
 			}
 			cost := c.ActualCost * shares[i]
+			b.OperatingCost += acctOp * shares[i]
 			b.add(AccountStat{
 				AccountID:   r.AccountID,
 				AccountName: r.AccountName,
@@ -370,18 +390,27 @@ func (s *StatsService) ByGroup(ctx context.Context, start, end time.Time) ([]Gro
 				Revenue:     r.Revenue,
 				Cost:        cost,
 				Profit:      r.Revenue - cost,
-				CostMatched: matched || exempt,
-			}, exempt)
+				CostMatched: matched || exemptAcct,
+			}, exemptAcct)
 		}
 	}
 
-	out := make([]GroupStat, 0, len(buckets))
+	out := make([]GroupStat, 0, len(buckets)+1)
 	for _, b := range buckets {
 		b.finalize()
 		out = append(out, *b)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Revenue > out[j].Revenue })
-	return out, nil
+	if leftoverOp != 0 {
+		idle := GroupStat{
+			GroupID:    idleOpCostID,
+			GroupName:  idleOpCostBucket,
+			statBucket: statBucket{CostComplete: true, OperatingCost: leftoverOp},
+		}
+		idle.finalize()
+		out = append(out, idle)
+	}
+	return out
 }
 
 // TrendPoint 趋势数据点。

@@ -23,7 +23,7 @@ func TestAssembleUserStatsSplitsAccountCostAcrossUsers(t *testing.T) {
 	}
 	costs := map[int64]repository.AccountCost{99: {AccountID: 99, ActualCost: 100}}
 
-	got := assembleUserStats(rows, costs, nil)
+	got := assembleUserStats(rows, costs, nil, nil, 0)
 	if len(got) != 2 {
 		t.Fatalf("用户数 = %d, 期望 2", len(got))
 	}
@@ -53,7 +53,7 @@ func TestAssembleUserStatsExpandsByGroup(t *testing.T) {
 		2: {AccountID: 2, ActualCost: 10},
 	}
 
-	got := assembleUserStats(rows, costs, nil)
+	got := assembleUserStats(rows, costs, nil, nil, 0)
 	if len(got) != 1 {
 		t.Fatalf("用户数 = %d, 期望 1", len(got))
 	}
@@ -83,7 +83,7 @@ func TestAssembleUserStatsGroupsSortedByRevenue(t *testing.T) {
 		ugRow(1, 10, 1, 1, 10, 1, "alice", "small"),
 		ugRow(1, 20, 1, 1, 90, 1, "alice", "big"),
 	}
-	got := assembleUserStats(rows, nil, nil)
+	got := assembleUserStats(rows, nil, nil, nil, 0)
 	if got[0].Groups[0].GroupName != "big" {
 		t.Errorf("分组首位 = %q, 期望 big", got[0].Groups[0].GroupName)
 	}
@@ -94,7 +94,7 @@ func TestAssembleUserStatsUnassignedLast(t *testing.T) {
 		ugRow(0, 1, 1, 1, 999, 1, unassignedUserBucket, "g"),
 		ugRow(8, 1, 1, 1, 1, 1, "small", "g"),
 	}
-	got := assembleUserStats(rows, nil, nil)
+	got := assembleUserStats(rows, nil, nil, nil, 0)
 	if len(got) != 2 {
 		t.Fatalf("用户数 = %d, 期望 2", len(got))
 	}
@@ -109,7 +109,7 @@ func TestAssembleUserStatsMissingAccountCountedOnce(t *testing.T) {
 		ugRow(1, 10, 7, 10, 10, 1, "alice", "A"),
 		ugRow(1, 20, 7, 10, 10, 1, "alice", "B"),
 	}
-	got := assembleUserStats(rows, nil, nil)
+	got := assembleUserStats(rows, nil, nil, nil, 0)
 	if len(got) != 1 {
 		t.Fatalf("用户数 = %d, 期望 1", len(got))
 	}
@@ -130,7 +130,7 @@ func TestAssembleUserStatsExemptAccountNotMissing(t *testing.T) {
 	rows := []repository.UserGroupAccountUsageRow{
 		ugRow(1, 10, 7, 10, 10, 1, "alice", "A"),
 	}
-	got := assembleUserStats(rows, nil, map[int64]bool{7: true})
+	got := assembleUserStats(rows, nil, map[int64]bool{7: true}, nil, 0)
 	if !got[0].CostComplete || got[0].AccountsMissing != 0 {
 		t.Errorf("自营豁免后应完整，complete=%v missing=%d", got[0].CostComplete, got[0].AccountsMissing)
 	}
@@ -140,7 +140,7 @@ func TestAssembleUserStatsExemptAccountNotMissing(t *testing.T) {
 }
 
 func TestAssembleUserStatsEmpty(t *testing.T) {
-	if got := assembleUserStats(nil, nil, nil); len(got) != 0 {
+	if got := assembleUserStats(nil, nil, nil, nil, 0); len(got) != 0 {
 		t.Errorf("空输入应返回空切片，实际 %#v", got)
 	}
 }

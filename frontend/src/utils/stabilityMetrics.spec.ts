@@ -9,6 +9,7 @@ import {
   healthScoreClass,
   weightedAvg,
   aggregatePassiveRows,
+  pageKpis,
   passiveDetailFromRow,
   cardFromRow,
   cardFromSection,
@@ -147,7 +148,7 @@ describe('weightedAvg', () => {
 })
 
 describe('passiveDetailFromRow', () => {
-  it('请求数包含失败', () => {
+  it('请求数只计成功，失败单独保留', () => {
     const out = passiveDetailFromRow({
       account_id: 1,
       account_name: 'a',
@@ -168,7 +169,7 @@ describe('passiveDetailFromRow', () => {
       tokens_per_second: null,
       cache_rate: null
     })
-    expect(out.requests).toBe(18)
+    expect(out.requests).toBe(2)
     expect(out.success_count).toBe(2)
     expect(out.error_count).toBe(16)
   })
@@ -215,7 +216,7 @@ describe('aggregatePassiveRows', () => {
     const out = aggregatePassiveRows([a], '供应商甲')
     expect(out.title).toBe('供应商甲')
     expect(out.accountCount).toBe(1)
-    expect(out.requests).toBe(50)
+    expect(out.requests).toBe(40)
     expect(out.success_count).toBe(40)
     expect(out.error_count).toBe(10)
     expect(out.sla).toBeCloseTo(80)
@@ -255,7 +256,7 @@ describe('aggregatePassiveRows', () => {
       '甲'
     )
     expect(out.accountCount).toBe(2)
-    expect(out.requests).toBe(110)
+    expect(out.requests).toBe(100)
     expect(out.success_count).toBe(100)
     expect(out.error_count).toBe(10)
     expect(out.sla).toBeCloseTo((100 / 110) * 100)
@@ -268,6 +269,37 @@ describe('aggregatePassiveRows', () => {
     const rows = [row({ account_id: 1, requests: 5, groups: ['a'] })]
     aggregatePassiveRows(rows, 'x')
     expect(rows[0].groups).toEqual(['a'])
+  })
+})
+
+describe('pageKpis', () => {
+  it('请求数和 RPM 只计成功，SLA 仍含失败', () => {
+    const rows: PassiveRow[] = [
+      {
+        account_id: 1,
+        account_name: 'a',
+        platform: '',
+        provider_id: 0,
+        provider_name: '',
+        groups: [],
+        requests: 90,
+        success_count: 90,
+        error_count: 10,
+        sla: 90,
+        duration_avg: null,
+        duration_p50: null,
+        duration_p90: null,
+        first_token_avg: null,
+        first_token_p50: 1000,
+        first_token_p90: null,
+        tokens_per_second: null,
+        cache_rate: null
+      }
+    ]
+    const out = pageKpis(rows, 10)
+    expect(out.requests).toBe(90)
+    expect(out.rpm).toBe(9)
+    expect(out.sla).toBeCloseTo(90)
   })
 })
 
@@ -311,6 +343,8 @@ describe('cardFromRow / cardFromSection', () => {
     })
     const inner = cardFromRow(child, '甲')
     const outer = cardFromSection([child], '甲')
+    expect(inner.requests).toBe(8)
+    expect(outer.requests).toBe(8)
     const innerCells = displayCells(inner.timeline, 60, generatedAt)
     const outerCells = displayCells(outer.timeline, 60, generatedAt)
     expect(liveToneFromCells(innerCells)).toBe(liveToneFromCells(outerCells))
@@ -365,6 +399,18 @@ describe('cardFromRow / cardFromSection', () => {
     expect(tip.tps).toBe(10300)
     expect(tip.cache).toBeCloseTo(96.3, 0)
     expect(tip.rpm).toBe(2)
+  })
+
+  it('色块 RPM 只计成功请求', () => {
+    const cells = displayCells(
+      [{ t: '2026-04-08T11:55:00.000Z', ok: 10, err: 40 }],
+      60,
+      generatedAt
+    )
+    const tip = cellTip(cells[11], { windowMinutes: 60, cellMinutes: 5 })
+    expect(tip.empty).toBe(false)
+    expect(tip.rpm).toBe(2)
+    expect(tip.errorRate).toBe(80)
   })
 
   it('不修改入参 timeline', () => {
