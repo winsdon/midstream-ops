@@ -373,6 +373,42 @@ func TestNewAPIGetTokenKeyUsesAuthenticatedPOST(t *testing.T) {
 	}
 }
 
+func TestUnmaskedTokenKeyRejectsMaskedAndShortValues(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"sk-listed-secret-key", "sk-listed-secret-key"},
+		{"  sk-listed-secret-key  ", "sk-listed-secret-key"},
+		{"sk-abc...xyz", ""},
+		{"sk-********abcd", ""},
+		{"short", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := unmaskedTokenKey(c.in); got != c.want {
+			t.Errorf("unmaskedTokenKey(%q)=%q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestNewAPIRequestJSONWraps429AsRateLimited(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	_, err := newAPITestClient().GetTokenKey(context.Background(), srv.URL, NewAPIAuth{JWT: "jwt"}, 1)
+	if err == nil {
+		t.Fatal("429 应返回错误")
+	}
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("429 应是 ErrRateLimited，实际: %v", err)
+	}
+	if !strings.Contains(err.Error(), "HTTP 429") {
+		t.Fatalf("错误应带 HTTP 429，实际: %v", err)
+	}
+}
+
 func TestNewAPIGetTokenUsageFiltersAndConvertsQuota(t *testing.T) {
 	start := time.Date(2026, 7, 30, 0, 0, 0, 0, time.FixedZone("CST", 8*60*60))
 	end := start.Add(24 * time.Hour)

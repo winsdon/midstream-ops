@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -109,6 +110,245 @@ func TestCostSyncNewAPIPersistsMappingTodayAndBackfill(t *testing.T) {
 	}
 	if matched != 1 || backfilledAt == nil || *backfilledAt == "" {
 		t.Fatalf("matched=%d backfilled_at=%v", matched, backfilledAt)
+	}
+}
+
+// TestCostSyncNewAPITokenKey429KeepsUsage 复现咩咩类故障：
+// 揭 key 的 POST /api/token/{id}/key 被限流后，不得整轮放弃——用量仍要落库。
+func TestCostSyncNewAPITokenKey429KeepsUsage(t *testing.T) {
+	var keyPosts atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/status":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota_per_unit":100000}}`))
+		case r.URL.Path == "/api/token/":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"items":[
+				{"id":1,"name":"alpha","group":"vip","status":1},
+				{"id":2,"name":"beta","group":"vip","status":1}
+			],"total":2}}`))
+		case r.URL.Path == "/api/token/1/key":
+			keyPosts.Add(1)
+			_, _ = w.Write([]byte(`{"success":true,"data":{"key":"sk-alpha"}}`))
+		case r.URL.Path == "/api/token/2/key":
+			keyPosts.Add(1)
+			w.WriteHeader(http.StatusTooManyRequests)
+		case r.URL.Path == "/api/log/self/stat":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":100000,"rpm":1}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	store := newTestStore(t)
+	providerRepo := repository.NewProviderRepo(store, &secretbox.Box{})
+	costRepo := repository.NewUpstreamCostRepo(store)
+	p, err := providerRepo.Create(context.Background(), repository.CreateParams{
+		Name:           "咩咩",
+		BalanceType:    "sub2api",
+		Platform:       "new-api",
+		AuthMode:       "user_key",
+		BaseURL:        srv.URL,
+		AccessToken:    "pat",
+		UpstreamUserID: "7",
+	})
+	if err != nil {
+		t.Fatalf("Create provider: %v", err)
+	}
+
+	loc := time.FixedZone("CST", 8*60*60)
+	svc := NewCostSyncService(providerRepo, costRepo, nil, &config.Config{
+		Location: loc,
+		Cost:     config.CostConfig{TimeoutSeconds: 3},
+	})
+	fpAlpha := keyidentity.Fingerprint("sk-alpha")
+	fingerprints := map[string]repository.AccountKeyFingerprint{
+		fpAlpha: {AccountID: 11, AccountName: "【咩咩】alpha", Fingerprint: fpAlpha},
+	}
+	if err := svc.SyncOne(context.Background(), p, fingerprints, false); err != nil {
+		t.Fatalf("SyncOne: %v", err)
+	}
+
+	var rows int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM upstream_key_costs WHERE provider_id=?`, p.ID).Scan(&rows); err != nil {
+		t.Fatalf("cost rows: %v", err)
+	}
+	if rows != 2 {
+		t.Fatalf("今日成本行数=%d，429 揭 key 失败后仍应写入全部 token 的用量", rows)
+	}
+
+	var storedFP string
+	if err := store.DB().QueryRow(`SELECT key_fingerprint FROM upstream_key_map WHERE provider_id=? AND upstream_key_id=1`, p.ID).
+		Scan(&storedFP); err != nil {
+		t.Fatalf("mapping: %v", err)
+	}
+	if storedFP != fpAlpha {
+		t.Fatalf("已揭开的 key 指纹应保留，得到 %q", storedFP)
+	}
+
+	var lastError *string
+	var lastSynced *string
+	if err := store.DB().QueryRow(`SELECT last_error, last_synced_at FROM cost_sync_state WHERE provider_id=?`, p.ID).
+		Scan(&lastError, &lastSynced); err != nil {
+		t.Fatalf("sync state: %v", err)
+	}
+	if lastError != nil && *lastError != "" {
+		t.Fatalf("用量已成功时不应把揭 key 429 记成成本同步失败，得到 %q", *lastError)
+	}
+	if lastSynced == nil || *lastSynced == "" {
+		t.Fatal("用量已成功时应写入 last_synced_at")
+	}
+	if keyPosts.Load() < 2 {
+		t.Fatalf("应尝试揭两个 key，实际 POST /key %d 次", keyPosts.Load())
+	}
+}
+
+// TestCostSyncNewAPISkipsStoredKeyReveal 已有指纹的 token 不再打 /key，避免每轮撞限流。
+func TestCostSyncNewAPISkipsStoredKeyReveal(t *testing.T) {
+	var key1Posts atomic.Int64
+	var key2Posts atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/status":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota_per_unit":100000}}`))
+		case r.URL.Path == "/api/token/":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"items":[
+				{"id":1,"name":"alpha","group":"vip","status":1},
+				{"id":2,"name":"beta","group":"vip","status":1}
+			],"total":2}}`))
+		case r.URL.Path == "/api/token/1/key":
+			key1Posts.Add(1)
+			w.WriteHeader(http.StatusTooManyRequests)
+		case r.URL.Path == "/api/token/2/key":
+			key2Posts.Add(1)
+			_, _ = w.Write([]byte(`{"success":true,"data":{"key":"sk-beta"}}`))
+		case r.URL.Path == "/api/log/self/stat":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":100000,"rpm":1}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	store := newTestStore(t)
+	providerRepo := repository.NewProviderRepo(store, &secretbox.Box{})
+	costRepo := repository.NewUpstreamCostRepo(store)
+	p, err := providerRepo.Create(context.Background(), repository.CreateParams{
+		Name:           "咩咩",
+		BalanceType:    "sub2api",
+		Platform:       "new-api",
+		AuthMode:       "user_key",
+		BaseURL:        srv.URL,
+		AccessToken:    "pat",
+		UpstreamUserID: "7",
+	})
+	if err != nil {
+		t.Fatalf("Create provider: %v", err)
+	}
+
+	fpAlpha := keyidentity.Fingerprint("sk-alpha")
+	if err := costRepo.UpsertMappings(context.Background(), []repository.UpstreamKeyMapping{{
+		ProviderID:     p.ID,
+		UpstreamKeyID:  1,
+		KeyName:        "alpha",
+		KeyFingerprint: fpAlpha,
+		Status:         "1",
+		GroupName:      "vip",
+	}}); err != nil {
+		t.Fatalf("seed mapping: %v", err)
+	}
+
+	loc := time.FixedZone("CST", 8*60*60)
+	svc := NewCostSyncService(providerRepo, costRepo, nil, &config.Config{
+		Location: loc,
+		Cost:     config.CostConfig{TimeoutSeconds: 3},
+	})
+	fpBeta := keyidentity.Fingerprint("sk-beta")
+	fingerprints := map[string]repository.AccountKeyFingerprint{
+		fpAlpha: {AccountID: 11, AccountName: "【咩咩】alpha", Fingerprint: fpAlpha},
+		fpBeta:  {AccountID: 12, AccountName: "【咩咩】beta", Fingerprint: fpBeta},
+	}
+	if err := svc.SyncOne(context.Background(), p, fingerprints, false); err != nil {
+		t.Fatalf("SyncOne: %v", err)
+	}
+	if key1Posts.Load() != 0 {
+		t.Fatalf("已有指纹的 token 不应再 POST /key，实际 %d 次", key1Posts.Load())
+	}
+	if key2Posts.Load() != 1 {
+		t.Fatalf("未揭过的 token 应 POST /key 一次，实际 %d", key2Posts.Load())
+	}
+
+	var storedFP string
+	var accountID int64
+	if err := store.DB().QueryRow(`SELECT key_fingerprint, account_id FROM upstream_key_map WHERE provider_id=? AND upstream_key_id=1`, p.ID).
+		Scan(&storedFP, &accountID); err != nil {
+		t.Fatalf("mapping: %v", err)
+	}
+	if storedFP != fpAlpha || accountID != 11 {
+		t.Fatalf("已存指纹应保留并用于匹配，fingerprint=%q account=%d", storedFP, accountID)
+	}
+}
+
+// TestCostSyncNewAPIUsesListKeyWhenUnmasked 列表已带明文 key 时不必再 POST /key。
+func TestCostSyncNewAPIUsesListKeyWhenUnmasked(t *testing.T) {
+	var keyPosts atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/status":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota_per_unit":100000}}`))
+		case r.URL.Path == "/api/token/":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"items":[
+				{"id":1,"name":"alpha","group":"vip","status":1,"key":"sk-listed-secret-key"}
+			],"total":1}}`))
+		case strings.HasSuffix(r.URL.Path, "/key"):
+			keyPosts.Add(1)
+			w.WriteHeader(http.StatusTooManyRequests)
+		case r.URL.Path == "/api/log/self/stat":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":100000,"rpm":1}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	store := newTestStore(t)
+	providerRepo := repository.NewProviderRepo(store, &secretbox.Box{})
+	p, err := providerRepo.Create(context.Background(), repository.CreateParams{
+		Name:           "咩咩",
+		BalanceType:    "sub2api",
+		Platform:       "new-api",
+		AuthMode:       "user_key",
+		BaseURL:        srv.URL,
+		AccessToken:    "pat",
+		UpstreamUserID: "7",
+	})
+	if err != nil {
+		t.Fatalf("Create provider: %v", err)
+	}
+	svc := NewCostSyncService(providerRepo, repository.NewUpstreamCostRepo(store), nil, &config.Config{
+		Location: time.FixedZone("CST", 8*60*60),
+		Cost:     config.CostConfig{TimeoutSeconds: 3},
+	})
+	fp := keyidentity.Fingerprint("sk-listed-secret-key")
+	fingerprints := map[string]repository.AccountKeyFingerprint{
+		fp: {AccountID: 11, AccountName: "【咩咩】alpha", Fingerprint: fp},
+	}
+	if err := svc.SyncOne(context.Background(), p, fingerprints, false); err != nil {
+		t.Fatalf("SyncOne: %v", err)
+	}
+	if keyPosts.Load() != 0 {
+		t.Fatalf("列表已有明文 key 时不应 POST /key，实际 %d 次", keyPosts.Load())
+	}
+	var accountID int64
+	if err := store.DB().QueryRow(`SELECT account_id FROM upstream_key_map WHERE provider_id=? AND upstream_key_id=1`, p.ID).
+		Scan(&accountID); err != nil {
+		t.Fatalf("mapping: %v", err)
+	}
+	if accountID != 11 {
+		t.Fatalf("account=%d，期望用列表明文 key 匹配到 11", accountID)
 	}
 }
 

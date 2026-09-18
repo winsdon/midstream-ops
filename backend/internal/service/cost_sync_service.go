@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -89,6 +90,7 @@ func (s *CostSyncService) SyncOne(
 		_ = s.costRepo.SaveSyncState(ctx, state)
 		return fetchErr
 	}
+	storedFingerprints := s.storedKeyFingerprints(ctx, p.ID)
 	overrides := s.groupRateOverrides(ctx, p)
 
 	mappings := make([]repository.UpstreamKeyMapping, 0, len(keys))
@@ -109,12 +111,15 @@ func (s *CostSyncService) SyncOne(
 		if rate := resolveUpstreamKeyRate(k, overrides); rate != nil {
 			m.RateMultiplier = rate
 		}
-		// 按 api_key 明文指纹匹配本站账号；明文不落库、不外传
+		// 按 api_key 明文指纹匹配本站账号；明文不落库、不外传。
+		// 揭 key 被限流时沿用上次指纹，避免空值把已匹配记录冲掉。
 		var fp string
 		if k.Key != "" {
 			fp = keyidentity.Fingerprint(k.Key)
-			m.KeyFingerprint = fp
+		} else {
+			fp = storedFingerprints[k.ID]
 		}
+		m.KeyFingerprint = fp
 		groupName := ""
 		if k.Group != nil {
 			groupName = k.Group.Name
@@ -342,6 +347,7 @@ func (s *CostSyncService) fetchNewAPIKeysAndUsage(ctx context.Context, p *reposi
 	}
 	quotaPerUnit := s.newAPIQuotaPerUnit(ctx, p)
 	start, end := s.cfg.TodayRange()
+	stored := s.storedKeyFingerprints(ctx, p.ID)
 
 	fetch := func(auth NewAPIAuth) ([]ProviderAPIKey, map[int64]APIKeyUsage, error) {
 		tokens, err := s.newapiClient.ListTokens(ctx, p.BaseURL, auth)
@@ -349,24 +355,25 @@ func (s *CostSyncService) fetchNewAPIKeysAndUsage(ctx context.Context, p *reposi
 			return nil, nil, err
 		}
 		keys := make([]ProviderAPIKey, 0, len(tokens))
+		skipReveal := false
 		for i := range tokens {
-			key, err := s.newapiClient.GetTokenKey(ctx, p.BaseURL, auth, tokens[i].ID)
-			if err != nil {
-				return nil, nil, err
+			key := unmaskedTokenKey(tokens[i].Key)
+			needReveal := key == "" && stored[tokens[i].ID] == ""
+			if needReveal && !skipReveal {
+				revealed, rerr := s.newapiClient.GetTokenKey(ctx, p.BaseURL, auth, tokens[i].ID)
+				if rerr != nil {
+					if IsUnauthorized(rerr) {
+						return nil, nil, rerr
+					}
+					if errors.Is(rerr, ErrRateLimited) {
+						skipReveal = true
+						log.Printf("[cost-sync] 供应商 %s token key 被限流，本轮停止揭 key，继续同步用量", p.Name)
+					}
+				} else {
+					key = revealed
+				}
 			}
-			providerKey := ProviderAPIKey{
-				ID:     tokens[i].ID,
-				Name:   tokens[i].Name,
-				Key:    key,
-				Status: string(tokens[i].Status),
-			}
-			if strings.TrimSpace(tokens[i].Group) != "" {
-				providerKey.Group = &struct {
-					Name           string  `json:"name"`
-					RateMultiplier float64 `json:"rate_multiplier"`
-				}{Name: tokens[i].Group}
-			}
-			keys = append(keys, providerKey)
+			keys = append(keys, newAPIProviderKey(tokens[i], key))
 		}
 		usage, err := s.newapiClient.GetTokensUsage(ctx, p.BaseURL, auth, tokens, start, end, quotaPerUnit)
 		return keys, usage, err
@@ -381,6 +388,33 @@ func (s *CostSyncService) fetchNewAPIKeysAndUsage(ctx context.Context, p *reposi
 		return fetch(sess.NewAPI)
 	}
 	return keys, usage, err
+}
+
+func (s *CostSyncService) storedKeyFingerprints(ctx context.Context, providerID int64) map[int64]string {
+	if s.costRepo == nil {
+		return map[int64]string{}
+	}
+	m, err := s.costRepo.KeyFingerprints(ctx, providerID)
+	if err != nil || m == nil {
+		return map[int64]string{}
+	}
+	return m
+}
+
+func newAPIProviderKey(token NewAPIToken, key string) ProviderAPIKey {
+	out := ProviderAPIKey{
+		ID:     token.ID,
+		Name:   token.Name,
+		Key:    key,
+		Status: string(token.Status),
+	}
+	if g := strings.TrimSpace(token.Group); g != "" {
+		out.Group = &struct {
+			Name           string  `json:"name"`
+			RateMultiplier float64 `json:"rate_multiplier"`
+		}{Name: g}
+	}
+	return out
 }
 
 func (s *CostSyncService) newAPIQuotaPerUnit(ctx context.Context, p *repository.Provider) float64 {

@@ -106,7 +106,11 @@ func (r *UpstreamCostRepo) UpsertMappings(ctx context.Context, maps []UpstreamKe
 		VALUES (?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(provider_id, upstream_key_id) DO UPDATE SET
 			key_name        = excluded.key_name,
-			key_fingerprint = excluded.key_fingerprint,
+			key_fingerprint = CASE
+				WHEN excluded.key_fingerprint IS NULL OR excluded.key_fingerprint = ''
+				THEN upstream_key_map.key_fingerprint
+				ELSE excluded.key_fingerprint
+			END,
 			account_id      = excluded.account_id,
 			account_name    = excluded.account_name,
 			rate_multiplier = excluded.rate_multiplier,
@@ -341,6 +345,29 @@ func (r *UpstreamCostRepo) MappedAccountsByGroup(ctx context.Context, providerID
 		}
 		seen[group][accID] = struct{}{}
 		out[group] = append(out[group], MappedGroupHit{AccountID: accID, AccountName: accName})
+	}
+	return out, rows.Err()
+}
+
+// KeyFingerprints 返回该供应商已落库的 upstream_key_id → sha256 指纹。
+// 成本同步用它跳过已揭过的 token，避免每轮 POST /api/token/{id}/key 撞限流。
+func (r *UpstreamCostRepo) KeyFingerprints(ctx context.Context, providerID int64) (map[int64]string, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT upstream_key_id, key_fingerprint
+		FROM upstream_key_map
+		WHERE provider_id = ? AND COALESCE(key_fingerprint,'') <> ''`, providerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var fp string
+		if err := rows.Scan(&id, &fp); err != nil {
+			return nil, err
+		}
+		out[id] = fp
 	}
 	return out, rows.Err()
 }

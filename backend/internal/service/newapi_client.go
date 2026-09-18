@@ -312,7 +312,7 @@ type NewAPIToken struct {
 	Name   string            `json:"name"`
 	Group  string            `json:"group"`
 	Status NewAPITokenStatus `json:"status"`
-	Key    string            `json:"-"`
+	Key    string            `json:"key"`
 }
 
 // NewAPITokenStatus 兼容 new-api 不同版本返回的数字或字符串状态。
@@ -414,6 +414,18 @@ func (c *NewAPIClient) GetTokenKey(ctx context.Context, baseURL string, auth New
 		return "", errors.New("token key 响应缺少 key")
 	}
 	return data.Key, nil
+}
+
+// unmaskedTokenKey 列表接口有时仍带明文 key；掩码（含 ... / *）不能当指纹用。
+func unmaskedTokenKey(key string) string {
+	k := strings.TrimSpace(key)
+	if k == "" || strings.Contains(k, "...") || strings.Contains(k, "*") {
+		return ""
+	}
+	if len(k) < 16 {
+		return ""
+	}
+	return k
 }
 
 // NewAPITokenUsage 是一个 token 在指定时间窗内的美元成本与请求数。
@@ -590,6 +602,9 @@ func (c *NewAPIClient) requestJSON(ctx context.Context, method, url string, auth
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode == http.StatusUnauthorized {
 		return errUnauthorized
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return fmt.Errorf("%w: %s请求失败 HTTP %d: %s", ErrRateLimited, what, resp.StatusCode, briefBody(raw))
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s请求失败 HTTP %d: %s", what, resp.StatusCode, briefBody(raw))
