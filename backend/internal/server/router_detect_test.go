@@ -32,6 +32,9 @@ func TestDetectRoutesRequireAuth(t *testing.T) {
 		path   string
 	}{
 		{"检测项清单", http.MethodGet, "/api/v1/detect/checks"},
+		{"自定义模型清单", http.MethodGet, "/api/v1/detect/models"},
+		{"保存自定义模型", http.MethodPost, "/api/v1/detect/models"},
+		{"删除自定义模型", http.MethodDelete, "/api/v1/detect/models?model=test"},
 		{"可检测账号", http.MethodGet, "/api/v1/detect/accounts"},
 		{"当前基准", http.MethodGet, "/api/v1/detect/baseline"},
 		{"生成基准", http.MethodPost, "/api/v1/detect/baseline"},
@@ -41,6 +44,8 @@ func TestDetectRoutesRequireAuth(t *testing.T) {
 		{"重试失败项", http.MethodPost, "/api/v1/detect/jobs/abc/retry"},
 		{"历史列表", http.MethodGet, "/api/v1/detect/history"},
 		{"历史详情", http.MethodGet, "/api/v1/detect/history/1"},
+		{"删除历史", http.MethodDelete, "/api/v1/detect/history/1"},
+		{"删除智商测试历史", http.MethodDelete, "/api/v1/detect/iq/history/1"},
 	}
 
 	for _, c := range cases {

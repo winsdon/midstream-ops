@@ -183,3 +183,40 @@ func (r *ModelDetectionRepo) DeleteOlderThan(ctx context.Context, before time.Ti
 	}
 	return res.RowsAffected()
 }
+
+// DeleteBeyondLatest 只保留最新 keep 条，返回删除行数。
+//
+// 排序与列表一致（created_at DESC, id DESC），避免同一秒写入的记录被时间列单独排序时裁错。
+// keep <= 0 表示不限制。报告含完整请求与响应，条数不设上限会把表撑大。
+func (r *ModelDetectionRepo) DeleteBeyondLatest(ctx context.Context, keep int) (int64, error) {
+	if keep <= 0 {
+		return 0, nil
+	}
+	res, err := r.db.ExecContext(ctx, `
+		WITH stale AS (
+			SELECT id FROM model_detections
+			ORDER BY created_at DESC, id DESC
+			OFFSET ?
+		)
+		DELETE FROM model_detections WHERE id IN (SELECT id FROM stale)`, keep)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// Delete 删除一条真伪检测历史。影响 0 行返回 ErrDetectionNotFound。
+func (r *ModelDetectionRepo) Delete(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM model_detections WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrDetectionNotFound
+	}
+	return nil
+}

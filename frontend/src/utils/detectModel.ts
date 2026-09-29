@@ -1,13 +1,16 @@
 import type {
   AuthenticityGrade,
   DetectCheckMeta,
+  DetectCheckOutput,
   DetectCheckResult,
   DetectCheckStatus,
   DetectClass,
+  DetectCost,
   DetectGroup,
   DetectJob,
   DetectLabel,
   DetectPreset,
+  DetectSuite,
   DetectTargetRun
 } from '@/types/detect'
 
@@ -108,6 +111,18 @@ export const SCORE_CLASSES: DetectClass[] = [
   'wrapper'
 ]
 
+/** 成本档位 → 徽章配色（两种模式的勾选面板共用）。 */
+export function costVariant(cost: DetectCost): BadgeVariant {
+  if (cost === 'high') return 'danger'
+  if (cost === 'medium') return 'warning'
+  return 'gray'
+}
+
+/** 成本档位 → 文案 key。 */
+export function costLabelKey(cost: DetectCost): string {
+  return `detect.cost${cost.charAt(0).toUpperCase()}${cost.slice(1)}`
+}
+
 /** 分组展示顺序。 */
 export const GROUP_ORDER: DetectGroup[] = ['gateway', 'protocol', 'identity', 'capability']
 
@@ -169,10 +184,15 @@ export function findCheck(run: DetectTargetRun | undefined, checkID: string): De
 /**
  * 请求本身失败（网络错误 / 超时 / 429 / 5xx）才值得重试。
  * 协议失败再打一遍没有新信息，不提供重试入口。
+ *
+ * 只检测的项（如「是否 0 注入」一次 27 个请求）零星 429 不影响结论，
+ * 一个请求都没成功才算失败——与后端 RequestFailed 同一口径。
  */
 export function isRequestFailed(check?: DetectCheckResult): boolean {
   if (!check || check.status === 'running') return false
-  return (check.exchanges ?? []).some(
+  const exchanges = check.exchanges ?? []
+  if (check.informational && exchanges.some((ex) => ex.status >= 200 && ex.status < 300)) return false
+  return exchanges.some(
     (ex) => !!ex.network_error || ex.status === 408 || ex.status === 429 || ex.status >= 500
   )
 }
@@ -196,10 +216,11 @@ export interface StatusCounts {
   inconclusive: number
 }
 
+/** 判定卡片下方的结论计数。只检测不计分的项不算：它们不是判定的依据。 */
 export function countStatuses(run: DetectTargetRun | undefined): StatusCounts {
   const counts: StatusCounts = { passed: 0, failed: 0, suspicious: 0, unsupported: 0, inconclusive: 0 }
   for (const c of run?.checks ?? []) {
-    if (c.status === 'running') continue
+    if (c.status === 'running' || c.informational) continue
     counts[c.status] += 1
   }
   return counts
@@ -255,4 +276,48 @@ export function matchingPresetId(selected: readonly string[], presets: readonly 
     if (sameCheckSet(selected, p.checks)) return p.id
   }
   return null
+}
+
+/** 页面上的两种测试模式，顺序即切换按钮的顺序。 */
+export const DETECT_SUITES: DetectSuite[] = ['authenticity', 'iq']
+
+/** 检测项所属套件。后端对真伪项不标 suite，缺省即模型真伪。 */
+export function checkSuite(check: Pick<DetectCheckMeta, 'suite'>): DetectSuite {
+  return check.suite === 'iq' ? 'iq' : 'authenticity'
+}
+
+/** 只取某个套件的检测项，保持目录顺序。两套分开勾选，互不混跑。 */
+export function checksOfSuite(checks: DetectCheckMeta[], suite: DetectSuite): DetectCheckMeta[] {
+  return checks.filter((c) => checkSuite(c) === suite)
+}
+
+/**
+ * 单项结论的文案 key。
+ * 智商题用一套自己的说法（通过 / 未通过），真伪那套「协议失败 / 结果可疑」放在答题上会误导。
+ */
+export function statusLabelKey(check: Pick<DetectCheckResult, 'group' | 'status'>): string {
+  return check.group === 'iq' ? `detect.iqStatus.${check.status}` : `detect.status.${check.status}`
+}
+
+/** 智商题里「结果可疑」就是答错 / 没交出作品，按不通过的红色与 × 展示。 */
+const IQ_STATUS_VARIANT: Record<DetectCheckStatus, BadgeVariant> = { ...STATUS_VARIANT, suspicious: 'danger' }
+const IQ_STATUS_ICON: Record<DetectCheckStatus, string> = { ...STATUS_ICON, suspicious: '×' }
+
+export function iqStatusVariant(status: DetectCheckStatus): BadgeVariant {
+  return IQ_STATUS_VARIANT[status] ?? 'gray'
+}
+
+export function iqStatusIcon(status: DetectCheckStatus): string {
+  return IQ_STATUS_ICON[status] ?? '·'
+}
+
+/** 按检测项所属套件取徽章配色（详情抽屉两种模式共用）。 */
+export function checkStatusVariant(check: Pick<DetectCheckResult, 'group' | 'status'>): BadgeVariant {
+  return check.group === 'iq' ? iqStatusVariant(check.status) : statusVariant(check.status)
+}
+
+/** 自动判分题的对错：没有解析出答案（或没有标准答案可比）时为 none。 */
+export function answerOutcome(output?: DetectCheckOutput): 'correct' | 'wrong' | 'none' {
+  if (!output?.answer || !output.expected) return 'none'
+  return output.answer === output.expected ? 'correct' : 'wrong'
 }

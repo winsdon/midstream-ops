@@ -1,8 +1,8 @@
 <template>
   <div class="card">
     <div class="card-header">
-      <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('detect.title') }}</h2>
-      <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-dark-400">{{ t('detect.intro') }}</p>
+      <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('detect.targetTitle') }}</h2>
+      <p class="mt-1 text-xs leading-relaxed text-gray-500 dark:text-dark-400">{{ t('detect.targetHint') }}</p>
     </div>
 
     <div class="card-body space-y-3">
@@ -44,24 +44,25 @@
               :placeholder="t('detect.modelPlaceholder')"
             />
             <datalist id="detect-model-options">
-              <option v-for="m in MODEL_OPTIONS" :key="m" :value="m" />
+              <option v-for="m in modelOptions" :key="m" :value="m" />
             </datalist>
             <div class="mt-2 flex flex-wrap gap-1.5">
-              <button
-                v-for="m in MODEL_OPTIONS"
-                :key="m"
-                type="button"
-                class="rounded-lg px-2 py-1 text-xs transition-colors"
-                :class="
-                  modelInput === m
-                    ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-800 dark:text-dark-300 dark:hover:bg-dark-700'
-                "
-                @click="modelInput = m"
-              >
-                {{ m }}
-              </button>
+              <div v-for="m in modelOptions" :key="m" class="inline-flex max-w-full items-center rounded-lg bg-gray-100 dark:bg-dark-800">
+                <button
+                  type="button"
+                  class="min-w-0 truncate rounded-lg px-2 py-1 text-xs transition-colors"
+                  :class="modelInput === m ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300' : 'text-gray-600 hover:bg-gray-200 dark:text-dark-300 dark:hover:bg-dark-700'"
+                  @click="modelInput = m"
+                >{{ m }}</button>
+                <button v-if="customModels.includes(m)" type="button" class="shrink-0 px-1 text-gray-500 hover:text-red-600" :title="t('detect.removeSavedModel')" @click="removeCustomModel(m)">
+                  <Icon name="x" size="sm" />
+                </button>
+              </div>
             </div>
+            <button v-if="modelInput.trim() && !modelOptions.includes(modelInput.trim())" type="button" class="btn btn-secondary btn-sm mt-2" :disabled="modelSaving" @click="saveCurrentModel">
+              <Icon name="plus" size="sm" />
+              {{ t('detect.saveModel') }}
+            </button>
             <span class="input-hint">{{ t('detect.modelHint') }}</span>
           </div>
           <div>
@@ -176,8 +177,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { detectApi } from '@/api'
+import { errorMessage } from '@/api/client'
+import { useAppStore } from '@/stores/app'
 import Icon from '@/components/icons/Icon.vue'
 import Select from '@/components/common/Select.vue'
 import DetectAccountDialog from '@/components/detect/DetectAccountDialog.vue'
@@ -185,6 +189,7 @@ import { MAX_DETECT_TARGETS } from '@/utils/detectModel'
 import type { DetectAccount, DetectTargetInput } from '@/types/detect'
 
 const { t } = useI18n()
+const app = useAppStore()
 
 const props = defineProps<{
   accounts: DetectAccount[]
@@ -207,12 +212,16 @@ const emit = defineEmits<{
 
 const MODEL_OPTIONS = [
   'claude-opus-5',
+  'claude-opus-5-5',
   'claude-fable-5',
   'claude-opus-4-8',
   'claude-sonnet-5',
   'claude-sonnet-4-6',
   'claude-haiku-4-5'
 ]
+const customModels = ref<string[]>([])
+const modelSaving = ref(false)
+const modelOptions = computed(() => [...new Set([...MODEL_OPTIONS, ...customModels.value])])
 
 const showPicker = ref(false)
 const mode = ref<'account' | 'manual'>('account')
@@ -235,6 +244,36 @@ function blankManual(): ManualTarget {
   return { uid: ++manualSeq, name: '', baseUrl: '', apiKey: '', reveal: false }
 }
 const manualTargets = ref<ManualTarget[]>([blankManual()])
+
+async function loadCustomModels(): Promise<void> {
+  try {
+    customModels.value = (await detectApi.models()).items || []
+  } catch {
+    // 输入框仍可临时指定模型。
+  }
+}
+
+async function saveCurrentModel(): Promise<void> {
+  const model = modelInput.value.trim()
+  if (!model || modelOptions.value.includes(model)) return
+  modelSaving.value = true
+  try {
+    customModels.value = (await detectApi.addModel(model)).items || []
+    app.showSuccess(t('detect.modelSaved'))
+  } catch (e) {
+    app.showError(errorMessage(e))
+  } finally {
+    modelSaving.value = false
+  }
+}
+
+async function removeCustomModel(model: string): Promise<void> {
+  try {
+    customModels.value = (await detectApi.removeModel(model)).items || []
+  } catch (e) {
+    app.showError(errorMessage(e))
+  }
+}
 
 const authOptions = computed(() => [
   { value: 'both', label: t('detect.authBoth') },
@@ -316,4 +355,6 @@ watch(
   },
   { immediate: true, deep: true }
 )
+
+onMounted(() => { void loadCustomModels() })
 </script>

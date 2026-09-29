@@ -139,6 +139,44 @@ func TestModelDetectCancelUnknownJob(t *testing.T) {
 	}
 }
 
+// TestCancelledRunIsNotPersisted 被取消或缺计分项的一轮不落库：在途请求都以 context canceled 失败，
+// 判定会变成「渠道不可用」（#77 就是这样进的历史）；取消后只补跑一部分，判定又只建立在半截证据上。
+func TestCancelledRunIsNotPersisted(t *testing.T) {
+	selected := []string{"ping", "stream"}
+	full := []*modeldetect.CheckResult{{ID: "ping", Status: modeldetect.StatusPassed}, {ID: "stream", Status: modeldetect.StatusPassed}}
+	if persistable(nil, selected) {
+		t.Fatal("空结果不应落库")
+	}
+	if persistable(&modeldetect.TargetRun{Error: modeldetect.RunCancelled, Checks: full}, selected) {
+		t.Fatal("被取消的一轮不应落库")
+	}
+	if persistable(&modeldetect.TargetRun{Checks: full[:1]}, selected) {
+		t.Fatal("缺计分项的一轮不应落库")
+	}
+	if !persistable(&modeldetect.TargetRun{Checks: full}, selected) {
+		t.Fatal("跑完的一轮应落库")
+	}
+}
+
+// TestRetryAfterCancelRunsMissingChecks 取消后「重试失败项」要把还没轮到的项一起补跑。
+func TestRetryAfterCancelRunsMissingChecks(t *testing.T) {
+	job := &detectJob{
+		snap: DetectJob{Status: DetectJobCancelled, Checks: []string{"models", "ping", "stream"},
+			Targets: []*modeldetect.TargetRun{{Error: modeldetect.RunCancelled, Checks: []*modeldetect.CheckResult{
+				{ID: "models", Status: modeldetect.StatusPassed},
+				{ID: "ping", Status: modeldetect.StatusInconclusive, Exchanges: []*modeldetect.Exchange{{NetworkError: "context canceled"}}},
+			}}}},
+		targets: []modeldetect.Target{{Name: "t"}},
+	}
+	plan, err := job.planRetry(DetectRetryRequest{})
+	if err != nil {
+		t.Fatalf("应能规划重试：%v", err)
+	}
+	if len(plan.items) != 1 || strings.Join(plan.items[0].checks, ",") != "ping,stream" {
+		t.Fatalf("应补跑失败的 ping 与没轮到的 stream，实际 %+v", plan.items)
+	}
+}
+
 func TestClampDetectConcurrency(t *testing.T) {
 	cases := []struct {
 		in, want int
@@ -497,6 +535,83 @@ func waitDetectJob(t *testing.T, svc *ModelDetectService, jobID string, timeout 
 	}
 	t.Fatal("作业未在超时前完成")
 	return nil
+}
+
+// 智商测试走同一条作业管线，但只跑智商题、不出判定；混进来的真伪项会被丢掉。
+func TestModelDetectIQSuiteLifecycle(t *testing.T) {
+	const key = "sk-iq-suite-secret-key-value"
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("content-type", "text/event-stream")
+		events := []string{
+			`{"type":"message_start","message":{"id":"msg_01TESTTESTTESTTESTTEST","usage":{"input_tokens":9,"output_tokens":1}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"最终答案：21"}}`,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":6}}`,
+			`{"type":"message_stop"}`,
+		}
+		for _, e := range events {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", e)
+		}
+	}))
+	defer srv.Close()
+
+	svc := newDetectService()
+	jobID, err := svc.Start(context.Background(), DetectRunRequest{
+		Suite:   modeldetect.SuiteIQ,
+		Targets: []DetectTargetInput{{Name: "手填目标", BaseURL: srv.URL, APIKey: key}},
+		Model:   "claude-opus-5",
+		Checks:  []string{"ping", "iq-candy"},
+	})
+	if err != nil {
+		t.Fatalf("发起智商测试失败: %v", err)
+	}
+	job := waitDetectJob(t, svc, jobID, 20*time.Second)
+
+	if job.Suite != modeldetect.SuiteIQ || len(job.Checks) != 1 || job.Checks[0] != "iq-candy" {
+		t.Fatalf("作业应只含智商题，实际 suite=%s checks=%v", job.Suite, job.Checks)
+	}
+	run := job.Targets[0]
+	if run.Suite != modeldetect.SuiteIQ || run.Verdict != nil {
+		t.Fatalf("智商测试不应产出判定，实际 suite=%s verdict=%v", run.Suite, run.Verdict)
+	}
+	if len(run.Checks) != 1 || run.Checks[0].Output == nil || run.Checks[0].Output.Answer != "21" ||
+		run.Checks[0].Status != modeldetect.StatusPassed {
+		t.Fatalf("应只有糖果题，且答对 21 判为通过，实际 %+v", run.Checks)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) != 1 {
+		t.Fatalf("混进来的 ping 不应执行，实际请求 %v", paths)
+	}
+
+	blob, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("序列化作业失败: %v", err)
+	}
+	if strings.Contains(string(blob), key) {
+		t.Fatal("作业快照中出现 API Key 明文")
+	}
+}
+
+func TestSummarizeIQCountsPassedAndSkipsRunning(t *testing.T) {
+	results, passed := summarizeIQ([]*modeldetect.CheckResult{
+		{ID: "iq-pelican", Title: "鹈鹕测试", Status: modeldetect.StatusPassed, Summary: "SVG · SMIL 动画"},
+		{ID: "iq-candy", Title: "糖果题测试", Status: modeldetect.StatusSuspicious, Summary: "答 29，标准答案 21"},
+		{ID: "iq-x", Title: "执行中", Status: modeldetect.StatusRunning},
+		nil,
+	})
+	if passed != 1 || len(results) != 2 {
+		t.Fatalf("应统计 2 道已完成、1 道通过，实际 passed=%d results=%+v", passed, results)
+	}
+	if results[1].Status != modeldetect.StatusSuspicious || results[1].Summary == "" {
+		t.Fatalf("结论应带状态与摘要，实际 %+v", results[1])
+	}
 }
 
 func TestTargetFingerprintStableAndKeySensitive(t *testing.T) {

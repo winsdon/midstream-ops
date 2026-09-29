@@ -2,7 +2,9 @@ package modeldetect
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,11 +23,16 @@ type fakeUpstream struct {
 	signatureChecked bool
 	// strictParams 为 false 时，非法参数一律放行。
 	strictParams bool
-	// injectCache 为 true 时，裸请求也返回大段 cache_creation（号池注入特征）。
-	injectCache     bool
-	cacheWrite      int
-	cacheReadOffset int
-	callCount       int
+	// injectCache 为 true 时，裸请求也返回缓存写入 —— 只有网关自己拼了系统提示
+	// 才会出现这种写入，所以它是号池注入特征，并同时带上订阅额度头。
+	injectCache bool
+	// cacheMode 决定缓存探针（ping-again）看到的链形态，见 cacheMode* 常量。
+	// 空字符串等同 cacheModeStable。
+	cacheMode        string
+	cacheSeen        map[string]bool
+	cacheReadOffset  int
+	cacheProbeBodies []map[string]any
+	callCount        int
 
 	// forgeCacheRead 在极小输入上伪造缓存命中（低于最小可缓存长度，物理上不可能）。
 	forgeCacheRead bool
@@ -41,6 +48,55 @@ type fakeUpstream struct {
 	useRedactedThinking bool
 	// bedrockPrefixOnly 只贴 msg_bdrk_ 前缀，不给任何 Bedrock 旁证。
 	bedrockPrefixOnly bool
+	// replyCount 已回复的消息数，用来生成互不相同的消息 id。
+	replyCount int
+	// replayID 非空时每条回复都用这个 id（回放旧响应的网关）。
+	replayID string
+	// signature 非空时替换 thinking 块的签名（签名来源审计用）。
+	signature string
+	// geo 非空时写进 usage.inference_geo。
+	geo string
+	// stripInvalidThinking 网关把校验不过的 thinking 块剥掉再转发（常见的「签名错误自动重试」）。
+	stripInvalidThinking bool
+	// stripAllThinking 网关一律剥掉历史 thinking 块（后端从来见不到回传的签名）。
+	stripAllThinking bool
+	// issued 本渠道签发过的签名：原样回传才算有效（签名被篡改一位就对不上）。
+	issued map[string]bool
+}
+
+// fakeThoughts 假渠道每次 thinking 的思考 token 数；回传时按它计入输入（Opus 4.5 起的官方行为）。
+const fakeThoughts = 150
+
+// fakeSig 每条回复一份不同的合法签名：真后端的签名内含随机 nonce，从不重复。
+func fakeSig(n int) string { return "SIGVALID_" + fakeMsgCore(n) + strings.Repeat("x", 18) }
+
+// issue 记下一份签发出去的签名。
+func (up *fakeUpstream) issue(sig string) string {
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	if up.issued == nil {
+		up.issued = map[string]bool{}
+	}
+	up.issued[sig] = true
+	return sig
+}
+
+// validSig 签名是不是本渠道原样签发的。
+func (up *fakeUpstream) validSig(sig string) bool {
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	return up.issued[sig]
+}
+
+// fakeMsgCore 把序号编成 22 位 base58，使每条回复的消息 id 互不相同且符合官方字母表。
+func fakeMsgCore(n int) string {
+	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+	b := []byte(strings.Repeat("A", 22))
+	for i := len(b) - 1; i >= 0 && n > 0; i-- {
+		b[i] = alphabet[n%len(alphabet)]
+		n /= len(alphabet)
+	}
+	return string(b)
 }
 
 func newFakeServer(t *testing.T, up *fakeUpstream) *httptest.Server {
@@ -65,8 +121,15 @@ func newFakeServer(t *testing.T, up *fakeUpstream) *httptest.Server {
 			w.Header().Set("x-amzn-requestid", "11111111-2222-3333-4444-555555555555")
 		} else if up.behaviour == "official" {
 			w.Header().Set("anthropic-ratelimit-requests-remaining", "999")
+			if up.injectCache {
+				// 真实号池带订阅额度头；号池判定靠它 + 裸请求注入两条独立旁证。
+				w.Header().Set("anthropic-ratelimit-unified-5h-remaining", "42")
+			}
 		}
 
+		if up.stripInvalidThinking || up.stripAllThinking {
+			body = up.stripThinking(body, up.stripAllThinking)
+		}
 		if err := up.validate(body); err != nil {
 			writeJSON(w, 400, map[string]any{
 				"type": "error", "error": map[string]any{"type": "invalid_request_error", "message": err.Error()}})
@@ -78,11 +141,163 @@ func newFakeServer(t *testing.T, up *fakeUpstream) *httptest.Server {
 	return srv
 }
 
-// validate 复刻官方网关的参数校验；strictParams=false 的渠道全部放行。
+// stripThinking 去掉历史里的 thinking 块：all 为 false 时只去掉签名校验不过的（网关剥离后重发的效果）。
+func (up *fakeUpstream) stripThinking(body map[string]any, all bool) map[string]any {
+	msgs := sliceOf(body["messages"])
+	out := make([]any, 0, len(msgs))
+	for _, m := range msgs {
+		msg := mapOf(m)
+		blocks := sliceOf(msg["content"])
+		if blocks == nil {
+			out = append(out, m)
+			continue
+		}
+		kept := make([]any, 0, len(blocks))
+		for _, raw := range blocks {
+			blk := mapOf(raw)
+			if str(blk["type"]) == "thinking" && (all || !up.validSig(str(blk["signature"]))) {
+				continue
+			}
+			kept = append(kept, raw)
+		}
+		out = append(out, map[string]any{"role": msg["role"], "content": kept})
+	}
+	cp := map[string]any{}
+	for k, v := range body {
+		cp[k] = v
+	}
+	cp["messages"] = out
+	return cp
+}
+
+// 缓存探针的注入形态。默认 stable：前缀逐级增长，每次都读到已缓存的部分并写入新段。
+const (
+	cacheModeStable  = "stable"   // write₁ → (read₁+write₁, write₂) → (read₂+write₂, write₃)（默认）
+	cacheModeOff     = "off"      // 每次都不返回缓存用量（网关把 cache_control 剥了）
+	cacheModeDrop    = "drop"     // 首次写入后再也不命中
+	cacheModePreHit  = "pre_hit"  // 首次就命中（复用了别人的缓存）
+	cacheModeDrift   = "drift"    // 第 3 次没有把第 2 次写进去的量读回来
+	cacheModeNoWrite = "no_write" // 第 2、3 次命中但零写入（前缀没有增长）
+)
+
+// fakeProbeSegments 稳定链上每段新增内容的 token 量：
+// 第 n 次请求读前 n-1 段之和、写第 n 段。三次都非零 —— 这正是被测的形态。
+var fakeProbeSegments = []int{2400, 900, 900}
+
+// 是缓存探针请求：本次检测里只有 ping-again 会打显式 cache_control。
+func isCacheProbeBody(body map[string]any) bool {
+	for _, raw := range sliceOf(body["system"]) {
+		if mapOf(raw)["cache_control"] != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// probeChainUsage 按稳定链语义给出第 turn 次探针请求的 (read, write)。
+func probeChainUsage(turn int) (read, write int) {
+	for i := 0; i < turn-1 && i < len(fakeProbeSegments); i++ {
+		read += fakeProbeSegments[i]
+	}
+	if turn-1 < len(fakeProbeSegments) {
+		write = fakeProbeSegments[turn-1]
+	}
+	return
+}
+
+// applyInjection 按缓存形态写入本次响应的用量。调用方必须已持有 up.mu。
+//
+// 裸请求（不带 cache_control）代表「网关注入」：只有 injectCache 才写缓存，
+// 因为裸请求上出现的缓存写入只可能来自网关自己拼进去的系统提示。
+// 探针请求（ping-again）永远走缓存链模型 —— 前缀是我们自己送的。
+func (up *fakeUpstream) applyInjection(usage map[string]any, body map[string]any) {
+	isProbe := isCacheProbeBody(body)
+	if up.cacheSeen == nil {
+		up.cacheSeen = map[string]bool{}
+	}
+	if !isProbe {
+		if !up.injectCache || up.cacheSeen["bare"] {
+			return
+		}
+		up.cacheSeen["bare"] = true
+		usage["cache_creation_input_tokens"] = 2400
+		return
+	}
+
+	up.cacheProbeBodies = append(up.cacheProbeBodies, body)
+	turn := len(up.cacheProbeBodies)
+
+	switch up.cacheMode {
+	case cacheModeOff:
+		return
+	case cacheModePreHit:
+		usage["cache_read_input_tokens"] = 4030
+		return
+	case cacheModeDrop:
+		// 第一次写进去，之后再也读不到。
+		if turn == 1 {
+			usage["cache_creation_input_tokens"] = fakeProbeSegments[0]
+		}
+		return
+	case cacheModeDrift:
+		read, write := probeChainUsage(turn)
+		if turn == 3 {
+			read = fakeProbeSegments[0] // 第 2 次写的那段没被读回来
+		}
+		read += up.probeReadOffset(turn)
+		usage["cache_read_input_tokens"] = read
+		usage["cache_creation_input_tokens"] = write
+		return
+	case cacheModeNoWrite:
+		// 命中照旧，但新增内容没被写进缓存：后续读取停在第一段。
+		if turn == 1 {
+			usage["cache_creation_input_tokens"] = fakeProbeSegments[0]
+			return
+		}
+		usage["cache_read_input_tokens"] = fakeProbeSegments[0] + up.probeReadOffset(turn)
+		return
+	}
+
+	// stable：逐级推进。
+	read, write := probeChainUsage(turn)
+	usage["cache_read_input_tokens"] = read + up.probeReadOffset(turn)
+	usage["cache_creation_input_tokens"] = write
+}
+
+// probeReadOffset 只偏移第 2 次起的读取量：首轮读到的必然是 0，
+// 偏移它反而会变成「首轮就命中」这种另一种形态。
+func (up *fakeUpstream) probeReadOffset(turn int) int {
+	if turn <= 1 {
+		return 0
+	}
+	return up.cacheReadOffset
+}
+
+// validate 复刻官方网关的参数与签名校验：strictParams=false 的渠道放行非法参数，
+// signatureChecked=false 的渠道放行篡改签名，两者互不相干。
 func (up *fakeUpstream) validate(body map[string]any) error {
-	if !up.strictParams {
+	if up.strictParams {
+		if err := validateParams(body); err != nil {
+			return err
+		}
+	}
+	// 篡改过的签名必须被拒
+	if !up.signatureChecked {
 		return nil
 	}
+	for _, m := range sliceOf(body["messages"]) {
+		msg := mapOf(m)
+		for _, raw := range sliceOf(msg["content"]) {
+			blk := mapOf(raw)
+			if str(blk["type"]) == "thinking" && !up.validSig(str(blk["signature"])) {
+				return errText("Invalid signature on thinking block")
+			}
+		}
+	}
+	return nil
+}
+
+func validateParams(body map[string]any) error {
 	if mt, ok := num(body["max_tokens"]); ok && mt < 1 {
 		return errText("max_tokens: Input should be greater than or equal to 1")
 	}
@@ -102,50 +317,46 @@ func (up *fakeUpstream) validate(body map[string]any) error {
 			return errText("probe_unknown_field: Extra inputs are not permitted")
 		}
 	}
-	// 篡改过的签名必须被拒
-	if !up.signatureChecked {
-		return nil
-	}
-	for _, m := range sliceOf(body["messages"]) {
-		msg := mapOf(m)
-		for _, raw := range sliceOf(msg["content"]) {
-			blk := mapOf(raw)
-			if str(blk["type"]) == "thinking" && !strings.HasPrefix(str(blk["signature"]), "SIGVALID") {
-				return errText("Invalid signature on thinking block")
-			}
-		}
-	}
 	return nil
 }
 
 func (up *fakeUpstream) reply(w http.ResponseWriter, body map[string]any) {
-	id := "msg_01ABCDEFGHIJKLMNOPQRSTUV"
+	up.mu.Lock()
+	up.replyCount++
+	n := up.replyCount
+	up.mu.Unlock()
+	core := fakeMsgCore(n)
+
+	id := "msg_01" + core
 	toolID := "toolu_01ABCDEFGHIJKLMNOP"
 	switch up.behaviour {
 	case "bedrock":
-		id = "msg_bdrk_01ABCDEFGHIJKLMNOPQR"
+		id = "msg_bdrk_01" + core
 		toolID = "tooluse_ABCDEFGHIJKLMNOPQR"
 	case "wrapper":
-		id = "msg_" + "6f1c2b7e-1111-4b0e-9e2a-abcdef123456"
+		id = fmt.Sprintf("msg_6f1c2b7e-1111-4b0e-9e2a-%012d", n)
 		toolID = "call_abc123"
 	}
 	// 只贴前缀不给旁证：id 顶着 msg_bdrk_，内核仍是第一方流水号。
 	if up.bedrockPrefixOnly {
-		id = "msg_bdrk_01ABCDEFGHIJKLMNOPQRSTUV"
+		id = "msg_bdrk_01" + core
+	}
+	if up.replayID != "" {
+		id = up.replayID
 	}
 
 	usage := map[string]any{"input_tokens": 13, "output_tokens": 5}
-	if up.injectCache {
-		up.mu.Lock()
-		usage["input_tokens"] = 14
-		if up.cacheWrite == 0 {
-			up.cacheWrite = 2400
-			usage["cache_creation_input_tokens"] = 2400
-		} else {
-			usage["cache_read_input_tokens"] = 2400 + up.cacheReadOffset
-		}
-		up.mu.Unlock()
+	if up.geo != "" {
+		usage["inference_geo"] = up.geo
 	}
+	// 探针（带 cache_control）永远走缓存链模型：前缀是我们自己送的，跟网关
+	// 有没有注入无关。裸请求的缓存写入才只在 injectCache 时出现。
+	up.mu.Lock()
+	if up.injectCache {
+		usage["input_tokens"] = 14
+	}
+	up.applyInjection(usage, body)
+	up.mu.Unlock()
 	// 极小输入上伪造缓存命中：总输入远低于 Opus 5 的 512 门槛。
 	if up.forgeCacheRead {
 		usage["input_tokens"] = 13
@@ -155,6 +366,11 @@ func (up *fakeUpstream) reply(w http.ResponseWriter, body map[string]any) {
 	if up.forgeZeroInput {
 		usage["input_tokens"] = 0
 		usage["cache_read_input_tokens"] = 17
+	}
+	// 多轮对话（签名回传）的输入 = 首轮输入 + 之后每一轮：正文按长度折算，留在上下文里的
+	// thinking 块按当初的思考量计（Opus 4.5 起的官方行为）。网关剥掉 thinking 时输入跟着变少。
+	if msgs := sliceOf(body["messages"]); len(msgs) > 1 {
+		usage["input_tokens"] = 13 + historyTokens(msgs[1:])
 	}
 
 	// 工具调用
@@ -180,34 +396,40 @@ func (up *fakeUpstream) reply(w http.ResponseWriter, body map[string]any) {
 
 	// thinking
 	if mapOf(body["thinking"]) != nil && !hasThinkingBlock(body) {
-		think := map[string]any{
-			"type": "thinking", "thinking": "让我算一下……",
-			"signature": "SIGVALID_" + strings.Repeat("x", 40),
+		sig := fakeSig(n)
+		if up.signature != "" {
+			sig = up.signature
 		}
+		think := map[string]any{"type": "thinking", "thinking": "让我算一下……", "signature": up.issue(sig)}
 		switch {
 		case up.forgeEmptyThinking:
 			// 有签名、无正文：签名是贴上去的
-			think = map[string]any{"type": "thinking", "thinking": "",
-				"signature": "SIGVALID_" + strings.Repeat("x", 40)}
+			think = map[string]any{"type": "thinking", "thinking": "", "signature": up.issue(fakeSig(n))}
 		case up.emptyThinkingOnce:
 			up.mu.Lock()
 			up.thinkingCount++
 			first := up.thinkingCount == 1
 			up.mu.Unlock()
 			if first {
-				think = map[string]any{"type": "thinking", "thinking": "",
-					"signature": "SIGVALID_" + strings.Repeat("x", 40)}
+				think = map[string]any{"type": "thinking", "thinking": "", "signature": up.issue(fakeSig(n))}
 			}
 		case up.useRedactedThinking:
 			// 官方的加密保护形态，本就没有明文正文，不得误杀
 			think = map[string]any{"type": "redacted_thinking", "data": strings.Repeat("z", 40)}
+		}
+		usage["output_tokens"] = fakeThoughts + 5
+		usage["output_tokens_details"] = map[string]any{"thinking_tokens": fakeThoughts}
+		answer := "答案是 262。"
+		if len(sliceOf(body["messages"])) > 1 {
+			// 多轮（历史里的 thinking 被网关剥掉后）照样回答最后一问。
+			answer = replyFor(userText(body))
 		}
 		writeJSON(w, 200, map[string]any{
 			"id": id, "type": "message", "role": "assistant", "model": str(body["model"]),
 			"stop_reason": "end_turn", "usage": usage,
 			"content": []any{
 				think,
-				map[string]any{"type": "text", "text": "答案是 262。"},
+				map[string]any{"type": "text", "text": answer},
 			},
 		})
 		return
@@ -247,8 +469,8 @@ func replyFor(prompt string) string {
 		return strings.TrimSpace(strings.Repeat("TOKEN ", 200))
 	case strings.Contains(prompt, "校验串"):
 		return firstToken(prompt, "CONT_")
-	case strings.Contains(prompt, "secret code"):
-		return "the code"
+	case strings.Contains(prompt, "session ID"):
+		return firstToken(prompt, "SESSION_")
 	case strings.Contains(prompt, "2+2"):
 		return "Arrr! 4"
 	}
@@ -278,6 +500,30 @@ func hasThinkingBlock(body map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// historyTokens 假渠道对首轮之后各轮的计量：正文按 JSON 长度折算，thinking 块按 fakeThoughts 计。
+func historyTokens(msgs []any) int {
+	total := 0
+	for _, m := range msgs {
+		msg := mapOf(m)
+		blocks := sliceOf(msg["content"])
+		if blocks == nil {
+			raw, _ := json.Marshal(msg["content"])
+			total += len(raw) / 4
+			continue
+		}
+		for _, raw := range blocks {
+			blk := mapOf(raw)
+			if str(blk["type"]) == "thinking" {
+				total += fakeThoughts
+				continue
+			}
+			b, _ := json.Marshal(blk)
+			total += len(b) / 4
+		}
+	}
+	return total
 }
 
 // twoNumbers 从「计算 A 加 B」里取出两个数。
@@ -371,7 +617,7 @@ func TestClassifyWrapperAndAuthenticityCap(t *testing.T) {
 		t.Fatalf("期望判定 %s，实际 %s（分数 %v）", LabelWrapper, run.Verdict.Label, run.Verdict.Scores)
 	}
 	if !run.Verdict.Authenticity.Capped {
-		t.Fatal("放行非法参数且不校验签名的渠道必须触发真实性封顶")
+		t.Fatal("不校验签名、无视 max_tokens 的渠道必须触发真实性封顶")
 	}
 	if run.Verdict.Authenticity.Score > authCapScore {
 		t.Fatalf("封顶后真实性分应 <= %d，实际 %d", authCapScore, run.Verdict.Authenticity.Score)
@@ -390,24 +636,128 @@ func TestMaxPoolCacheInjection(t *testing.T) {
 	}
 }
 
-func TestCacheChainRequiresExactReplay(t *testing.T) {
+// 缓存链靠「前缀逐级增长」才测得出来：每一步都必须读到上次写的、并写入新段。
+func TestCacheChainRequiresEveryStepToWrite(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		offset int
-		status string
+		name       string
+		cacheMode  string
+		offset     int
+		status     string
+		evidence   string
+		wantWrites []int
 	}{
-		{name: "exact", status: StatusPassed},
-		{name: "short", offset: -1, status: StatusSuspicious},
-		{name: "long", offset: 1, status: StatusSuspicious},
+		{name: "逐级推进", cacheMode: cacheModeStable, status: StatusPassed, evidence: "cache_chain_clean",
+			wantWrites: []int{2400, 900, 900}},
+		{name: "读取量偏短", cacheMode: cacheModeStable, offset: -1, status: StatusSuspicious, evidence: "cache_prefix_drift"},
+		{name: "读取量偏长", cacheMode: cacheModeStable, offset: 1, status: StatusSuspicious, evidence: "cache_prefix_drift"},
+		{name: "第三次没把第二次写进去读回来", cacheMode: cacheModeDrift, status: StatusSuspicious, evidence: "cache_prefix_drift"},
+		{name: "后续请求零写入", cacheMode: cacheModeNoWrite, status: StatusSuspicious, evidence: "cache_not_extended"},
+		{name: "写完不再命中", cacheMode: cacheModeDrop, status: StatusSuspicious, evidence: "cache_never_hits"},
+		{name: "首轮就命中", cacheMode: cacheModePreHit, status: StatusSuspicious, evidence: "cache_probe_prehit"},
+		{name: "探针被剥离", cacheMode: cacheModeOff, status: StatusInconclusive, evidence: "cache_probe_unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			up := &fakeUpstream{behaviour: "official", injectCache: true, cacheReadOffset: tc.offset}
+			mode := tc.cacheMode
+			if mode == "" {
+				mode = cacheModeStable
+			}
+			up := &fakeUpstream{behaviour: "official", cacheMode: mode, cacheReadOffset: tc.offset}
 			run := runAgainst(t, up, []string{"ping", "ping-again"})
 			got := findCheckResult(run, "ping-again")
-			if got == nil || got.Status != tc.status {
-				t.Fatalf("缓存链路状态 = %#v，期望 %s", got, tc.status)
+			if got == nil {
+				t.Fatal("缺少 ping-again 结果")
+			}
+			if got.Status != tc.status {
+				t.Fatalf("状态 = %s（%s），期望 %s", got.Status, got.Summary, tc.status)
+			}
+			if !hasEvidence([]*CheckResult{got}, tc.evidence) {
+				t.Fatalf("缺少证据 %s，实际 %+v", tc.evidence, got.Evidence)
+			}
+			if len(got.Exchanges) != 3 {
+				t.Fatalf("缓存链应恰好发 3 次请求，实际 %d", len(got.Exchanges))
+			}
+			for i, want := range tc.wantWrites {
+				if gotWrite := cacheCreationTokens(usageOf(got.Exchanges[i].JSON)); gotWrite != want {
+					t.Fatalf("第 %d 次写入 = %d，期望 %d", i+1, gotWrite, want)
+				}
 			}
 		})
+	}
+}
+
+// 只发同一段前缀时第 2、3 次完全等价，链有没有推进根本看不出来 ——
+// 这条测试钉住「三次请求必须是严格增长的前缀，且每次都写新段」。
+func TestCacheProbeGrowsPrefixEachRequest(t *testing.T) {
+	up := &fakeUpstream{behaviour: "official"}
+	run := runAgainst(t, up, []string{"ping", "ping-again"})
+	got := findCheckResult(run, "ping-again")
+	if got == nil || got.Status != StatusPassed {
+		t.Fatalf("逐级推进的缓存链应通过，实际 %#v", got)
+	}
+
+	up.mu.Lock()
+	bodies := append([]map[string]any(nil), up.cacheProbeBodies...)
+	up.mu.Unlock()
+	if len(bodies) != 3 {
+		t.Fatalf("带 cache_control 的探针请求应为 3 条，实际 %d", len(bodies))
+	}
+
+	var prev []string
+	var prevTotal int
+	for i, body := range bodies {
+		blocks := sliceOf(body["system"])
+		if len(blocks) != i+1 {
+			t.Fatalf("第 %d 条探针应有 %d 个 system 块（前缀逐次加长），实际 %d", i+1, i+1, len(blocks))
+		}
+		if mapOf(blocks[len(blocks)-1])["cache_control"] == nil {
+			t.Fatalf("第 %d 条探针的 cache_control 不在末段：%+v", i+1, blocks)
+		}
+		texts := make([]string, 0, len(blocks))
+		total := 0
+		for j, raw := range blocks {
+			text := str(mapOf(raw)["text"])
+			texts = append(texts, text)
+			total += len(text)
+			if j < i && mapOf(raw)["cache_control"] != nil {
+				t.Fatalf("第 %d 条探针给旧段打了 cache_control，前缀就不再是纯增长：%+v", i+1, blocks)
+			}
+		}
+		// 前面的段必须逐字节保留，否则前缀不是字节前缀，缓存也不可能命中。
+		for j, old := range prev {
+			if texts[j] != old {
+				t.Fatalf("第 %d 条探针的第 %d 段被改写，前缀不再是增长的前缀", i+1, j+1)
+			}
+		}
+		if total <= prevTotal {
+			t.Fatalf("第 %d 条探针前缀没有变长（%d → %d）", i+1, prevTotal, total)
+		}
+		if i == 0 && len(texts[0]) < 1024 {
+			t.Fatalf("首段只有 %d 字符，短于最小可缓存长度会被官方静默跳过", len(texts[0]))
+		}
+		prev, prevTotal = texts, total
+	}
+}
+
+// 3 次带 cache_control 的请求都没缓存用量时，只能记「本轮无证据」。
+// 旧的两次裸请求把它写成「符合干净 API Key / Bedrock 直连」并给 +1 官方分，
+// 但那个观察实际区分不了「网关剥了 cache_control」与「干净直连」。
+func TestCacheProbeWithoutCacheUsageIsInconclusive(t *testing.T) {
+	up := &fakeUpstream{behaviour: "official", injectCache: true, cacheMode: cacheModeOff}
+	run := runAgainst(t, up, []string{"ping", "ping-again"})
+	got := findCheckResult(run, "ping-again")
+	if got == nil || got.Status != StatusInconclusive {
+		t.Fatalf("无缓存用量的探针应记证据不足，实际 %#v", got)
+	}
+	for _, ev := range got.Evidence {
+		if ev.Weight > 0 && ev.Class != ClassOfficial {
+			t.Fatalf("无缓存用量不该给任何渠道加分：%+v", ev)
+		}
+		if ev.Key == "cache_probe_unavailable" && ev.Weight != 0 {
+			t.Fatalf("「没有缓存用量」本身权重必须为 0：%+v", ev)
+		}
+	}
+	if !hasEvidence([]*CheckResult{got}, "cache_probe_unavailable") {
+		t.Fatalf("缺少 cache_probe_unavailable 证据：%+v", got.Evidence)
 	}
 }
 
@@ -919,11 +1269,12 @@ func TestAuditRejectsZeroInputWithCacheRead(t *testing.T) {
 }
 
 // TestAuditRejectsEmptySignedThinking 整轮检测里带签名的 thinking 块全部无正文，
-// 说明这条渠道根本不会思考，签名是凭空贴上去的。
+// 说明这条渠道根本不会思考，签名是凭空贴上去的。只看要了摘要的请求，且至少两个样本
+// （thinking-sig 与 param-strict 里带 thinking 的那一问）。
 func TestAuditRejectsEmptySignedThinking(t *testing.T) {
-	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true,
+	up := &fakeUpstream{behaviour: "official", strictParams: false, signatureChecked: true,
 		forgeEmptyThinking: true}
-	run := runAgainst(t, up, []string{"ping", "thinking-sig"})
+	run := runAgainst(t, up, []string{"ping", "thinking-sig", "param-strict"})
 
 	res := auditOf(t, run)
 	if !hasEvidenceKey(res, "thinking_empty_signed") {
@@ -1017,36 +1368,259 @@ func TestBedrockWithCorroborationStillClassifies(t *testing.T) {
 	}
 }
 
-// TestParseSignatureShape 用两族真实样本验证签名形态归类。
-// 样本取自实测：Bedrock 内嵌公开模型 id + UUID，第一方内嵌内部代号。
+// TestParseSignatureShape 用实测样本验证签名字段解析。
+//
+// 两份样本分别是 schema v17（opus-5，内嵌模型 + 账号 UUID + 签发时间）与 v15（内部代号、
+// 无账号与时间）。早先把它们当作 Bedrock / 第一方两族，后来证实第一方 CC Max 渠道的 opus-5
+// 签名同样是 v17 形态——差别在 schema 版本，签名认不出平台，所以 Family 只认 Vertex。
 func TestParseSignatureShape(t *testing.T) {
-	const bedrockSig = "CAISuAIKpgEIERgCKkDwdNvB3RB+OxiKEVcsXwLxiSdHsXzQYtXXVyxj+5Aad9T+sxY0WZNF02RnQ0dI/5wXvLg3BCvqxHbkT3Rvx1dAMg1jbGF1ZGUtb3B1cy01OAFCCHRoaW5raW5nWiRkMWRlMTVlNy1jZWViLTRiYWYtOWI3MS1kOGE0MjNiY2IwZGVyEFmXpmOOcoaDAXn4SwAtQuSIAQGoAZil8dQGsAECEgxo1pRa0g58s4HHnw4aDG/l4Lo+E0n4vc+41iIw8aR5OZqyd3cPimrH9rqwVDmtjXLVZVOK7xmeOXb+vtHFfDWJnHoYfDDBDt5PYCJFKj/Lm/iV9VaFArzDVewwZ2Krummb6Ue5zzswWNUAd3JFATZRiDCPQ8FpmXlZA7uUk2zGzvqqljT/E8ysswbGWaAYAQ=="
-	const firstPartySig = "EsIDCmIIDxABGAIqQDVYDjprY+zhcKXcGeGZt0T0bOtXnZ2BF+aUwREzpA8DLPqKgVDL2gJmd0v0UugRMd9cJq8VldT9YVUhAJnwNeEyDGNsYXVkZS1ob25leTgAQgh0aGlua2luZxIMISnSIxBxeBzdeQ2GGgxGorabR0lT738SvwciMMMdiNS3vDBwx+L1lme4DQRdlo0nrNlE1ODQXgGPfXGI7kMT+mDYRci6CGndngnZXCqNAkghB1kJU5HBaiSGnKP8Vh+1O3pWnhE3I1cj3NE7uCJRkg3C+teTs//u8d2MFPHn2bjQHtrbAfSAC4bEsh1BjIvmisYyhdkh4QdtjTHcKDjhaFOvtWuG2bvNUGFBWwuqFsf9Yq9NBhdehchdFAVX5OBvZCBd4eS2Qm8d1+2Zx6w4T5nrHUczJpAJpVGLjpjPRYFeYY5nlumI2ScLyUH3EpZWVD8yLwRZVgpRXp8/Wajuri8Hw6pYJ+f+AJt1WfMp16PKR/Wskb1e1RhMRq9Ld7siIwun1T8v3jZwZxvykn2RTM+rE7QhMGuuaN5TFGL9axd1Z16mPrVh9TQSo9d6jw+ADoyKmgIbDo+yTi2rGAE="
+	const v17Sig = "CAISuAIKpgEIERgCKkDwdNvB3RB+OxiKEVcsXwLxiSdHsXzQYtXXVyxj+5Aad9T+sxY0WZNF02RnQ0dI/5wXvLg3BCvqxHbkT3Rvx1dAMg1jbGF1ZGUtb3B1cy01OAFCCHRoaW5raW5nWiRkMWRlMTVlNy1jZWViLTRiYWYtOWI3MS1kOGE0MjNiY2IwZGVyEFmXpmOOcoaDAXn4SwAtQuSIAQGoAZil8dQGsAECEgxo1pRa0g58s4HHnw4aDG/l4Lo+E0n4vc+41iIw8aR5OZqyd3cPimrH9rqwVDmtjXLVZVOK7xmeOXb+vtHFfDWJnHoYfDDBDt5PYCJFKj/Lm/iV9VaFArzDVewwZ2Krummb6Ue5zzswWNUAd3JFATZRiDCPQ8FpmXlZA7uUk2zGzvqqljT/E8ysswbGWaAYAQ=="
+	const v15Sig = "EsIDCmIIDxABGAIqQDVYDjprY+zhcKXcGeGZt0T0bOtXnZ2BF+aUwREzpA8DLPqKgVDL2gJmd0v0UugRMd9cJq8VldT9YVUhAJnwNeEyDGNsYXVkZS1ob25leTgAQgh0aGlua2luZxIMISnSIxBxeBzdeQ2GGgxGorabR0lT738SvwciMMMdiNS3vDBwx+L1lme4DQRdlo0nrNlE1ODQXgGPfXGI7kMT+mDYRci6CGndngnZXCqNAkghB1kJU5HBaiSGnKP8Vh+1O3pWnhE3I1cj3NE7uCJRkg3C+teTs//u8d2MFPHn2bjQHtrbAfSAC4bEsh1BjIvmisYyhdkh4QdtjTHcKDjhaFOvtWuG2bvNUGFBWwuqFsf9Yq9NBhdehchdFAVX5OBvZCBd4eS2Qm8d1+2Zx6w4T5nrHUczJpAJpVGLjpjPRYFeYY5nlumI2ScLyUH3EpZWVD8yLwRZVgpRXp8/Wajuri8Hw6pYJ+f+AJt1WfMp16PKR/Wskb1e1RhMRq9Ld7siIwun1T8v3jZwZxvykn2RTM+rE7QhMGuuaN5TFGL9axd1Z16mPrVh9TQSo9d6jw+ADoyKmgIbDo+yTi2rGAE="
 
 	cases := []struct {
-		name       string
-		sig        string
-		wantFamily string
-		wantLabel  string
+		name    string
+		sig     string
+		want    SigShape
+		wantTS  int64
+		wantFam string
 	}{
-		{"Bedrock 形态", bedrockSig, SigFamilyBedrock, "claude-opus-5"},
-		{"第一方形态", firstPartySig, SigFamilyFirstParty, "claude-honey"},
-		{"Vertex 前缀", "claude#abcdef", SigFamilyVertex, ""},
-		{"空签名", "", SigFamilyUnknown, ""},
-		{"非 base64", "!!!not-base64!!!", SigFamilyUnknown, ""},
-		{"随机字节", "3q2+7w==", SigFamilyUnknown, ""},
+		{"v17 opus-5", v17Sig, SigShape{Version: 17, Model: "claude-opus-5",
+			AccountRef: "d1de15e7-ceeb-4baf-9b71-d8a423bcb0de"}, 1788629656, SigFamilyUnknown},
+		{"v15 内部代号", v15Sig, SigShape{Version: 15, Model: "claude-honey"}, 0, SigFamilyUnknown},
+		{"OAuth 订阅号带 uprof_", buildSig(17, "claude-opus-5", "f6f20bdd-e3c9-40ec-8dc1-76efec8a4d04",
+			"uprof_011CesupVavWSZKUj9Phofyt", 1788976924), SigShape{Version: 17, Model: "claude-opus-5",
+			AccountRef: "f6f20bdd-e3c9-40ec-8dc1-76efec8a4d04", Profile: "uprof_011CesupVavWSZKUj9Phofyt"},
+			1788976924, SigFamilyUnknown},
+		{"Vertex 前缀", "claude#abcdef", SigShape{}, 0, SigFamilyVertex},
+		{"空签名", "", SigShape{}, 0, SigFamilyUnknown},
+		{"非 base64", "!!!not-base64!!!", SigShape{}, 0, SigFamilyUnknown},
+		{"随机字节", "3q2+7w==", SigShape{}, 0, SigFamilyUnknown},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := ParseSignatureShape(tc.sig)
-			if got.Family != tc.wantFamily {
-				t.Fatalf("family 应为 %s，实际 %s（key=%q ref=%q）",
-					tc.wantFamily, got.Family, got.KeyLabel, got.RequestRef)
+			if got.Family != tc.wantFam {
+				t.Fatalf("family 应为 %s，实际 %s", tc.wantFam, got.Family)
 			}
-			if tc.wantLabel != "" && got.KeyLabel != tc.wantLabel {
-				t.Fatalf("KeyLabel 应为 %q，实际 %q", tc.wantLabel, got.KeyLabel)
+			if got.Version != tc.want.Version || got.Model != tc.want.Model ||
+				got.AccountRef != tc.want.AccountRef || got.Profile != tc.want.Profile {
+				t.Fatalf("字段解析不符：%+v", got)
+			}
+			if tc.wantTS == 0 && !got.IssuedAt.IsZero() || tc.wantTS != 0 && got.IssuedAt.Unix() != tc.wantTS {
+				t.Fatalf("签发时间应为 %d，实际 %v", tc.wantTS, got.IssuedAt)
+			}
+			if got.UUIDForged() {
+				t.Fatalf("合法 v4 UUID 不应判为编造：%s", got.AccountRef)
 			}
 		})
+	}
+}
+
+// TestSigUUIDForged 外形像 UUID、版本位非法的账号标识是编造的（实测样本来自一条签名完整性可疑的渠道）。
+func TestSigUUIDForged(t *testing.T) {
+	for _, ref := range []string{"a7daefd5-841f-bec3-7e1d-e9147d04d0f6", "660fdce0-3a76-cd11-7d81-35fbc41fbaf9"} {
+		if !(SigShape{AccountRef: ref}).UUIDForged() {
+			t.Fatalf("%s 版本位非法，应判为编造", ref)
+		}
+	}
+	for _, ref := range []string{"549299f0-23d6-4e73-84be-f1a8558c34d2", "592720655719", ""} {
+		if (SigShape{AccountRef: ref}).UUIDForged() {
+			t.Fatalf("%q 不应判为编造", ref)
+		}
+	}
+}
+
+// buildSig 按实测字段号拼一个签名：f1=2，f2.f1 内含版本、模型、账号、档案与签发时间。
+func buildSig(version int, model, account, profile string, issued int64) string {
+	var inner []byte
+	inner = protoVarint(inner, 1, uint64(version))
+	inner = protoBytes(inner, 6, []byte(model))
+	inner = protoBytes(inner, 8, []byte("thinking"))
+	if account != "" {
+		inner = protoBytes(inner, 11, []byte(account))
+	}
+	if profile != "" {
+		inner = protoBytes(inner, 15, []byte(profile))
+	}
+	if issued > 0 {
+		inner = protoVarint(inner, 21, uint64(issued))
+	}
+	mid := protoBytes(nil, 1, inner)
+	var out []byte
+	out = protoVarint(out, 1, 2)
+	out = protoBytes(out, 2, mid)
+	out = protoVarint(out, 3, 1)
+	return base64.StdEncoding.EncodeToString(out)
+}
+
+func protoVarint(buf []byte, field int, v uint64) []byte {
+	buf = appendUvarint(buf, uint64(field)<<3)
+	return appendUvarint(buf, v)
+}
+
+func protoBytes(buf []byte, field int, v []byte) []byte {
+	buf = appendUvarint(buf, uint64(field)<<3|2)
+	buf = appendUvarint(buf, uint64(len(v)))
+	return append(buf, v...)
+}
+
+func appendUvarint(buf []byte, v uint64) []byte {
+	for v >= 0x80 {
+		buf = append(buf, byte(v)|0x80)
+		v >>= 7
+	}
+	return append(buf, byte(v))
+}
+
+// TestAuditFlagsRewrittenMessageIDs id 含 0 O I l 说明是网关生成的：ping 与审计用同一证据键，只计一次分。
+func TestAuditFlagsRewrittenMessageIDs(t *testing.T) {
+	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true,
+		replayID: "msg_011CetJoWHwZlDD3gjO5Hf5a"}
+	run := runAgainst(t, up, []string{"ping"})
+	res := auditOf(t, run)
+	if !hasEvidenceKey(res, "msg_id_rewritten") {
+		t.Fatalf("应指出消息 id 被网关重写，实际 %+v", res.Evidence)
+	}
+	if got := run.Verdict.Scores[ClassWrapper]; got != 2 {
+		t.Fatalf("同一件事在 ping 与审计各报一次，只应计 2 分，实际 %d", got)
+	}
+}
+
+// TestAuditFlagsDuplicateMessageIDs 同一个 id 出现在不同请求里是回放旧响应。
+func TestAuditFlagsDuplicateMessageIDs(t *testing.T) {
+	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true,
+		replayID: "msg_011CetJZkDjw9DiCC1x7RKgh"}
+	run := runAgainst(t, up, []string{"ping", "max-tokens-strict"})
+	res := auditOf(t, run)
+	if !hasEvidenceKey(res, "msg_id_duplicate") {
+		t.Fatalf("应指出消息 id 重复，实际 %+v", res.Evidence)
+	}
+	if hasEvidenceKey(res, "msg_id_rewritten") {
+		t.Fatal("官方形态的 id 不应判为重写")
+	}
+}
+
+// TestAuditPassesUniqueOfficialIDs 每条响应一个官方形态 id，不得告警。
+func TestAuditPassesUniqueOfficialIDs(t *testing.T) {
+	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true}
+	run := runAgainst(t, up, []string{"ping", "max-tokens-strict", "stream"})
+	res := auditOf(t, run)
+	for _, key := range []string{"msg_id_rewritten", "msg_id_duplicate"} {
+		if hasEvidenceKey(res, key) {
+			t.Fatalf("干净渠道不应出现 %s：%+v", key, res.Evidence)
+		}
+	}
+}
+
+// TestAuditFlagsStaleSignature 签名签发时间早于本轮开始，说明 thinking 块是回放的。
+func TestAuditFlagsStaleSignature(t *testing.T) {
+	stale := buildSig(17, "claude-opus-5", "54a0d54a-e856-4dd3-9019-65a8aabaa28d", "",
+		time.Now().Add(-8*time.Hour).Unix())
+	run := runAgainst(t, &fakeUpstream{behaviour: "official", signature: stale}, []string{"ping", "thinking-sig"})
+	res := auditOf(t, run)
+	if !hasEvidenceKey(res, "sig_stale") {
+		t.Fatalf("应指出签名签发时间不在本轮内，实际 %+v", res.Evidence)
+	}
+	if res.AuthCapReason != "" {
+		t.Fatalf("签名字段是未公开编码，不应封顶真实性：%s", res.AuthCapReason)
+	}
+}
+
+// TestAuditRecordsFreshSignatureAccount 本轮新签发的签名不告警，只记录账号标识。
+func TestAuditRecordsFreshSignatureAccount(t *testing.T) {
+	fresh := buildSig(17, "claude-opus-5", "1548b6db-46e0-4854-94f7-cd5b29b949b1", "", time.Now().Unix())
+	run := runAgainst(t, &fakeUpstream{behaviour: "official", signature: fresh}, []string{"ping", "thinking-sig"})
+	res := auditOf(t, run)
+	for _, key := range []string{"sig_stale", "sig_uuid_forged"} {
+		if hasEvidenceKey(res, key) {
+			t.Fatalf("新签发的合法签名不应出现 %s：%+v", key, res.Evidence)
+		}
+	}
+	if !hasEvidenceKey(res, "sig_accounts") {
+		t.Fatalf("应记录签名账号标识，实际 %+v", res.Evidence)
+	}
+}
+
+// TestAuditFlagsForgedSignatureUUID 账号标识版本位非法：签名是编造的。
+func TestAuditFlagsForgedSignatureUUID(t *testing.T) {
+	forged := buildSig(17, "claude-opus-5", "a7daefd5-841f-bec3-7e1d-e9147d04d0f6", "", time.Now().Unix())
+	run := runAgainst(t, &fakeUpstream{behaviour: "official", signature: forged}, []string{"ping", "thinking-sig"})
+	if !hasEvidenceKey(auditOf(t, run), "sig_uuid_forged") {
+		t.Fatal("版本位非法的账号标识应判为编造")
+	}
+}
+
+// TestAuditFutureSignatureIsDiagnosticOnly 签发时间在未来不可能是回放，只记诊断、不打分。
+func TestAuditFutureSignatureIsDiagnosticOnly(t *testing.T) {
+	future := buildSig(17, "claude-opus-5", "1548b6db-46e0-4854-94f7-cd5b29b949b1", "",
+		time.Now().Add(6*time.Hour).Unix())
+	run := runAgainst(t, &fakeUpstream{behaviour: "official", signature: future}, []string{"ping", "thinking-sig"})
+	res := auditOf(t, run)
+	for _, ev := range res.Evidence {
+		if ev.Weight > 0 {
+			t.Fatalf("未来的签发时间不应加分：%+v", ev)
+		}
+	}
+	found := false
+	for _, a := range res.Assertions {
+		if a.Label == "签名签发时间不在未来" {
+			found = !a.OK && a.Diagnostic
+		}
+	}
+	if !found {
+		t.Fatalf("应留下一条未通过的诊断，实际 %+v", res.Assertions)
+	}
+}
+
+// TestSigFieldsOnlyReadForVerifiedSchema 字段含义只在 v17 / v18 上实测过，其他版本不读账号与时间。
+func TestSigFieldsOnlyReadForVerifiedSchema(t *testing.T) {
+	got := ParseSignatureShape(buildSig(16, "claude-opus-5", "9ede73ac-10b1-49f5-b941-00353d7e6eb0", "",
+		time.Now().Add(-48*time.Hour).Unix()))
+	if got.Version != 16 || got.Model != "claude-opus-5" {
+		t.Fatalf("版本号与模型名照常读取，实际 %+v", got)
+	}
+	if got.AccountRef != "" || !got.IssuedAt.IsZero() {
+		t.Fatalf("未验证的 schema 不应读账号与时间，实际 %+v", got)
+	}
+}
+
+// TestMessageIDFromSSERaw 流式响应只有原文，消息 id 要从 message_start 里取。
+func TestMessageIDFromSSERaw(t *testing.T) {
+	raw := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"model":"claude-opus-5","id":"msg_011CetJZkDjw9DiCC1x7RKgh","type":"message","content":[]}}` +
+		"\n\nevent: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01ABC","name":"x","input":{}}}` + "\n\n"
+	if got := messageIDOf(&Exchange{Status: 200, Raw: raw}); got != "msg_011CetJZkDjw9DiCC1x7RKgh" {
+		t.Fatalf("应从 message_start 取到消息 id，实际 %q", got)
+	}
+}
+
+// TestPlatformMsgIDsAreNotRewritten 带平台标记的 id（msg_bdrk_ / msg_vrtx_）不按第一方字母表判。
+func TestPlatformMsgIDsAreNotRewritten(t *testing.T) {
+	for _, id := range []string{"msg_vrtx_01UDKZG8PWPj9mjajje8d7u7", "msg_bdrk_2fy2vtmqqob7eovjbannognxcdxpmoyalk33jxgye6m4coc7terh"} {
+		if msgIDRewritten(id) {
+			t.Fatalf("%s 是平台形态，不应判为网关重写", id)
+		}
+	}
+	for _, id := range []string{"msg_011CetJoWHwZlDD3gjO5Hf5a", "msg_63d3678f98664e189dfbc851ec4cf898"} {
+		if !msgIDRewritten(id) {
+			t.Fatalf("%s 不是官方形态，应判为网关重写", id)
+		}
+	}
+	r := &CheckResult{}
+	analyzeMessageID(r, "msg_vrtx_01UDKZG8PWPj9mjajje8d7u7")
+	if !hasEvidenceKey(r, "msg_id_vrtx_prefix") || hasEvidenceKey(r, "msg_id_rewritten") {
+		t.Fatalf("msg_vrtx_ 应记为 Vertex 前缀，实际 %+v", r.Evidence)
+	}
+}
+
+// TestInferenceGeoIsNotScored 官方直连同样返回 not_available / global，不得据此加包装分。
+func TestInferenceGeoIsNotScored(t *testing.T) {
+	for _, geo := range []string{"not_available", "global"} {
+		run := runAgainst(t, &fakeUpstream{behaviour: "official", geo: geo}, []string{"ping"})
+		if got := run.Verdict.Scores[ClassWrapper]; got != 0 {
+			t.Fatalf("inference_geo=%s 不应加包装分，实际 %d（%+v）", geo, got, run.Verdict.Reasons)
+		}
 	}
 }
 

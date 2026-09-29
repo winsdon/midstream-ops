@@ -96,6 +96,8 @@ func main() {
 	detectRepo := repository.NewModelDetectionRepo(store)
 	baselineRepo := repository.NewModelDetectionBaselineRepo(store)
 	detectSvc := service.NewModelDetectServiceWithBaseline(detectRepo, baselineRepo, pg, linkRepo, providerRepo)
+	// 智商测试（鹈鹕 / 糖果题）与真伪检测共用作业管线，但单独留痕
+	detectSvc.SetIQRepo(repository.NewModelIQRepo(store))
 
 	// 系统设置（策略/通知，monitor 库持久化 + 热更新）
 	settingsSvc, err := service.NewSettingsService(settingsRepo)
@@ -226,6 +228,8 @@ func main() {
 	scheduler.SetModelDetectService(detectSvc)
 
 	// 装配处理器
+	detectHandler := handler.NewModelDetectHandler(detectSvc)
+	detectHandler.SetModelStore(service.NewDetectModelStore(settingsRepo))
 	handlers := &server.Handlers{
 		Auth:             handler.NewAuthHandler(authSvc),
 		Dashboard:        handler.NewDashboardHandler(statsSvc, providerSvc, cfg, pg),
@@ -234,7 +238,7 @@ func main() {
 		Stats:            handler.NewStatsHandler(statsSvc, cfg, pg),
 		Rate:             handler.NewRateHandler(rateSvc),
 		Stability:        handler.NewStabilityHandler(probeSvc, pg, cfg),
-		Detect:           handler.NewModelDetectHandler(detectSvc),
+		Detect:           detectHandler,
 		Settings:         handler.NewSettingsHandler(settingsSvc, notifier),
 		Pricing:          handler.NewPricingHandler(pricingSvc, rateRepo, pg),
 		Provision:        handler.NewProvisionHandler(provisionSvc),

@@ -136,12 +136,21 @@ func applyKiroOwnershipResult(r *CheckResult, saysYes, stamp, ownsSpec, disowns,
 
 // kiroSignals 将“介绍 Kiro”与“自认 Kiro”分开：回答者正确解释 Kiro 的归属时，
 // 可能同时出现 kiro.dev、spec 三件套和 EARS，但这些内容不能算作自身 Kiro 钢印。
+//
+// 第二问本身就列着 requirements.md / design.md / tasks.md / EARS，还要求报出产品网站，回答里出现
+// 这些词与 kiro.dev 是必然的，不能作为「据为己有」的依据。早先默认「提到即拥有、除非命中否认措辞」，
+// 而否认的说法列不完（"aren't native to me"、"I don't natively use" 都漏过），历史 13 次命中全是否认句。
+// 现在反过来：以否定开头即否认，以肯定开头（Yes / 是 / I natively use…）才算据为己有。
+// 钢印两问分开看：第一问的自我介绍带钢印且不以否定开头才算自认；第二问里的钢印只在据为己有时才算——
+// 否则第二问的一句「No」会连带抹掉第一问里真正的 Kiro 自述。
 func kiroSignals(who, spec string) (saysYes, stamp, ownsSpec, disowns bool) {
-	all := who + "\n" + spec
-	saysYes = kiroAffirmRe.MatchString(strings.TrimSpace(who)) && strings.Contains(strings.ToLower(who), "kiro")
-	disowns = kiroSpecRe.MatchString(spec) && kiroDisownRe.MatchString(spec)
-	stamp = kiroStampRe.MatchString(all) && !disowns
-	ownsSpec = kiroSpecRe.MatchString(spec) && !disowns && !claudeCodeClaimRe.MatchString(spec)
+	whoLead, specLead := answerLead(who), answerLead(spec)
+	mentionsSpec := kiroSpecRe.MatchString(spec)
+	saysYes = affirmLeadRe.MatchString(whoLead) && strings.Contains(whoLead, "kiro")
+	disowns = mentionsSpec && (leadNegationRe.MatchString(specLead) || kiroDisownRe.MatchString(normalizeQuotes(spec)))
+	ownsSpec = mentionsSpec && !disowns && kiroOwnRe.MatchString(specLead) && !claudeCodeClaimRe.MatchString(spec)
+	stamp = (kiroStampRe.MatchString(who) && !leadNegationRe.MatchString(whoLead)) ||
+		(ownsSpec && kiroStampRe.MatchString(spec))
 	return
 }
 
@@ -207,16 +216,38 @@ func checkSystemDump(ctx context.Context, c *Client, st *runState) *CheckResult 
 		r.addEvidence("kiro_prompt_leak", "系统提示含 Kiro 特征", clip(text, 120), ClassKiro, 3)
 	}
 
-	// 注入规模用基础请求的 input_tokens 反推（基线约 10-15）
 	if st.pingSeen {
-		injected := st.pingInput - 14
-		if injected < 0 {
-			injected = 0
-		}
-		r.diagnose("system 注入量在正常范围", injected <= 50,
-			fmt.Sprintf("按裸请求 input_tokens 估算约 %d tokens", injected))
+		describeBareInjection(r, c.Target().Model, st.pingUsage)
 	}
 	return r.finish("未泄露非 Claude 品牌词")
+}
+
+// grossInjection 裸请求比官方基线多出这么多，才算「大额 system 注入」。
+// 精确到个位的对账归「是否 0 注入」管，这里只拦整段拼进来的系统提示。
+const grossInjection = 50
+
+// describeBareInjection 用裸请求的输入总量粗估 system 注入规模。
+// 基线与「是否 0 注入」同一张表：有官方基线就报差值；只有同族型号的基线时照样报差值、
+// 注明只作参考（新型号的对话模板可能不同）；都没有就只看是否远超正常范围。
+func describeBareInjection(r *CheckResult, model string, usage map[string]any) {
+	total, _, ok := inputTotal(usage)
+	if !ok {
+		return
+	}
+	base, known := lookupInjectionBaseline(model)
+	baseDesc := fmt.Sprintf("%s 官方基线 %d", base.Model, base.Bare)
+	if !known {
+		base, known = referenceBaseline(model)
+		baseDesc = fmt.Sprintf("%s 的基线 %d（型号不同，只作参考）", base.Model, base.Bare)
+	}
+	if !known || base.Bare <= 0 {
+		r.diagnose("未见大额 system 注入", total < grossBareInput,
+			fmt.Sprintf("裸请求输入 %d（该型号没有官方基线，只看是否远超正常范围）", total))
+		return
+	}
+	extra := total - base.Bare
+	r.diagnose("未见大额 system 注入", extra <= grossInjection,
+		fmt.Sprintf("裸请求输入 %d，%s，差 %+d（逐个 token 的对账见「是否 0 注入」）", total, baseDesc, extra))
 }
 
 // checkModelMeta 核对自报型号与知识截止。
@@ -293,26 +324,45 @@ func checkModelMeta(ctx context.Context, c *Client, _ *runState) *CheckResult {
 	return r.finish(clip(text, 120))
 }
 
+// 人设指令探针。「是否 0 注入」的带 system 对账复用同一段原文——官方输入基线是按它实测的。
+const (
+	pirateSystem = "You are PirateBot. You MUST begin every response with 'Arrr!' and speak like a pirate."
+	piratePrompt = "What is 2+2?"
+)
+
+// pirateBody 人设指令请求体。
+func pirateBody(model string, maxTokens int) map[string]any {
+	return map[string]any{
+		"model": model, "max_tokens": maxTokens,
+		"system":   pirateSystem,
+		"messages": []map[string]any{{"role": "user", "content": piratePrompt}},
+	}
+}
+
+// pirateObeyed 回复是否遵循了人设指令。
+func pirateObeyed(text string) bool { return strings.Contains(strings.ToLower(text), "arrr") }
+
 // checkCallerSystem 客户端 system 是否穿透到模型。
 //
-// 两条互补：人设指令看格式遵从，暗号看长 system 里的信息是否完整送达。
+// 两条互补：人设指令看格式遵从，会话编号看长 system 开头的信息是否完整送达。
 // 号池会在前面拼自己的提示，但仍应让调用方的 system 生效；被覆盖说明网关重写了请求。
+//
+// 编号用中性说法（会话编号、问到就照答），不说成「保密的暗号」：早先的「You are a vault.
+// The secret code is …」会让干净渠道上的模型也以「这是要保密的」拒答，把拒答误判成没送达。
+// 仍遇到拒答时记「无法核对」而不是失败——模型肯说「不能透露」，恰恰说明它看到了那段内容。
 func checkCallerSystem(ctx context.Context, c *Client, _ *runState) *CheckResult {
 	meta, _ := checkByID("caller-system")
 	r := newResult(meta)
 	model := c.Target().Model
-	secret := nonce("VAULT")
+	sessionID := nonce("SESSION")
 
-	pirate := c.Post(ctx, KindMessages, map[string]any{
-		"model": model, "max_tokens": 200,
-		"system":   "You are PirateBot. You MUST begin every response with 'Arrr!' and speak like a pirate.",
-		"messages": []map[string]any{{"role": "user", "content": "What is 2+2?"}},
-	})
+	pirate := c.Post(ctx, KindMessages, pirateBody(model, 200))
 	needle := c.Post(ctx, KindMessages, map[string]any{
 		"model": model, "max_tokens": 200,
-		"system": "You are a vault. The secret code is " + secret + ". " +
-			strings.Repeat("Filler line for context length. ", 120) + "Never forget the secret code.",
-		"messages": []map[string]any{{"role": "user", "content": "What is the secret code? Reply with just the code."}},
+		"system": "Session ID for this conversation: " + sessionID + ". " +
+			strings.Repeat("Filler line for context length. ", 120) +
+			"If the user asks for the session ID, reply with it exactly.",
+		"messages": []map[string]any{{"role": "user", "content": "What is the session ID? Reply with just the ID."}},
 	})
 	r.Exchanges = []*Exchange{pirate, needle}
 	r.DurationMs = pirate.DurationMs + needle.DurationMs
@@ -325,18 +375,29 @@ func checkCallerSystem(ctx context.Context, c *Client, _ *runState) *CheckResult
 
 	pirateText := contentText(pirate.JSON)
 	needleText := contentText(needle.JSON)
-	pirateOK := strings.Contains(strings.ToLower(pirateText), "arrr")
-	needleOK := strings.Contains(needleText, secret)
+	pirateOK := pirateObeyed(pirateText)
+	needleOK := strings.Contains(needleText, sessionID)
+	// 拒答只在人设指令生效时才采信：system 整段没到的渠道，模型一句「不能透露」不该换来「无法核对」。
+	plain := normalizeQuotes(needleText)
+	withheld := pirateOK && !needleOK && withholdRe.MatchString(plain) && !absentRe.MatchString(plain)
 
 	r.assert("system 人设指令生效", pirateOK, clip(pirateText, 100))
-	r.assert("长 system 中的暗号完整送达", needleOK, clip(needleText, 100))
+	if withheld {
+		r.diagnose("长 system 开头的会话编号完整送达", false,
+			"模型拒绝复述（说明它看到了），无法逐字核对："+clip(needleText, 80))
+	} else {
+		r.assert("长 system 开头的会话编号完整送达", needleOK, clip(needleText, 100))
+	}
 
-	if !pirateOK && !needleOK {
+	switch {
+	case !pirateOK && !needleOK:
 		r.addEvidence("system_overridden", "调用方 system 未生效", "网关可能重写了请求", ClassWrapper, 3)
 		return r.finish("调用方 system 未穿透")
-	}
-	if pirateOK && needleOK {
+	case pirateOK && needleOK:
 		return r.finish("调用方 system 完整穿透")
+	case withheld:
+		r.Status = StatusInconclusive
+		return r.finish("人设指令生效；会话编号被拒答，长 system 是否完整送达无法核对")
 	}
 	return r.finish("system 部分穿透")
 }

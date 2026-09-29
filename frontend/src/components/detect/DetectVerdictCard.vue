@@ -14,11 +14,14 @@
           <span v-if="verdict" class="text-xs text-gray-500 dark:text-dark-400">
             {{ t('detect.confidence') }}：{{ t(`detect.confidence${capitalize(verdict.confidence)}`) }}
           </span>
-          <LoadingSpinner v-else size="sm" />
+          <LoadingSpinner v-else-if="!run.finished_at" size="sm" />
         </div>
       </div>
 
       <p v-if="verdict" class="text-xs leading-relaxed text-gray-600 dark:text-dark-300">{{ verdict.title }}</p>
+      <p v-else-if="run.finished_at" class="text-xs leading-relaxed text-gray-500 dark:text-dark-400">
+        {{ t('detect.noVerdict') }}
+      </p>
       <p v-if="run.error" class="text-xs text-amber-600 dark:text-amber-400">{{ run.error }}</p>
 
       <!-- 真实性评分 -->

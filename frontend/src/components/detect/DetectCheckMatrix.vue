@@ -29,7 +29,10 @@
             <tr v-for="row in rows" :key="row.id">
               <td>
                 <div class="font-medium text-gray-900 dark:text-white">{{ row.title }}</div>
-                <div class="text-xs text-gray-400">{{ t(`detect.groups.${row.group}`) }}</div>
+                <div class="text-xs text-gray-400">
+                  {{ t(`detect.groups.${row.group}`) }}
+                  <span v-if="row.informational" :title="t('detect.informationalHint')">· {{ t('detect.informational') }}</span>
+                </div>
               </td>
               <td v-for="(run, i) in runs" :key="i">
                 <div class="rounded-xl border p-2 transition-colors" :class="cellClass(run, row.id)">

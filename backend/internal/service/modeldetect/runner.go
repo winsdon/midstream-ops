@@ -49,11 +49,66 @@ type TargetRun struct {
 	AuthMode   string         `json:"auth_mode"`
 	AccountID  *int64         `json:"account_id,omitempty"`
 	ProviderID *int64         `json:"provider_id,omitempty"`
+	Suite      string         `json:"suite,omitempty"`
 	Checks     []*CheckResult `json:"checks"`
 	Verdict    *Verdict       `json:"verdict,omitempty"`
 	StartedAt  time.Time      `json:"started_at"`
 	FinishedAt *time.Time     `json:"finished_at,omitempty"`
 	Error      string         `json:"error,omitempty"`
+}
+
+// RunCancelled 本轮被中途取消时 TargetRun.Error 的取值。
+const RunCancelled = "检测已取消"
+
+// Cancelled 本轮是否被中途取消。取消时在途的请求都以 context canceled 失败，
+// 这样的结果反映的是「用户停了」，不是渠道状态。
+func (r *TargetRun) Cancelled() bool { return r != nil && r.Error == RunCancelled }
+
+// MissingChecks selected 里在 run 中没有结果的检测项（按目录顺序）。取消时还没轮到的项就是这样。
+func MissingChecks(run *TargetRun, selected []string) []string {
+	have := map[string]bool{}
+	if run != nil {
+		for _, c := range run.Checks {
+			if c != nil && c.Status != StatusRunning {
+				have[c.ID] = true
+			}
+		}
+	}
+	var out []string
+	for _, id := range knownCheckIDs(selected) {
+		if !have[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// Complete 计分项是否都有结果。只检测不计分的项缺了不影响判定，不算不完整。
+// 取消后只重试了部分项的一轮也是不完整的，它的判定不能进历史。
+func Complete(run *TargetRun, selected []string) bool {
+	for _, id := range MissingChecks(run, selected) {
+		if !informational(id) {
+			return false
+		}
+	}
+	return true
+}
+
+// ResolveSuiteCheckIDs 只保留属于 suite 的勾选项并补齐依赖；一个都没选时回退到该套件的推荐项。
+//
+// 两个套件不混跑：智商题不出判定，混进真伪检测只会白白消耗额度；
+// 真伪项混进智商测试则会因为不出判定而丢掉结论。
+func ResolveSuiteCheckIDs(suite string, selected []string) []string {
+	var picked []string
+	for _, id := range selected {
+		if meta, ok := checkByID(id); ok && meta.InSuite(suite) {
+			picked = append(picked, id)
+		}
+	}
+	if len(picked) == 0 {
+		picked = DefaultCheckIDs(suite)
+	}
+	return ResolveCheckIDs(picked)
 }
 
 // ResolveCheckIDs 把用户勾选的项补上前置依赖，并按目录顺序排列。
@@ -80,7 +135,7 @@ func ResolveCheckIDs(selected []string) []string {
 		add(id)
 	}
 	if len(want) == 0 {
-		for _, id := range DefaultCheckIDs() {
+		for _, id := range DefaultCheckIDs(SuiteAuthenticity) {
 			add(id)
 		}
 	}
@@ -107,7 +162,9 @@ func TotalRequests(ids []string) int {
 
 // runningResult 检测项开始执行时的占位结果，供前端格子显示「执行中」。
 func runningResult(meta Check) *CheckResult {
-	return &CheckResult{ID: meta.ID, Title: meta.Title, Group: meta.Group, Status: StatusRunning}
+	res := newResult(meta)
+	res.Status = StatusRunning
+	return res
 }
 
 // Run 对单个目标执行检测项。
@@ -127,8 +184,9 @@ func RunWithBaseline(ctx context.Context, target Target, checkIDs []string, gate
 	}
 
 	client := NewClient(target)
-	st := &runState{profile: ResolveProfile(target.Model), baseline: baseline}
+	st := &runState{profile: ResolveProfile(target.Model), baseline: baseline, pelicanPrompt: target.PelicanPrompt}
 	ids := ResolveCheckIDs(checkIDs)
+	run.Suite = SuiteOf(ids)
 	if gate == nil {
 		gate = NewGate(1)
 	}
@@ -138,6 +196,7 @@ func RunWithBaseline(ctx context.Context, target Target, checkIDs []string, gate
 		pending[id] = struct{}{}
 	}
 	finished := make(map[string]struct{}, len(ids))
+	scoredLeft := countScored(ids)
 
 	type outcome struct {
 		id  string
@@ -149,6 +208,9 @@ func RunWithBaseline(ctx context.Context, target Target, checkIDs []string, gate
 	depsReady := func(id string) bool {
 		meta, ok := checkByID(id)
 		if !ok {
+			return false
+		}
+		if meta.Informational && scoredLeft > 0 {
 			return false
 		}
 		for _, dep := range meta.Requires {
@@ -200,6 +262,9 @@ func RunWithBaseline(ctx context.Context, target Target, checkIDs []string, gate
 		ev := <-outcomes
 		inflight--
 		finished[ev.id] = struct{}{}
+		if !informational(ev.id) {
+			scoredLeft--
+		}
 		if ev.res != nil {
 			run.Checks = append(run.Checks, ev.res)
 			if onProgress != nil {
@@ -207,21 +272,39 @@ func RunWithBaseline(ctx context.Context, target Target, checkIDs []string, gate
 			}
 		}
 		if ctx.Err() != nil {
-			run.Error = "检测已取消"
+			run.Error = RunCancelled
 			continue
 		}
 		startReady()
 	}
 
 	if ctx.Err() != nil && run.Error == "" {
-		run.Error = "检测已取消"
+		run.Error = RunCancelled
 	}
 	sortChecks(run.Checks)
-	applyAudit(run, st.profile)
-	verdict := Classify(run.Checks)
-	run.Verdict = &verdict
+	judge(run, st.profile)
 	finish(run)
 	return run
+}
+
+// informational 该检测项是否只做检测、不计分。
+func informational(id string) bool {
+	meta, ok := checkByID(id)
+	return ok && meta.Informational
+}
+
+// countScored 计分项的个数。
+//
+// 只检测不计分的项要等计分项全部结束才开跑：「是否 0 注入」会并发打满号池的粘性账号，
+// 与缓存链、签名回传这类依赖同一账号的项同时跑，会把它们挤到别的账号上、改掉它们的结论。
+func countScored(ids []string) int {
+	n := 0
+	for _, id := range ids {
+		if !informational(id) {
+			n++
+		}
+	}
+	return n
 }
 
 // RetryChecks 重跑 previous 里指定的检测项，其余结果保留，最后重算判定。
@@ -243,15 +326,13 @@ func RetryChecksWithBaseline(ctx context.Context, target Target, checkIDs []stri
 
 	ids := knownCheckIDs(checkIDs)
 	if len(ids) == 0 {
-		applyAudit(run, ResolveProfile(target.Model))
-		verdict := Classify(run.Checks)
-		run.Verdict = &verdict
+		judge(run, ResolveProfile(target.Model))
 		finish(run)
 		return run
 	}
 
 	client := NewClient(target)
-	st := &runState{profile: ResolveProfile(target.Model), baseline: baseline}
+	st := &runState{profile: ResolveProfile(target.Model), baseline: baseline, pelicanPrompt: target.PelicanPrompt}
 	hydrateRunState(st, run.Checks, ids)
 	if gate == nil {
 		gate = NewGate(1)
@@ -266,6 +347,7 @@ func RetryChecksWithBaseline(ctx context.Context, target Target, checkIDs []stri
 		pending[id] = struct{}{}
 	}
 	finished := map[string]struct{}{}
+	scoredLeft := countScored(ids)
 
 	type outcome struct {
 		id  string
@@ -277,6 +359,9 @@ func RetryChecksWithBaseline(ctx context.Context, target Target, checkIDs []stri
 	depsReady := func(id string) bool {
 		meta, ok := checkByID(id)
 		if !ok {
+			return false
+		}
+		if meta.Informational && scoredLeft > 0 {
 			return false
 		}
 		for _, dep := range meta.Requires {
@@ -331,6 +416,9 @@ func RetryChecksWithBaseline(ctx context.Context, target Target, checkIDs []stri
 		ev := <-outcomes
 		inflight--
 		finished[ev.id] = struct{}{}
+		if !informational(ev.id) {
+			scoredLeft--
+		}
 		if ev.res != nil {
 			upsertCheck(run, ev.res)
 			if onProgress != nil {
@@ -338,21 +426,48 @@ func RetryChecksWithBaseline(ctx context.Context, target Target, checkIDs []stri
 			}
 		}
 		if ctx.Err() != nil {
-			run.Error = "检测已取消"
+			run.Error = RunCancelled
 			continue
 		}
 		startReady()
 	}
 
 	if ctx.Err() != nil && run.Error == "" {
-		run.Error = "检测已取消"
+		run.Error = RunCancelled
 	}
 	sortChecks(run.Checks)
-	applyAudit(run, st.profile)
-	verdict := Classify(run.Checks)
-	run.Verdict = &verdict
+	judge(run, st.profile)
 	finish(run)
 	return run
+}
+
+// judge 真伪检测的收尾：跨项审计 + 渠道分类与真实性评分。
+//
+// 智商测试不出判定：答对题证明不了后端是 Claude，答错也不说明渠道是谁，
+// 硬套一个分类只会得到「证据不足」这种误导性的结论。没有任何计分项结果时同样不出判定
+// （比如只勾了「是否 0 注入」，或者一项都没跑完就取消了）：没有证据却给出「渠道不可用」，
+// 还会被落进真伪历史，污染这条渠道的时间线。
+func judge(run *TargetRun, profile ThinkingProfile) {
+	if run == nil || run.Suite == SuiteIQ {
+		return
+	}
+	if !hasScoredResult(run.Checks) {
+		run.Verdict = nil
+		return
+	}
+	applyAudit(run, profile)
+	verdict := Classify(run.Checks)
+	run.Verdict = &verdict
+}
+
+// hasScoredResult 是否有参与打分的检测项结果（跨项审计本身不算）。
+func hasScoredResult(checks []*CheckResult) bool {
+	for _, c := range checks {
+		if c != nil && !c.Informational && c.ID != AuditCheckID {
+			return true
+		}
+	}
+	return false
 }
 
 // applyAudit 跑跨项审计并把结果并入 run。
@@ -363,7 +478,7 @@ func applyAudit(run *TargetRun, profile ThinkingProfile) {
 	if run == nil {
 		return
 	}
-	if res := AuditRun(run.Checks, profile); res != nil {
+	if res := AuditRun(run.Checks, profile, run.StartedAt); res != nil {
 		upsertCheck(run, res)
 	}
 }
@@ -516,6 +631,7 @@ func hydrateThinkingState(st *runState, c *CheckResult) {
 	st.thinkingIndex = idx
 	st.thinkingParam = st.profile.ThinkingParam("summarized")
 	st.thinkingPrompt = thinkingPrompt
+	st.thinkingUsage = thinkingUsageOf(usageOf(ex.JSON))
 }
 
 func firstOKExchange(c *CheckResult) *Exchange {

@@ -72,6 +72,7 @@ var labelTitles = map[string]string{
 }
 
 // Classify 汇总所有检测结果，给出渠道分类与真实性评分。
+// 只做检测的项（Informational）整项跳过：不加分、不进判定依据、也不算「渠道可用」的证据。
 func Classify(results []*CheckResult) Verdict {
 	scores := map[string]int{}
 	for _, cls := range classOrder {
@@ -83,7 +84,7 @@ func Classify(results []*CheckResult) Verdict {
 	usable := false
 
 	for _, res := range results {
-		if res == nil || res.Status == StatusRunning {
+		if res == nil || res.Status == StatusRunning || res.Informational {
 			continue
 		}
 		if res.Status != StatusUnsupported && anyExchangeSucceeded(res.Exchanges) {
@@ -221,14 +222,14 @@ func confidenceOf(label string, topScore, second int, results []*CheckResult) st
 	return ConfidenceMedium
 }
 
-// hasEvidence 判断结果集中是否出现指定证据键。
+// hasEvidence 判断结果集中是否出现指定证据键。只检测不计分的项不算数。
 func hasEvidence(results []*CheckResult, keys ...string) bool {
 	want := make(map[string]bool, len(keys))
 	for _, k := range keys {
 		want[k] = true
 	}
 	for _, res := range results {
-		if res == nil {
+		if res == nil || res.Informational {
 			continue
 		}
 		for _, ev := range res.Evidence {

@@ -1,17 +1,24 @@
 import { describe, it, expect } from 'vitest'
 import {
+  answerOutcome,
+  checkStatusVariant,
+  checkSuite,
+  checksOfSuite,
   countStatuses,
   estimateRequests,
   findCheck,
   groupChecks,
   gradeVariant,
   highCostSelection,
+  iqStatusIcon,
+  iqStatusVariant,
   labelVariant,
   matchingPresetId,
   progressPercent,
   sameCheckSet,
   splitReasons,
   statusIcon,
+  statusLabelKey,
   isRequestFailed,
   targetKey,
   withDependencies
@@ -20,7 +27,7 @@ import type { DetectCheckMeta, DetectCheckResult, DetectTargetRun } from '@/type
 
 const CHECKS: DetectCheckMeta[] = [
   { id: 'ping', title: '基础请求', group: 'gateway', default: true, cost: 'low', requests: 1 },
-  { id: 'ping-again', title: '官方缓存链路', group: 'gateway', default: true, cost: 'low', requests: 1, requires: ['ping'] },
+  { id: 'ping-again', title: '官方缓存链路', group: 'gateway', default: true, cost: 'low', requests: 3, requires: ['ping'] },
   { id: 'thinking-sig', title: 'thinking 签名', group: 'protocol', default: true, cost: 'medium', requests: 1 },
   {
     id: 'sig-tamper',
@@ -174,6 +181,24 @@ describe('isRequestFailed', () => {
     expect(isRequestFailed({ ...check('param-strict', 'failed'), exchanges: [{ status: 200 } as never] })).toBe(false)
     expect(isRequestFailed(check('ping', 'running'))).toBe(false)
   })
+
+  it('只检测的项零星 429 不算请求失败，一个都没成功才算', () => {
+    const zi = { ...check('zero-injection', 'passed'), informational: true }
+    expect(isRequestFailed({ ...zi, exchanges: [{ status: 200 } as never, { status: 429 } as never] })).toBe(false)
+    expect(isRequestFailed({ ...zi, exchanges: [{ status: 429 } as never, { status: 502 } as never] })).toBe(true)
+  })
+
+  it('判定卡片的结论计数不含只检测的项', () => {
+    const run: DetectTargetRun = {
+      name: 't',
+      base_url: 'https://x',
+      model: 'm',
+      auth_mode: 'both',
+      started_at: '',
+      checks: [check('ping', 'passed'), { ...check('zero-injection', 'suspicious'), informational: true }]
+    }
+    expect(countStatuses(run)).toEqual({ passed: 1, failed: 0, suspicious: 0, unsupported: 0, inconclusive: 0 })
+  })
 })
 
 describe('targetKey', () => {
@@ -220,5 +245,40 @@ describe('matchingPresetId', () => {
   it('加减过检测项就不再算预设', () => {
     expect(matchingPresetId(['ping', 'persona-cc', 'pdf'], presets)).toBeNull()
     expect(matchingPresetId(['ping'], presets)).toBeNull()
+  })
+})
+
+describe('测试套件', () => {
+  const mixed: DetectCheckMeta[] = [
+    ...CHECKS,
+    { id: 'iq-pelican', title: '鹈鹕测试', group: 'iq', default: true, cost: 'high', requests: 1, suite: 'iq', grading: 'visual' },
+    { id: 'iq-candy', title: '糖果题测试', group: 'iq', default: true, cost: 'medium', requests: 1, suite: 'iq', grading: 'answer' }
+  ]
+
+  it('未标 suite 的检测项都算模型真伪，两套互不混入', () => {
+    expect(checksOfSuite(mixed, 'iq').map((c) => c.id)).toEqual(['iq-pelican', 'iq-candy'])
+    expect(checksOfSuite(mixed, 'authenticity').map((c) => c.id)).toEqual(CHECKS.map((c) => c.id))
+    expect(checkSuite({})).toBe('authenticity')
+  })
+
+  it('智商题用自己的状态文案，真伪项沿用原文案', () => {
+    expect(statusLabelKey({ group: 'iq', status: 'suspicious' })).toBe('detect.iqStatus.suspicious')
+    expect(statusLabelKey({ group: 'protocol', status: 'failed' })).toBe('detect.status.failed')
+  })
+
+  it('智商题答错按不通过的红色与 × 展示，真伪项的「可疑」仍是警示色', () => {
+    expect(checkStatusVariant({ group: 'iq', status: 'suspicious' })).toBe('danger')
+    expect(checkStatusVariant({ group: 'identity', status: 'suspicious' })).toBe('warning')
+    expect(iqStatusVariant('passed')).toBe('success')
+    expect(iqStatusIcon('suspicious')).toBe('×')
+    expect(statusIcon('suspicious')).toBe('!')
+  })
+
+  it('答案对错只在解析出答案且有标准答案时判定', () => {
+    expect(answerOutcome({ answer: '21', expected: '21' })).toBe('correct')
+    expect(answerOutcome({ answer: '29', expected: '21' })).toBe('wrong')
+    expect(answerOutcome({ expected: '21' })).toBe('none')
+    expect(answerOutcome({ answer: '21' })).toBe('none')
+    expect(answerOutcome(undefined)).toBe('none')
   })
 })

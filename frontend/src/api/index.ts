@@ -44,6 +44,8 @@ import type {
   DetectCheckMeta,
   DetectHistoryDetail,
   DetectHistoryItem,
+  DetectIQHistoryDetail,
+  DetectIQHistoryItem,
   DetectJob,
   DetectPreset,
   DetectBaselinePayload,
@@ -429,6 +431,9 @@ export const stabilityApi = {
 // ---- 模型检测（上游 Claude 渠道指纹）----
 // 检测会真实消耗上游额度，所有请求都由用户在页面上显式发起，前端不做任何自动轮询之外的调用。
 export const detectApi = {
+	models: () => unwrap<{ items: string[] }>(http.get<ApiResponse<{ items: string[] }>>('/detect/models')),
+	addModel: (model: string) => unwrap<{ items: string[] }>(http.post<ApiResponse<{ items: string[] }>>('/detect/models', { model })),
+  removeModel: (model: string) => unwrap<{ items: string[] }>(http.delete<ApiResponse<{ items: string[] }>>('/detect/models', { params: { model } })),
   checks: () =>
     unwrap<{ items: DetectCheckMeta[]; defaults: string[]; presets: DetectPreset[] }>(
       http.get<ApiResponse<{ items: DetectCheckMeta[]; defaults: string[]; presets: DetectPreset[] }>>(
@@ -459,5 +464,16 @@ export const detectApi = {
       http.get<ApiResponse<PaginatedData<DetectHistoryItem>>>('/detect/history', { params })
     ),
   historyDetail: (id: number) =>
-    unwrap<DetectHistoryDetail>(http.get<ApiResponse<DetectHistoryDetail>>(`/detect/history/${id}`))
+    unwrap<DetectHistoryDetail>(http.get<ApiResponse<DetectHistoryDetail>>(`/detect/history/${id}`)),
+  deleteHistory: (id: number) =>
+    unwrap<{ deleted: number }>(http.delete<ApiResponse<{ deleted: number }>>(`/detect/history/${id}`)),
+  /** 智商测试历史：与真伪检测分表留痕 */
+  iqHistory: (params: { page?: number; page_size?: number }) =>
+    unwrap<PaginatedData<DetectIQHistoryItem>>(
+      http.get<ApiResponse<PaginatedData<DetectIQHistoryItem>>>('/detect/iq/history', { params })
+    ),
+  iqHistoryDetail: (id: number) =>
+    unwrap<DetectIQHistoryDetail>(http.get<ApiResponse<DetectIQHistoryDetail>>(`/detect/iq/history/${id}`)),
+  deleteIQHistory: (id: number) =>
+    unwrap<{ deleted: number }>(http.delete<ApiResponse<{ deleted: number }>>(`/detect/iq/history/${id}`))
 }

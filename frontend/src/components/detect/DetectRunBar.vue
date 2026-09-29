@@ -95,6 +95,8 @@ const props = defineProps<{
   disabled: boolean
   requestEstimate: number
   concurrency: number
+  /** 暂时不能开跑的原因（如另一种模式正在检测），空闲时替代请求估算显示 */
+  blockedReason?: string
 }>()
 
 const emit = defineEmits<{
@@ -125,6 +127,7 @@ const headline = computed(() => {
 
 const subline = computed(() => {
   if (props.running && props.job?.current) return props.job.current
+  if (!props.running && props.blockedReason) return props.blockedReason
   return t('detect.requestsEstimate', { n: props.requestEstimate })
 })
 </script>

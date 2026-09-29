@@ -221,6 +221,9 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 			// 因此只挂在管理员鉴权组内，且由前端显式发起。
 			if h.Detect != nil {
 				auth.GET("/detect/checks", h.Detect.Checks)
+				auth.GET("/detect/models", h.Detect.Models)
+				auth.POST("/detect/models", h.Detect.AddModel)
+				auth.DELETE("/detect/models", h.Detect.RemoveModel)
 				auth.GET("/detect/accounts", h.Detect.Accounts)
 				auth.GET("/detect/baseline", h.Detect.Baseline)
 				auth.POST("/detect/baseline", h.Detect.CreateBaseline)
@@ -230,6 +233,10 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 				auth.POST("/detect/jobs/:id/retry", h.Detect.Retry)
 				auth.GET("/detect/history", h.Detect.History)
 				auth.GET("/detect/history/:id", h.Detect.HistoryDetail)
+				auth.DELETE("/detect/history/:id", h.Detect.DeleteHistory)
+				auth.GET("/detect/iq/history", h.Detect.IQHistory)
+				auth.GET("/detect/iq/history/:id", h.Detect.IQHistoryDetail)
+				auth.DELETE("/detect/iq/history/:id", h.Detect.DeleteIQHistory)
 			}
 
 			if h.Settings != nil {

@@ -176,7 +176,7 @@ func (s *Scheduler) cleanup() {
 	if s.mediaSvc != nil {
 		s.mediaSvc.Cleanup(ctx, s.cfg.Media.TaskRetentionDays)
 	}
-	// 渠道检测历史：随 probe 保留期清理（同属「探测类留痕」，没必要多一个配置项）
+	// 渠道检测历史：随 probe 保留期清理，并各自只留最新 20 条。
 	if s.detectSvc != nil {
 		s.detectSvc.Cleanup(ctx, s.cfg.Probe.RetentionDays)
 	}

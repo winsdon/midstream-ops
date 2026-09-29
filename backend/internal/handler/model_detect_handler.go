@@ -15,7 +15,8 @@ import (
 
 // ModelDetectHandler 上游 Claude 渠道检测处理器。
 type ModelDetectHandler struct {
-	svc *service.ModelDetectService
+	svc    *service.ModelDetectService
+	models *service.DetectModelStore
 }
 
 // NewModelDetectHandler 创建 ModelDetectHandler。
@@ -23,11 +24,68 @@ func NewModelDetectHandler(svc *service.ModelDetectService) *ModelDetectHandler 
 	return &ModelDetectHandler{svc: svc}
 }
 
-// Checks GET /detect/checks —— 检测项清单与推荐勾选。
+func (h *ModelDetectHandler) SetModelStore(store *service.DetectModelStore) { h.models = store }
+
+func (h *ModelDetectHandler) Models(c *gin.Context) {
+	if h.models == nil {
+		response.InternalError(c, "模型清单服务未初始化")
+		return
+	}
+	models, err := h.models.List(c.Request.Context())
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, gin.H{"items": models})
+}
+
+func (h *ModelDetectHandler) AddModel(c *gin.Context) {
+	if h.models == nil {
+		response.InternalError(c, "模型清单服务未初始化")
+		return
+	}
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "请求体格式错误: "+err.Error())
+		return
+	}
+	models, err := h.models.Add(c.Request.Context(), req.Model)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidDetectModel) {
+			response.BadRequest(c, err.Error())
+		} else {
+			response.InternalError(c, err.Error())
+		}
+		return
+	}
+	response.Success(c, gin.H{"items": models})
+}
+
+func (h *ModelDetectHandler) RemoveModel(c *gin.Context) {
+	if h.models == nil {
+		response.InternalError(c, "模型清单服务未初始化")
+		return
+	}
+	model := c.Query("model")
+	if model == "" {
+		response.BadRequest(c, "模型名不能为空")
+		return
+	}
+	models, err := h.models.Remove(c.Request.Context(), model)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, gin.H{"items": models})
+}
+
+// Checks GET /detect/checks —— 检测项清单（含两个套件，按 suite 区分）与真伪检测的推荐勾选。
 func (h *ModelDetectHandler) Checks(c *gin.Context) {
 	response.Success(c, gin.H{
 		"items":    modeldetect.Checks,
-		"defaults": modeldetect.DefaultCheckIDs(),
+		"defaults": modeldetect.DefaultCheckIDs(modeldetect.SuiteAuthenticity),
 		"presets":  modeldetect.Presets,
 	})
 }
@@ -105,7 +163,7 @@ func (h *ModelDetectHandler) Run(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
-	checks := modeldetect.ResolveCheckIDs(req.Checks)
+	checks := modeldetect.ResolveSuiteCheckIDs(modeldetect.NormalizeSuite(req.Suite), req.Checks)
 	response.Success(c, gin.H{
 		"job_id":            jobID,
 		"checks":            checks,
@@ -167,6 +225,7 @@ func (h *ModelDetectHandler) History(c *gin.Context) {
 			f.AccountID = &id
 		}
 	}
+	h.svc.TrimDetectionHistory(c.Request.Context())
 	items, total, err := h.svc.Repo().List(c.Request.Context(), f)
 	if err != nil {
 		response.InternalError(c, "查询失败: "+err.Error())
@@ -198,6 +257,99 @@ func (h *ModelDetectHandler) HistoryDetail(c *gin.Context) {
 	item := detectionDTO(d)
 	item["report"] = json.RawMessage(d.Report)
 	response.Success(c, item)
+}
+
+// DeleteHistory DELETE /detect/history/:id —— 删除一条真伪检测历史。
+func (h *ModelDetectHandler) DeleteHistory(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	repo := h.svc.Repo()
+	if repo == nil {
+		response.NotFound(c, "检测记录不存在")
+		return
+	}
+	if err := repo.Delete(c.Request.Context(), id); err != nil {
+		if errors.Is(err, repository.ErrDetectionNotFound) {
+			response.NotFound(c, "检测记录不存在")
+			return
+		}
+		response.InternalError(c, "删除失败: "+err.Error())
+		return
+	}
+	response.Success(c, gin.H{"deleted": id})
+}
+
+// IQHistory GET /detect/iq/history —— 智商测试历史分页列表。
+func (h *ModelDetectHandler) IQHistory(c *gin.Context) {
+	page, pageSize := response.ParsePagination(c)
+	items, total, err := h.svc.IQHistory(c.Request.Context(), page, pageSize)
+	if err != nil {
+		response.InternalError(c, "查询失败: "+err.Error())
+		return
+	}
+	out := make([]gin.H, 0, len(items))
+	for _, run := range items {
+		out = append(out, iqRunDTO(run))
+	}
+	response.Paginated(c, out, total, page, pageSize)
+}
+
+// IQHistoryDetail GET /detect/iq/history/:id —— 单条智商测试报告（含作品与回复全文）。
+func (h *ModelDetectHandler) IQHistoryDetail(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "无效的 id")
+		return
+	}
+	run, err := h.svc.IQHistoryDetail(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, repository.ErrIQRunNotFound) {
+			response.NotFound(c, "智商测试记录不存在")
+			return
+		}
+		response.InternalError(c, "查询失败: "+err.Error())
+		return
+	}
+	item := iqRunDTO(run)
+	item["report"] = json.RawMessage(run.Report)
+	response.Success(c, item)
+}
+
+// DeleteIQHistory DELETE /detect/iq/history/:id —— 删除一条智商测试历史。
+func (h *ModelDetectHandler) DeleteIQHistory(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	if err := h.svc.DeleteIQHistory(c.Request.Context(), id); err != nil {
+		if errors.Is(err, repository.ErrIQRunNotFound) {
+			response.NotFound(c, "智商测试记录不存在")
+			return
+		}
+		response.InternalError(c, "删除失败: "+err.Error())
+		return
+	}
+	response.Success(c, gin.H{"deleted": id})
+}
+
+// iqRunDTO 智商测试历史行的展示形态。report 体积大，只在详情接口带上。
+func iqRunDTO(run *repository.ModelIQRun) gin.H {
+	return gin.H{
+		"id":           run.ID,
+		"account_id":   run.AccountID,
+		"account_name": run.AccountName,
+		"provider_id":  run.ProviderID,
+		"target_fp":    run.TargetFP,
+		"target_name":  run.TargetName,
+		"base_url":     run.BaseURL,
+		"model":        run.Model,
+		"passed":       run.Passed,
+		"total":        run.Total,
+		"results":      json.RawMessage(run.Results),
+		"created_at":   run.CreatedAt.Local().Format("2006-01-02 15:04:05"),
+	}
 }
 
 // detectionDTO 历史行的展示形态。report 体积大，只在详情接口带上。

@@ -41,9 +41,18 @@
                 <span class="ml-1 text-xs text-gray-400">{{ t(`detect.grades.${item.authenticity_grade}`) }}</span>
               </td>
               <td>
-                <button type="button" class="btn btn-ghost btn-sm" @click="emit('open', item)">
-                  {{ t('detect.historyLoad') }}
-                </button>
+                <div class="flex items-center gap-1">
+                  <button type="button" class="btn btn-ghost btn-sm" @click="emit('open', item)">
+                    {{ t('detect.historyLoad') }}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-sm text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                    @click="emit('remove', item)"
+                  >
+                    {{ t('common.delete') }}
+                  </button>
+                </div>
               </td>
             </tr>
           </tbody>
@@ -82,6 +91,7 @@ defineProps<{
 
 const emit = defineEmits<{
   (e: 'open', item: DetectHistoryItem): void
+  (e: 'remove', item: DetectHistoryItem): void
   (e: 'update:page', page: number): void
 }>()
 

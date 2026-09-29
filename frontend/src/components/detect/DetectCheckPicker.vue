@@ -75,7 +75,10 @@
                 <span class="min-w-0 flex-1">
                   <span class="flex flex-wrap items-center gap-1.5">
                     <span class="text-sm font-medium text-gray-900 dark:text-white">{{ check.title }}</span>
-                    <Badge :variant="costVariant(check.cost)">{{ t(`detect.cost${capitalize(check.cost)}`) }}</Badge>
+                    <Badge :variant="costVariant(check.cost)">{{ t(costLabelKey(check.cost)) }}</Badge>
+                    <Badge v-if="check.informational" variant="gray" :title="t('detect.informationalHint')">
+                      {{ t('detect.informational') }}
+                    </Badge>
                     <span class="text-xs text-gray-400">×{{ check.requests }}</span>
                   </span>
                   <span v-if="check.note" class="mt-0.5 block text-xs leading-relaxed text-gray-500 dark:text-dark-400">
@@ -107,8 +110,15 @@ import { useI18n } from 'vue-i18n'
 import Badge from '@/components/common/Badge.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { estimateRequests, groupChecks, matchingPresetId, withDependencies } from '@/utils/detectModel'
-import type { DetectCheckMeta, DetectCost, DetectPreset } from '@/types/detect'
+import {
+  costLabelKey,
+  costVariant,
+  estimateRequests,
+  groupChecks,
+  matchingPresetId,
+  withDependencies
+} from '@/utils/detectModel'
+import type { DetectCheckMeta, DetectPreset } from '@/types/detect'
 
 const { t } = useI18n()
 
@@ -190,15 +200,5 @@ function cardClass(id: string): string {
     return 'border-primary-200 bg-primary-50/30 dark:border-primary-800 dark:bg-primary-900/10'
   }
   return 'border-gray-200 hover:border-gray-300 dark:border-dark-700 dark:hover:border-dark-600'
-}
-
-function costVariant(cost: DetectCost): 'gray' | 'warning' | 'danger' {
-  if (cost === 'high') return 'danger'
-  if (cost === 'medium') return 'warning'
-  return 'gray'
-}
-
-function capitalize(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1)
 }
 </script>

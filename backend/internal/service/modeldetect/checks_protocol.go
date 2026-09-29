@@ -7,10 +7,16 @@ import (
 	"strings"
 )
 
-// checkParamStrict 用四个非法请求测参数校验严格性。
+// checkParamStrict 用四个请求测参数校验严格性。
 //
-// 真正的 Anthropic 后端（含 Bedrock / Vertex）会在网关层就把它们拒掉；
-// 逆向实现与 OpenAI 格式转换层普遍不做校验，照单全收。被接受得越多越可疑。
+// 真正的 Anthropic 后端（含 Bedrock / Vertex）会拒掉非法参数；逆向实现与 OpenAI 格式转换层
+// 普遍照单全收。但中间隔着网关时，「被接受」多半是网关先把请求规范化了（Go 网关丢掉未知字段、
+// 把 max_tokens=0 当成未设再补默认值、改写 thinking 配置），真后端根本没见到非法参数——实测
+// 有渠道 budget_tokens=200 被接受却思考了 249 token，签名完整性照样通过。所以本项只说明
+// 「这条链路改写了请求」，记包装分，不封顶真实性。
+//
+// max_tokens=0 不是非法参数：官方把它当缓存预热，返回空 content、stop_reason=max_tokens、
+// 不生成输出。有输出才说明网关把它换成了别的值。
 func checkParamStrict(ctx context.Context, c *Client, st *runState) *CheckResult {
 	meta, _ := checkByID("param-strict")
 	r := newResult(meta)
@@ -23,6 +29,8 @@ func checkParamStrict(ctx context.Context, c *Client, st *runState) *CheckResult
 		hint    func(string) bool
 		soft    bool // soft 项不计真实性分，只作诊断
 		comment string
+		// official 非空时由它判断是否符合官方行为；为空时 4xx 即符合。
+		official func(ex *Exchange) bool
 	}{
 		{
 			key:   "thinking_budget_200",
@@ -33,7 +41,7 @@ func checkParamStrict(ctx context.Context, c *Client, st *runState) *CheckResult
 				"messages": []map[string]any{{"role": "user", "content": "Name your product in one sentence."}},
 			},
 			hint:    func(s string) bool { return minBudgetHintRe.MatchString(s) },
-			comment: "官方要求 budget_tokens >= 1024",
+			comment: "官方要求 budget_tokens >= 1024，4.7 起的型号干脆不接受 type=enabled",
 		},
 		{
 			key:   "unknown_field",
@@ -47,13 +55,14 @@ func checkParamStrict(ctx context.Context, c *Client, st *runState) *CheckResult
 		},
 		{
 			key:   "max_tokens_zero",
-			label: "max_tokens=0 被拒",
+			label: "max_tokens=0 不生成输出",
 			body: map[string]any{
 				"model": model, "max_tokens": 0,
 				"messages": []map[string]any{{"role": "user", "content": "hi"}},
 			},
-			hint:    func(string) bool { return true },
-			comment: "max_tokens 必须 >= 1",
+			hint:     func(string) bool { return true },
+			comment:  "官方把 max_tokens=0 当缓存预热：空 content、零输出；有输出说明网关换掉了 max_tokens",
+			official: noOutputPrewarm,
 		},
 		{
 			key:   "thinking_temperature",
@@ -80,12 +89,18 @@ func checkParamStrict(ctx context.Context, c *Client, st *runState) *CheckResult
 			r.diagnose(tc.label, false, describeFailure(ex))
 			continue
 		}
-		ok := ex.Status >= 400 && ex.Status < 500
+		rejectedByAPI := ex.Status >= 400 && ex.Status < 500
+		ok := rejectedByAPI
+		if tc.official != nil {
+			ok = rejectedByAPI || tc.official(ex)
+		}
 		detail := fmt.Sprintf("HTTP %d", ex.Status)
 		if msg := errorMessage(ex.JSON); msg != "" {
 			detail += "：" + clip(msg, 160)
+		} else if ex.OK() {
+			detail += fmt.Sprintf("，output_tokens=%d", intOf(usageOf(ex.JSON)["output_tokens"]))
 		}
-		if ok && !tc.hint(ex.ErrorText()) {
+		if rejectedByAPI && !tc.hint(ex.ErrorText()) {
 			detail += "（报错未命中官方特征，仍按拒绝计）"
 		}
 		if tc.soft {
@@ -100,23 +115,31 @@ func checkParamStrict(ctx context.Context, c *Client, st *runState) *CheckResult
 			continue
 		}
 		accepted = append(accepted, tc.key)
-		if tc.key == "thinking_budget_200" {
-			r.addEvidence("budget_200_accepted", "thinking.budget_tokens=200 被接受",
-				"非原样官方 thinking 口", ClassWrapper, 2)
-		}
 	}
 
-	// 三个硬校验各值 5 分，真实性满分 15；软项不计分
+	// 三个硬校验各值 5 分，真实性满分 15；软项不计分。
+	// 放行两项以上记一条包装证据；只放行 budget 一项时单独记——同一次观察不重复计分。
 	r.AuthScore = rejected * 5
-	if len(accepted) >= 2 {
+	switch {
+	case len(accepted) >= 2:
 		r.addEvidence("loose_validation", "多个非法参数被放行",
-			strings.Join(accepted, ", "), ClassWrapper, 3)
+			strings.Join(accepted, ", ")+"（网关规范化了请求或后端未校验）", ClassWrapper, 3)
+	case len(accepted) == 1 && accepted[0] == "thinking_budget_200":
+		r.addEvidence("budget_200_accepted", "thinking.budget_tokens=200 被接受",
+			"非原样官方 thinking 口", ClassWrapper, 2)
 	}
 	if len(accepted) == len(cases) {
 		r.Status = StatusSuspicious
-		r.AuthCapReason = "全部非法参数都被接受，后端不做官方参数校验"
 	}
-	return r.finish(fmt.Sprintf("%d/3 个硬校验按官方行为拒绝", rejected))
+	return r.finish(fmt.Sprintf("%d/3 个硬校验符合官方行为", rejected))
+}
+
+// noOutputPrewarm max_tokens=0 的官方行为：200、带完整 usage、不生成任何输出（缓存预热，content 为空）。
+// 只看有没有生成，不苛求 content 是空数组：重组响应的网关常补一个空 text 块。
+func noOutputPrewarm(ex *Exchange) bool {
+	usage := usageOf(ex.JSON)
+	_, hasOutput := usage["output_tokens"]
+	return ex.OK() && hasOutput && intOf(usage["output_tokens"]) == 0 && contentText(ex.JSON) == ""
 }
 
 // checkMaxTokens max_tokens 是否被严格执行。
@@ -203,14 +226,24 @@ func checkToolUse(ctx context.Context, c *Client, _ *runState) *CheckResult {
 
 	passed := 0
 	for _, tc := range cases {
-		ex := c.Post(ctx, KindMessages, map[string]any{
+		body := map[string]any{
 			"model": model, "max_tokens": 512,
 			"tools":       []map[string]any{{"name": tc.name, "description": "检测用工具", "input_schema": tc.schema}},
 			"tool_choice": map[string]any{"type": "tool", "name": tc.name},
 			"messages":    []map[string]any{{"role": "user", "content": tc.prompt}},
-		})
+		}
+		ex := c.Post(ctx, KindMessages, body)
 		r.Exchanges = append(r.Exchanges, ex)
 		r.DurationMs += ex.DurationMs
+		// Opus 5.5、Fable 5.1 起官方不支持强制工具调用（tool_choice any / tool 返回 400）。
+		// 这是型号行为不是渠道问题：改用 auto 重发一次，提示词本就要求调用这个工具。
+		if ex.Status == 400 && forcedToolChoiceRe.MatchString(ex.ErrorText()) {
+			r.diagnose(tc.name+" 支持强制工具调用", false, "该型号不支持 tool_choice any / tool（官方行为），改用 auto 重发")
+			body["tool_choice"] = map[string]any{"type": "auto"}
+			ex = c.Post(ctx, KindMessages, body)
+			r.Exchanges = append(r.Exchanges, ex)
+			r.DurationMs += ex.DurationMs
+		}
 		if !ex.OK() {
 			r.assert(tc.name+" 调用成功", false, describeFailure(ex))
 			continue
@@ -313,6 +346,7 @@ func checkThinkingSignature(ctx context.Context, c *Client, st *runState) *Check
 	st.thinkingIndex = idx
 	st.thinkingParam = param
 	st.thinkingPrompt = thinkingPrompt
+	st.thinkingUsage = thinkingUsageOf(usageOf(ex.JSON))
 
 	r.assert("thinking 请求成功", true, fmt.Sprintf("HTTP %d", ex.Status))
 	r.assert("取得非空 thinking 签名", true, fmt.Sprintf("签名长度 %d（长度仅记录，不作真伪判据）", len(signature)))
@@ -327,6 +361,9 @@ func checkThinkingSignature(ctx context.Context, c *Client, st *runState) *Check
 // 只有真正持有签名密钥的 Anthropic 后端（含 Bedrock / Vertex）才能同时做到
 // 「原样回传可继续对话」与「改一个字符必须拒绝」。伪装渠道要么两边都放行，
 // 要么根本无法续写。
+//
+// 正负样本用各自的校验串：请求体不同，按内容缓存的网关就没法拿正样本的回复顶替负样本；
+// 真顶替了，回复里是正样本的校验串、签名也与正样本相同，一眼能认出来。
 func checkSignatureTamper(ctx context.Context, c *Client, st *runState) *CheckResult {
 	meta, _ := checkByID("sig-tamper")
 	r := newResult(meta)
@@ -336,15 +373,9 @@ func checkSignatureTamper(ctx context.Context, c *Client, st *runState) *CheckRe
 	}
 
 	challenge := nonce("CONT")
-	baseMessages := []map[string]any{
-		{"role": "user", "content": st.thinkingPrompt},
-		{"role": "assistant", "content": st.thinkingContent},
-		{"role": "user", "content": "只回复校验串 " + challenge + "。"},
-	}
-
 	positive := c.Post(ctx, KindMessages, map[string]any{
 		"model": c.Target().Model, "max_tokens": 512,
-		"thinking": st.thinkingParam, "messages": baseMessages,
+		"thinking": st.thinkingParam, "messages": tamperMessages(st, st.thinkingContent, challenge),
 	})
 	r.Exchanges = append(r.Exchanges, positive)
 	r.DurationMs += positive.DurationMs
@@ -357,14 +388,10 @@ func checkSignatureTamper(ctx context.Context, c *Client, st *runState) *CheckRe
 		r.Status = StatusInconclusive
 		return r.finish("无法构造篡改样本")
 	}
-	tamperedMessages := []map[string]any{
-		{"role": "user", "content": st.thinkingPrompt},
-		{"role": "assistant", "content": tampered},
-		{"role": "user", "content": "只回复校验串 " + challenge + "。"},
-	}
+	tamperChallenge := nonce("CONT")
 	negative := c.Post(ctx, KindMessages, map[string]any{
 		"model": c.Target().Model, "max_tokens": 512,
-		"thinking": st.thinkingParam, "messages": tamperedMessages,
+		"thinking": st.thinkingParam, "messages": tamperMessages(st, tampered, tamperChallenge),
 	})
 	r.Exchanges = append(r.Exchanges, negative)
 	r.DurationMs += negative.DurationMs
@@ -385,17 +412,146 @@ func checkSignatureTamper(ctx context.Context, c *Client, st *runState) *CheckRe
 		r.Status = StatusInconclusive
 		return r.finish("篡改被拒但报错未提签名，证据略弱")
 	case positiveOK && negative.OK():
-		r.Status = StatusSuspicious
-		r.AuthCapReason = "篡改后的 thinking 签名被接受，后端未做签名校验"
-		r.addEvidence("signature_not_verified", "篡改签名被接受", "后端不校验签名", ClassWrapper, 4)
-		return r.finish("原样签名可续写，但篡改签名也被接受，完整性可疑")
+		return judgeTamperAccepted(r, st, positive, negative, challenge, tamperChallenge)
 	default:
 		r.Status = StatusInconclusive
 		return r.finish("签名连续性未形成完整证据链")
 	}
 }
 
-// tamperSignature 深拷贝 content 并改掉指定 thinking 块签名的首字符。
+// tamperMessages 签名回传的三轮对话：原题、带签名的 assistant 回复、要求只回校验串。
+func tamperMessages(st *runState, assistant []any, challenge string) []map[string]any {
+	return []map[string]any{
+		{"role": "user", "content": st.thinkingPrompt},
+		{"role": "assistant", "content": assistant},
+		{"role": "user", "content": "只回复校验串 " + challenge + "。"},
+	}
+}
+
+// tamperInputTolerance 正负样本输入总量的允许误差：两者只差校验串里的 12 位随机十六进制。
+const tamperInputTolerance = 16
+
+// minArrivalThoughts 取签名那次的思考少于这么多 token，就分不清回传续写多出来的输入是 thinking
+// 还是新那句提问（十几二十个 token），计量上确认不了 thinking 进了上下文。
+const minArrivalThoughts = 100
+
+// judgeTamperAccepted 篡改后的签名拿到了 200：先认清这个 200 从哪来，再决定要不要定罪。
+//
+// 顺序有讲究：
+//  1. 看回复里的校验串。回的是正样本的校验串 → 网关回放了缓存的响应；两个都没有 → 无从判断。
+//  2. 回复是新生成的，签名却和原样回传那次（或回传的原签名）相同 → 签名与内容不绑定，是伪造
+//     或贴上去的旧签名。这条不看 usage：偷懒的假后端每条回复都贴同一个签名，usage 也未必可信。
+//  3. usage 缺失或不可能（续写的输入不比首轮大）→ 记包装证据，无法确认篡改块到达后端。
+//  4. 负样本输入比正样本少一截 → 网关剥掉了校验不过的 thinking 块再重发。
+//  5. 正样本的输入里得有回传的 thinking：Opus 4.5 与 4.6 起的型号把历史 thinking 留在上下文、
+//     按输入计费；网关一律剥掉、号池路由到别的型号（其他型号会静默丢掉）时，正负样本的输入一样少，
+//     「两次一致」证明不了篡改块到过后端。Sonnet 4.5、Haiku 4.5 及更早的型号 API 自己就剥掉，计量上
+//     无从确认，一律不封顶。
+//
+// 实测 23 个「篡改被接受」里有 2 个是回放、12 个输入骤降（剥离后重发）——这些后端都没见过篡改的签名。
+func judgeTamperAccepted(r *CheckResult, st *runState, positive, negative *Exchange, challenge, tamperChallenge string) *CheckResult {
+	reply := contentText(negative.JSON)
+	fresh := strings.Contains(reply, tamperChallenge)
+	if !fresh {
+		r.Status = StatusInconclusive
+		if strings.Contains(reply, challenge) {
+			r.diagnose("篡改请求拿到的是新生成的回复", false,
+				"回复里是原样回传那次的校验串：网关回放了缓存的响应，篡改请求没有到达后端")
+			r.addEvidence("sig_replayed", "回放缓存的响应", "签名完整性：篡改请求拿到的是原样回传那次的回复", ClassWrapper, 3)
+			return r.finish("篡改请求被缓存的响应顶替，签名校验没有到达后端")
+		}
+		r.diagnose("篡改请求拿到的是新生成的回复", false, "回复里没有本次的校验串："+clip(reply, 60))
+		return r.finish("篡改签名被接受，但回复没有照做，无法判断")
+	}
+
+	known := append(exchangeSignatures(positive), str(mapOf(st.thinkingContent[st.thinkingIndex])["signature"]))
+	if sharesSignature(known, exchangeSignatures(negative)) {
+		r.Status = StatusSuspicious
+		r.AuthCapReason = "篡改请求拿到新生成的回复，签名却是之前出现过的：签名与内容不绑定，是伪造或贴上去的"
+		r.addEvidence("sig_unbound", "签名与回复内容不绑定（伪造或贴旧签名）",
+			"篡改请求的回复照做了新校验串，thinking 签名却与之前的响应相同", ClassWrapper, 4)
+		return r.finish("篡改签名被接受，且新回复带着旧签名：签名是伪造或贴上去的")
+	}
+
+	posIn, _, posOK := inputTotal(usageOf(positive.JSON))
+	negIn, _, negOK := inputTotal(usageOf(negative.JSON))
+	first := st.thinkingUsage.input
+	switch {
+	case !posOK || !negOK:
+		r.Status = StatusInconclusive
+		r.diagnose("篡改块原样到达后端", false, "usage 缺 input_tokens，无法确认篡改后的 thinking 块到达了后端")
+		return r.finish("篡改签名被接受，但 usage 缺输入用量，无法确认它到达了后端")
+	case posIn <= first:
+		r.Status = StatusInconclusive
+		detail := fmt.Sprintf("回传续写的输入 %d 不大于取签名那次的 %d（续写包含首轮全文，不可能更少）", posIn, first)
+		r.diagnose("篡改块原样到达后端", false, detail)
+		r.addEvidence("usage_implausible", "usage 不可能成立", detail, ClassWrapper, 2)
+		return r.finish("篡改签名被接受，但 usage 不可信，无法确认它到达了后端")
+	case posIn-negIn > tamperInputTolerance:
+		r.Status = StatusInconclusive
+		detail := fmt.Sprintf("篡改请求输入 %d，比原样回传的 %d 少 %d", negIn, posIn, posIn-negIn)
+		r.diagnose("篡改块原样到达后端", false, detail+"：网关剥掉了校验不过的 thinking 块")
+		r.addEvidence("thinking_stripped", "网关剥掉了回传的 thinking 块", detail+"，签名校验没有到达后端", ClassWrapper, 2)
+		return r.finish("网关剥掉了篡改过的 thinking 块，签名校验没有到达后端")
+	case negIn-posIn > tamperInputTolerance:
+		r.Status = StatusInconclusive
+		r.diagnose("篡改块原样到达后端", false, fmt.Sprintf("篡改请求输入 %d，比原样回传的 %d 多 %d：计量对不上", negIn, posIn, negIn-posIn))
+		return r.finish("篡改签名被接受，但两次输入对不上，无法确认它到达了后端")
+	}
+
+	arrived, detail := thinkingArrived(st, posIn)
+	r.diagnose("回传的 thinking 进了上下文", arrived, detail)
+	if !arrived {
+		r.Status = StatusInconclusive
+		if st.profile.KeepsThinking {
+			r.addEvidence("thinking_stripped", "网关剥掉了回传的 thinking 块",
+				detail+"：回传的 thinking 没进上下文（被网关剥掉，或路由到了别的型号）", ClassWrapper, 2)
+		}
+		return r.finish("篡改签名被接受，但回传的 thinking 没有进上下文，签名校验没有到达后端")
+	}
+
+	r.diagnose("篡改块原样到达后端", true, fmt.Sprintf("原样回传输入 %d，篡改请求输入 %d", posIn, negIn))
+	r.Status = StatusSuspicious
+	r.AuthCapReason = "篡改后的 thinking 签名原样到达后端却被接受，后端未做签名校验"
+	r.addEvidence("signature_not_verified", "篡改签名被接受", "篡改块原样到达后端且未被拒绝", ClassWrapper, 4)
+	return r.finish("原样签名可续写，但篡改签名也被接受，完整性可疑")
+}
+
+// thinkingArrived 原样回传那次的输入里有没有回传的 thinking。
+//
+// 续写的输入 = 首轮输入 + 回传的 assistant 轮 + 新的一问。thinking 留在上下文时，回传的 assistant
+// 轮按首轮的全部输出（思考 + 正文）计费；被剥掉或丢掉时只剩正文。拆得出 thinking_tokens 就看扣掉
+// 正文后剩下的是否盖得住一半思考；拆不出就看是否不少于首轮全部输出。
+func thinkingArrived(st *runState, posIn int) (bool, string) {
+	if !st.profile.KeepsThinking {
+		return false, "该型号不把历史轮次的 thinking 放进上下文（Sonnet 4.5、Haiku 4.5 及更早），计量上无从确认篡改块到过后端"
+	}
+	u := st.thinkingUsage
+	extra := posIn - u.input
+	if !u.split {
+		return extra >= u.output, fmt.Sprintf("原样回传的输入比首轮多 %d，首轮输出 %d（渠道没拆分 thinking_tokens）", extra, u.output)
+	}
+	if u.thoughts < minArrivalThoughts {
+		return false, fmt.Sprintf("取签名那次只思考了 %d token，计量上分不清它有没有进上下文", u.thoughts)
+	}
+	carried := extra - (u.output - u.thoughts)
+	return carried*2 >= u.thoughts, fmt.Sprintf("原样回传的输入比首轮多 %d，扣掉首轮正文 %d 还剩 %d，首轮思考 %d",
+		extra, u.output-u.thoughts, carried, u.thoughts)
+}
+
+// sharesSignature 两次响应里有没有同一份签名。
+func sharesSignature(a, b []string) bool {
+	for _, x := range a {
+		for _, y := range b {
+			if x == y {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// tamperSignature 深拷贝 content 并篡改指定 thinking 块的签名（结构保持有效，见 tamperSig）。
 func tamperSignature(blocks []any, idx int) []any {
 	if idx < 0 || idx >= len(blocks) {
 		return nil
@@ -416,11 +572,7 @@ func tamperSignature(blocks []any, idx int) []any {
 			if sig == "" {
 				return nil
 			}
-			first := "A"
-			if sig[0] == 'A' {
-				first = "B"
-			}
-			cp["signature"] = first + sig[1:]
+			cp["signature"] = tamperSig(sig)
 		}
 		out = append(out, cp)
 	}

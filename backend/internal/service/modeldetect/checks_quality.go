@@ -149,16 +149,6 @@ func responseThinkingStats(body map[string]any) (thinkingChars, signatureChars i
 	return
 }
 
-func cacheChainOutcome(firstRead, firstCreation, secondRead int) (string, bool) {
-	if firstRead == 0 && firstCreation == 0 && secondRead == 0 {
-		return StatusInconclusive, false
-	}
-	if secondRead != firstRead+firstCreation {
-		return StatusSuspicious, false
-	}
-	return StatusPassed, true
-}
-
 func fableTwinSuspicious(probes []fableProbe) bool {
 	if len(probes) != 4 {
 		return false

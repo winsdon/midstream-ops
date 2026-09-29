@@ -326,10 +326,14 @@ func checkHelloEntropy(ctx context.Context, c *Client, _ *runState) *CheckResult
 
 func helloEntropyPassed(unique int) bool { return unique >= 4 }
 
-// checkSlope 输出 token 与词数之比。
-// 正常在 1.2-2.5；显著偏高说明渠道在未被请求的情况下强制注入了 thinking，
-// 把用户的 max_tokens 烧在看不见的地方。
-func checkSlope(ctx context.Context, c *Client, _ *runState) *CheckResult {
+// checkSlope 正文 token 与词数之比。
+//
+// 输出 token 先扣掉 usage 拆出的 thinking_tokens（官方字段）再比：Opus / Sonnet 5 起与 Fable 5
+// 起不传 thinking 也会思考，思考本就计入输出，不扣就把官方行为当成「强制注入 thinking」——同一题在
+// 干净的 Bedrock 渠道上思考也有上千 token。扣完正文仍明显偏高，说明有看不见的输出被计了费。
+// 真正的「强制 thinking」是默认不思考的型号（Opus 4.6–4.8、Sonnet 4.6 及更早）在没请求时返回了
+// thinking 块，单独判。
+func checkSlope(ctx context.Context, c *Client, st *runState) *CheckResult {
 	meta, _ := checkByID("slope")
 	r := newResult(meta)
 	ex := c.Post(ctx, KindMessages, map[string]any{
@@ -344,19 +348,41 @@ func checkSlope(ctx context.Context, c *Client, _ *runState) *CheckResult {
 		r.diagnose("斜率请求成功", false, describeFailure(ex))
 		return r.finish("斜率请求失败")
 	}
+
+	thought := hasThinkingOutput(ex.JSON)
+	if thought && st.profile.Recognized && !st.profile.DefaultThinking {
+		r.addEvidence("forced_thinking", "未请求 thinking 却返回了 thinking 块",
+			"该型号默认不思考，是网关替调用方打开了 thinking（思考按输出计费）", ClassWrapper, 2)
+	}
+
 	text := contentText(ex.JSON)
 	words := len(strings.Fields(text))
-	out := intOf(usageOf(ex.JSON)["output_tokens"])
+	usage := usageOf(ex.JSON)
+	out := intOf(usage["output_tokens"])
 	if words == 0 || out == 0 {
 		r.Status = StatusInconclusive
 		return r.finish("无法计算斜率（无文本或无用量）")
 	}
-	ratio := float64(out) / float64(words)
-	ok := ratio >= 1.0 && ratio <= 3.0
-	r.assert("token/词 比例在正常区间", ok, fmt.Sprintf("%.2f tok/word（%d tokens / %d 词）", ratio, out, words))
-	if ratio > 3.0 {
-		r.addEvidence("forced_thinking", "输出 token 远超可见文本",
-			fmt.Sprintf("%.2f tok/word，疑似强制注入 thinking", ratio), ClassWrapper, 2)
+	thinking, split := thinkingTokens(usage)
+	if thought && !split {
+		r.Status = StatusInconclusive
+		r.diagnose("usage 拆出了 thinking_tokens", false, "响应含 thinking 块，但 usage 没有 output_tokens_details.thinking_tokens，分不开思考与正文")
+		return r.finish("无法计算正文斜率（usage 未拆分 thinking）")
 	}
-	return r.finish(fmt.Sprintf("%.2f tok/word", ratio))
+
+	visible := out - thinking
+	ratio := float64(visible) / float64(words)
+	detail := fmt.Sprintf("%.2f tok/word（正文 %d tokens = 输出 %d − thinking %d，%d 词）", ratio, visible, out, thinking, words)
+	if ratio < 1.0 {
+		// 每个词至少一个 token：比值不到 1 是 usage 自相矛盾（thinking 报多了或输出报少了），不是斜率问题。
+		r.Status = StatusInconclusive
+		r.diagnose("usage 与正文自洽", false, detail)
+		return r.finish("usage 与正文对不上，无法计算斜率")
+	}
+	r.assert("正文 token/词 比例在正常区间", ratio <= 3.0, detail)
+	if ratio > 3.0 {
+		r.addEvidence("hidden_output", "扣掉 thinking 后正文 token 仍远超可见文本",
+			fmt.Sprintf("%.2f tok/word：有看不见的输出被计入 output_tokens", ratio), ClassWrapper, 2)
+	}
+	return r.finish(fmt.Sprintf("%.2f tok/word（已扣 thinking %d）", ratio, thinking))
 }

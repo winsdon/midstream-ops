@@ -8,13 +8,23 @@
     <div v-if="check" class="space-y-5">
       <!-- 结论 -->
       <div class="flex flex-wrap items-center gap-2">
-        <Badge :variant="statusVariant(check.status)">{{ t(`detect.status.${check.status}`) }}</Badge>
+        <Badge :variant="checkStatusVariant(check)">{{ t(statusLabelKey(check)) }}</Badge>
         <span class="text-sm text-gray-700 dark:text-dark-200">{{ check.summary }}</span>
         <span v-if="check.status !== 'running'" class="ml-auto text-xs text-gray-400">{{ (check.duration_ms / 1000).toFixed(2) }}s</span>
       </div>
       <p v-if="check.auth_cap_reason" class="rounded-xl bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-900/20 dark:text-red-400">
         {{ check.auth_cap_reason }}
       </p>
+      <p v-if="check.informational" class="rounded-xl bg-gray-50 px-3 py-2 text-xs text-gray-500 dark:bg-dark-800/50 dark:text-dark-400">
+        {{ t('detect.informationalHint') }}
+      </p>
+      <section v-if="check.prompt" class="rounded-xl border border-gray-100 p-3 dark:border-dark-800">
+        <h4 class="text-xs font-semibold uppercase tracking-wider text-gray-400">{{ t('detect.iqPromptUsed') }}</h4>
+        <p class="mt-1 whitespace-pre-wrap break-words text-xs leading-relaxed text-gray-600 dark:text-dark-300">{{ check.prompt }}</p>
+      </section>
+
+      <!-- 模型产出（智商题的作品与回复） -->
+      <DetectCheckOutput :output="check.output" :title="`${targetName} · ${check.title}`" />
 
       <!-- 断言 -->
       <section v-if="check.assertions?.length" class="space-y-2">
@@ -84,7 +94,8 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import Badge from '@/components/common/Badge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import DetectExchangeList from '@/components/detect/DetectExchangeList.vue'
-import { isRequestFailed, labelVariant, statusVariant } from '@/utils/detectModel'
+import DetectCheckOutput from '@/components/detect/DetectCheckOutput.vue'
+import { checkStatusVariant, isRequestFailed, labelVariant, statusLabelKey } from '@/utils/detectModel'
 import type { DetectCheckResult } from '@/types/detect'
 
 const { t } = useI18n()
