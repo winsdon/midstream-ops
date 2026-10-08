@@ -7,6 +7,12 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
+      path: '/embed/pelican',
+      name: 'embed-pelican',
+      component: () => import('@/views/embed/PelicanEmbedPage.vue'),
+      meta: { public: true }
+    },
+    {
       path: '/login',
       name: 'login',
       component: () => import('@/views/Login.vue'),
@@ -40,6 +46,12 @@ const router = createRouter({
       path: '/',
       component: () => import('@/views/Layout.vue'),
       children: [
+        {
+          path: 'pelican',
+          name: 'pelican',
+          component: () => import('@/views/Pelican.vue'),
+          meta: { titleKey: 'pelican.title', descriptionKey: 'pelican.adminIntro' }
+        },
         {
           path: '',
           name: 'dashboard',

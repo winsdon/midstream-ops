@@ -1,4 +1,7 @@
+import { pelicanZh } from './pelican'
+
 export default {
+  pelican: pelicanZh,
   app: { title: 'Sub2API 监控端', subtitle: '供应商余额 / 收益 / 稳定性监控' },
   nav: {
     dashboard: '仪表盘',

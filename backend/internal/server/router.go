@@ -17,21 +17,23 @@ import (
 
 // Handlers 聚合所有处理器（随功能扩展逐步填充）。
 type Handlers struct {
-	Auth       *handler.AuthHandler
-	Dashboard  *handler.DashboardHandler
-	Provider   *handler.ProviderHandler
-	OpCost     *handler.OperatingCostHandler
-	Stats      *handler.StatsHandler
-	Rate       *handler.RateHandler
-	Stability  *handler.StabilityHandler
-	Detect     *handler.ModelDetectHandler
-	Settings   *handler.SettingsHandler
-	Pricing    *handler.PricingHandler
-	Provision  *handler.ProvisionHandler
-	Plaza      *handler.PlazaHandler
-	Credit     *handler.CreditHandler
-	EmbedKyc   *handler.EmbedKycHandler
-	EmbedMedia *handler.EmbedMediaHandler
+	Auth         *handler.AuthHandler
+	Dashboard    *handler.DashboardHandler
+	Provider     *handler.ProviderHandler
+	OpCost       *handler.OperatingCostHandler
+	Stats        *handler.StatsHandler
+	Rate         *handler.RateHandler
+	Stability    *handler.StabilityHandler
+	Detect       *handler.ModelDetectHandler
+	Pelican      *handler.PelicanHandler
+	EmbedPelican *handler.PelicanHandler
+	Settings     *handler.SettingsHandler
+	Pricing      *handler.PricingHandler
+	Provision    *handler.ProvisionHandler
+	Plaza        *handler.PlazaHandler
+	Credit       *handler.CreditHandler
+	EmbedKyc     *handler.EmbedKycHandler
+	EmbedMedia   *handler.EmbedMediaHandler
 	// EmbedDev 是本地联调用的 token 签发器，仅在 plaza.dev_mode 开启时非 nil。
 	EmbedDev *handler.EmbedDevHandler
 
@@ -57,7 +59,7 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 	//
 	// 判据与下方嵌入路由的注册条件保持一致：嵌入页全部关闭时不挂载，否则会对未注册的
 	// /embed/* 路径下发 frame-ancestors 'none'，让「功能没开」看起来像「白名单没配」。
-	if h.Plaza != nil || h.EmbedKyc != nil || h.EmbedMedia != nil {
+	if h.Plaza != nil || h.EmbedKyc != nil || h.EmbedMedia != nil || h.EmbedPelican != nil {
 		r.Use(middleware.EmbedFrameHeaders(h.EmbedFrameOrigin))
 	}
 
@@ -97,6 +99,15 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 		v1.POST("/auth/login", h.Auth.Login)
 		v1.POST("/auth/refresh", h.Auth.Refresh)
 		v1.POST("/auth/logout", h.Auth.Logout)
+
+		if h.EmbedPelican != nil {
+			pelican := v1.Group("/embed/pelican")
+			pelican.POST("/session", h.EmbedPelican.CreateSession)
+			pelican.Use(middleware.EmbedSession(h.EmbedSessions))
+			pelican.GET("/results", h.EmbedPelican.PublicList)
+			pelican.GET("/results/:id", h.EmbedPelican.PublicDetail)
+			pelican.GET("/filters", h.EmbedPelican.Filters)
+		}
 
 		// 模型广场（sub2api iframe 嵌入，独立于管理员 JWT 鉴权体系）。
 		// 换会话端点必须保持免鉴权：此时用户还没有 monitor 会话，
@@ -161,6 +172,20 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 		auth.Use(middleware.Auth(authSvc))
 		{
 			auth.GET("/auth/me", h.Auth.Me)
+
+			if h.Pelican != nil {
+				p := auth.Group("/pelican")
+				p.GET("/config", h.Pelican.Config)
+				p.PUT("/config", h.Pelican.SaveConfig)
+				p.GET("/groups", h.Pelican.Groups)
+				p.POST("/batches", h.Pelican.Start)
+				p.GET("/batches/:id", h.Pelican.Batch)
+				p.POST("/batches/:id/cancel", h.Pelican.Cancel)
+				p.GET("/results", h.Pelican.List)
+				p.GET("/results/:id", h.Pelican.Detail)
+				p.POST("/results/:id/retry", h.Pelican.Retry)
+				p.POST("/results/actions/:action", h.Pelican.Mutate)
+			}
 
 			if h.Dashboard != nil {
 				auth.GET("/dashboard/summary", h.Dashboard.Summary)

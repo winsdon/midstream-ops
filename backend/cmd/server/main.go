@@ -98,6 +98,13 @@ func main() {
 	detectSvc := service.NewModelDetectServiceWithBaseline(detectRepo, baselineRepo, pg, linkRepo, providerRepo)
 	// 智商测试（鹈鹕 / 糖果题）与真伪检测共用作业管线，但单独留痕
 	detectSvc.SetIQRepo(repository.NewModelIQRepo(store))
+	pelicanRepo := repository.NewPelicanRepo(store)
+	if err := pelicanRepo.Recover(context.Background()); err != nil {
+		log.Fatalf("恢复鹈鹕测试任务失败: %v", err)
+	}
+	pelicanSvc := service.NewPelicanService(pelicanRepo, settingsRepo, pg)
+	defer pelicanSvc.Close()
+	pelicanHandler := handler.NewPelicanHandler(pelicanSvc)
 
 	// 系统设置（策略/通知，monitor 库持久化 + 热更新）
 	settingsSvc, err := service.NewSettingsService(settingsRepo)
@@ -158,6 +165,7 @@ func main() {
 	var plazaHandler *handler.PlazaHandler
 	var embedKycHandler *handler.EmbedKycHandler
 	var embedMediaHandler *handler.EmbedMediaHandler
+	var embedPelicanHandler *handler.PelicanHandler
 	var mediaSvc *service.MediaService
 	var embedSessions *service.EmbedSessionStore
 	var embedDevHandler *handler.EmbedDevHandler
@@ -165,6 +173,8 @@ func main() {
 		embedSessions = service.NewEmbedSessionStore(time.Duration(cfg.Plaza.SessionTTLMinutes) * time.Minute)
 		defer embedSessions.Close()
 		verifier := service.NewSub2apiTokenVerifier(cfg.Plaza.Sub2apiJWTSecret)
+		pelicanHandler.SetIssuer(handler.NewEmbedSessionIssuer(verifier, embedSessions, "pelican"))
+		embedPelicanHandler = pelicanHandler
 		plazaSvc := service.NewPlazaService(
 			pg, probeRepo,
 			cfg.Plaza.MetricsHours,
@@ -239,6 +249,8 @@ func main() {
 		Rate:             handler.NewRateHandler(rateSvc),
 		Stability:        handler.NewStabilityHandler(probeSvc, pg, cfg),
 		Detect:           detectHandler,
+		Pelican:          pelicanHandler,
+		EmbedPelican:     embedPelicanHandler,
 		Settings:         handler.NewSettingsHandler(settingsSvc, notifier),
 		Pricing:          handler.NewPricingHandler(pricingSvc, rateRepo, pg),
 		Provision:        handler.NewProvisionHandler(provisionSvc),

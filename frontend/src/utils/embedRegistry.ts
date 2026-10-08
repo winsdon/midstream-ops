@@ -30,6 +30,13 @@ export interface EmbedPageDef {
 
 export const EMBED_PAGES: readonly EmbedPageDef[] = [
   {
+    path: '/embed/pelican',
+    labelKey: 'pelican.title',
+    descriptionKey: 'pelican.intro',
+    icon: 'play',
+    dependsOn: 'plaza.enabled'
+  },
+  {
     path: '/embed/plaza',
     labelKey: 'embedHub.plaza',
     descriptionKey: 'embedHub.plazaDesc',

@@ -1,4 +1,7 @@
+import { pelicanEn } from './pelican'
+
 export default {
+  pelican: pelicanEn,
   app: { title: 'Sub2API Monitor', subtitle: 'Provider balance / revenue / stability monitoring' },
   nav: {
     dashboard: 'Dashboard',
