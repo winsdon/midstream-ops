@@ -42,7 +42,7 @@ midstream-ops（代码内部标识 `sub2api-account-monitor`）是面向 AI API 
 - **收益统计** — 按供应商 / 按分组两维度聚合收益·成本·利润·请求数，可展开子账号明细，支持自定义日期范围
 - **分组倍率** — 变更驱动快照追踪上游与本站分组倍率，展示涨跌幅与生效时长，含变更时间线
 - **调价映射** — 上游倍率 → 本站倍率联动（`目标 = 上游 × 系数 + 偏移`），支持自动调价、人工修改冲突检测、审计留痕
-- **稳定性盯盘** — 被动统计（真实流量分位数）+ 主动探测（TTFT / 成功率）双口径，实时窗口下探到 5 分钟，六状态健康机
+- **稳定性盯盘** — 被动统计（真实流量分位数）+ 主动探测（TTFT / 成功率）双口径，实时窗口下探到 5 分钟，六状态健康机；SLA 默认可排除 400/403/429/529（页面上可关）
 - **模型检测** — 对上游 Claude 渠道做指纹检测：官方 Max 订阅号池 / 官方 API Key / AWS Bedrock / Kiro / Vertex / 包装伪装六选一，并给出独立的「后端是不是真 Claude」真实性评分，历史留痕可对照；另有**智商测试**模式（鹈鹕 SVG 动画 + 糖果推理题）横向对照渠道是否降智
 - **授信台账** — 客户垫付应收的人工台账，只追加分录、记错走冲正，敞口分级告警；KYC 实名资料加密落库，支持客户自助填报 + 审核流
 - **生图 / 生视频** — 嵌入 sub2api 的自助生成页：文生图 / 图生图 / 文生视频 / 图生视频，用用户自己的 Key 调网关，提交前展示按分组定价与倍率折算的预估费用，视频强制二次确认（提交即扣费不退款）；产物转存 Cloudflare R2，刷新页面后仍可查看与预览
@@ -315,7 +315,7 @@ midstream-ops/
 | POST            | `/api/v1/pricing/mappings/:id/apply`                      | 手动应用（GET+PUT-merge + 人工冲突检测）                   |
 | POST            | `/api/v1/pricing/mappings/:id/resolve-conflict`           | 确认冲突，恢复自动调价资格                                  |
 | GET             | `/api/v1/pricing/mappings/:id/actions`                    | 调价审计历史                                         |
-| GET             | `/api/v1/stability/passive?minutes=`                      | 被动稳定性（含 SLA / `error_count` / `groups` / 归属）   |
+| GET             | `/api/v1/stability/passive?minutes=&exclude_status=`      | 被动稳定性（含 SLA / `error_count` / `groups` / 归属）。`exclude_status` 默认 `400,403,429,529` 不计失败，传空串关闭 |
 | GET             | `/api/v1/stability/probes`                                | 探测记录（分页）                                       |
 | GET             | `/api/v1/stability/probes/summary?minutes=`               | 探测汇总（含归属与 `groups`；`last_success` 限窗口内）        |
 | GET             | `/api/v1/stability/probes/trend?account_id=&minutes=`     | 单账号探测趋势                                        |

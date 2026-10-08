@@ -5,6 +5,8 @@ import {
   PROBE_INTERVAL_MINUTES,
   RATE_BANDS,
   PASSIVE_RATE_BANDS,
+  IGNORED_STATUS_CODES,
+  excludeStatusParam,
   SELECT_ALL,
   SELECT_EMPTY,
   healthRank,
@@ -52,6 +54,23 @@ describe('窗口档位', () => {
     expect(PROBE_INTERVAL_MINUTES).toBe(15)
     // 至少有一档短于探测间隔，否则提示永远不会触发、常量就没意义
     expect(WINDOW_OPTIONS.some((m) => m < PROBE_INTERVAL_MINUTES)).toBe(true)
+  })
+})
+
+describe('排除状态码', () => {
+  it('默认排除的就是 400/403/429/529', () => {
+    expect([...IGNORED_STATUS_CODES]).toEqual([400, 403, 429, 529])
+  })
+
+  it('开启时拼成逗号分隔的 exclude_status', () => {
+    expect(excludeStatusParam(true)).toBe('400,403,429,529')
+  })
+
+  it('关掉时给空串而不是 undefined', () => {
+    // 空串 = 显式「不过滤」，undefined = 缺省走后端默认集合。
+    // 两者若混同，关开关会静默无效。
+    expect(excludeStatusParam(false)).toBe('')
+    expect(excludeStatusParam(false)).not.toBe(excludeStatusParam(true))
   })
 })
 

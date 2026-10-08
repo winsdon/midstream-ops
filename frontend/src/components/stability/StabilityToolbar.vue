@@ -35,6 +35,19 @@
         </button>
       </div>
 
+      <!-- 排除状态码改的是 SLA 的分母（后端 SQL 里过滤），故不能与本地筛选同列混排：
+           这里只翻参数，取数由 Stability.vue 的 watch 重新发起。 -->
+      <label
+        class="flex cursor-pointer items-center gap-1.5 text-xs text-gray-500 dark:text-dark-400"
+        :title="t('stability.excludeStatusHint')"
+      >
+        <ToggleSwitch
+          :model-value="excludeNoise"
+          @update:model-value="emit('update:excludeNoise', $event)"
+        />
+        <span class="whitespace-nowrap">{{ t('stability.excludeStatus') }}</span>
+      </label>
+
       <!-- 搜索不防抖：本地过滤几十行。也不在此 trim：searchStabilityRows 已经 trim。 -->
       <div class="relative">
         <Icon name="search" size="sm" class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -73,6 +86,7 @@ import {
 } from '@/utils/stabilityModel'
 import type { GroupingMode } from '@/utils/stabilitySections'
 import Select from '@/components/common/Select.vue'
+import ToggleSwitch from '@/components/common/ToggleSwitch.vue'
 import Icon from '@/components/icons/Icon.vue'
 
 const props = defineProps<{
@@ -84,6 +98,8 @@ const props = defineProps<{
   group: string | null
   keyword: string
   minutes: WindowMinutes
+  /** 是否把 400/403/429/529 排除出失败数与 SLA 分母（后端过滤） */
+  excludeNoise: boolean
 }>()
 
 const emit = defineEmits<{
@@ -92,6 +108,7 @@ const emit = defineEmits<{
   (e: 'update:group', v: string | null): void
   (e: 'update:keyword', v: string): void
   (e: 'update:minutes', v: WindowMinutes): void
+  (e: 'update:excludeNoise', v: boolean): void
 }>()
 
 const { t } = useI18n()

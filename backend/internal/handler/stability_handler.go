@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"sub2api-account-monitor/internal/config"
@@ -119,24 +120,26 @@ func (h *StabilityHandler) SetHealthDisabled(c *gin.Context) {
 	response.Success(c, gin.H{"account_id": accountID, "disabled": req.Disabled})
 }
 
-// Passive GET /stability/passive?minutes=
+// Passive GET /stability/passive?minutes=&exclude_status=400,403,429,529
 // 被动口径：真实流量的耗时/首字分位数 + SLA（失败来自 ops_error_logs，排除业务限制）。
 // 请求数只计成功（usage_logs）；失败只进 error_count 与 SLA 分母，不进请求数。
+// exclude_status 里的状态码既不计失败数也不进 SLA 分母，见 parseIgnoredStatusCodes。
 func (h *StabilityHandler) Passive(c *gin.Context) {
 	if !h.pg.Available() {
 		response.ServiceUnavailable(c, "线上数据库暂不可用")
 		return
 	}
 	window, minutes := parseWindow(c, defaultWindowMinutes)
+	ignored := parseIgnoredStatusCodes(c)
 	now := time.Now().UTC().Truncate(time.Second)
 	since := now.Add(-window)
-	rows, err := h.pg.PassiveStability(c.Request.Context(), since)
+	rows, err := h.pg.PassiveStability(c.Request.Context(), since, ignored)
 	if err != nil {
 		response.InternalError(c, "查询失败: "+err.Error())
 		return
 	}
 	byAcct := map[int64][]timelineDTO{}
-	if points, tlErr := h.pg.PassiveStabilityTimeline(c.Request.Context(), since, timelineBucket(minutes)); tlErr == nil {
+	if points, tlErr := h.pg.PassiveStabilityTimeline(c.Request.Context(), since, timelineBucket(minutes), ignored); tlErr == nil {
 		byAcct = groupTimeline(points)
 	}
 	linkMap, nameByID := h.providerLookup(c.Request.Context())
@@ -166,10 +169,11 @@ func (h *StabilityHandler) Passive(c *gin.Context) {
 		out = append(out, item)
 	}
 	response.Success(c, gin.H{
-		"minutes":      minutes,
-		"generated_at": now.Format(time.RFC3339),
-		"items":        out,
-		"note":         "SLA 排除业务限制；请求数仅计成功；分位数仅来自成功请求",
+		"minutes":               minutes,
+		"generated_at":          now.Format(time.RFC3339),
+		"items":                 out,
+		"excluded_status_codes": ignored,
+		"note":                  "SLA 排除业务限制与 excluded_status_codes；请求数仅计成功；分位数仅来自成功请求",
 	})
 }
 
@@ -372,6 +376,52 @@ func attachGroups(item gin.H, accountID int64, groups map[int64][]string) {
 	cp := append([]string(nil), gs...)
 	sort.Strings(cp)
 	item["groups"] = cp
+}
+
+// defaultIgnoredStatusCodes 稳定性页默认不计入失败的 HTTP 状态码：
+// 400 参数错 / 403 无权限 / 429 限流 / 529 上游过载。
+//
+// 这四类要么由调用方触发、要么是配额与瞬时过载，和「上游账号能不能干活」关系很弱；
+// 计进 SLA 会让高频账号长期挂着一条与服务质量无关的失败尾巴，把真正该看的
+// 5xx 故障淹没。默认开启，可在页面上关掉回看旧口径。
+var defaultIgnoredStatusCodes = []int32{400, 403, 429, 529}
+
+// parseIgnoredStatusCodes 解析 ?exclude_status=400,403。
+//
+// 三种输入三种语义，刻意不合并：
+//   - 参数缺省 → 默认集合（默认开启）
+//   - 显式空串 → 空集合，即不过滤任何状态码（页面关掉开关时走这条）
+//   - 非空 → 逗号分隔解析；非法 token 丢弃，但若一个合法状态码都没解析出来，
+//     退回默认集合而不是空集合 —— 手抖传了 exclude_status=abc 不该静默
+//     把默认过滤关掉，那会让 SLA 悄悄变一个口径。
+func parseIgnoredStatusCodes(c *gin.Context) []int32 {
+	raw, ok := c.GetQuery("exclude_status")
+	if !ok {
+		return defaultIgnoredStatusCodes
+	}
+	if strings.TrimSpace(raw) == "" {
+		return []int32{}
+	}
+	out := make([]int32, 0, len(defaultIgnoredStatusCodes))
+	seen := make(map[int32]bool, len(defaultIgnoredStatusCodes))
+	for _, part := range strings.Split(raw, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(part))
+		// 只收 HTTP 状态码区间内的值：这个参数的名字就是「HTTP 状态码」，
+		// 让 0 / 1000 这类非 HTTP 取值悄悄生效只会让口径难以复述。
+		if err != nil || n < 100 || n > 599 {
+			continue
+		}
+		code := int32(n)
+		if seen[code] {
+			continue
+		}
+		seen[code] = true
+		out = append(out, code)
+	}
+	if len(out) == 0 {
+		return defaultIgnoredStatusCodes
+	}
+	return out
 }
 
 // slaPercent 流量 SLA（0–100）。成功+失败均为 0 时返回 nil，前端渲染成「-」。

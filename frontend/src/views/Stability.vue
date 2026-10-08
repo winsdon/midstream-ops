@@ -6,6 +6,7 @@
       v-model:group="groupFilter"
       v-model:keyword="keyword"
       v-model:minutes="minutes"
+      v-model:exclude-noise="excludeNoise"
       :provider-opts="providerOpts"
       :group-opts="groupOpts"
     >
@@ -97,6 +98,7 @@ import {
   providerOptions,
   groupOptions,
   rowGrade,
+  excludeStatusParam,
   PASSIVE_RATE_BANDS,
   DEFAULT_WINDOW_MINUTES,
   type FilterableRow,
@@ -146,6 +148,8 @@ const minutes = ref<WindowMinutes>(DEFAULT_WINDOW_MINUTES)
 const providerFilter = ref<string | null>(null)
 const groupFilter = ref<string | null>(null)
 const keyword = ref('')
+/** 默认忽略 400/403/429/529 的失败：过滤在后端做，切换要重新拉一次。 */
+const excludeNoise = ref(true)
 
 const passive = ref<PassiveRow[]>([])
 const passiveLoading = ref(false)
@@ -295,7 +299,7 @@ function openPassiveCell(sec: StabilitySection<PassiveRow>, index: number) {
 async function loadPassive() {
   passiveLoading.value = true
   try {
-    const res = await stabilityApi.passive(minutes.value)
+    const res = await stabilityApi.passive(minutes.value, excludeStatusParam(excludeNoise.value))
     generatedAt.value = res.generated_at || new Date().toISOString()
     passive.value = (res.items || []).map((r) => {
       const success = r.success_count ?? r.requests ?? 0
@@ -323,6 +327,11 @@ async function load() {
 }
 
 watch(minutes, () => {
+  void load()
+})
+
+// 排除状态码改变了 SLA 的分母，必须重新取数，不能只在前端重算。
+watch(excludeNoise, () => {
   void load()
 })
 

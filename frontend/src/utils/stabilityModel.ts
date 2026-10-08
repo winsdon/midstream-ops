@@ -17,6 +17,23 @@ export const WINDOW_OPTIONS: readonly WindowMinutes[] = [5, 30, 60, 360, 1440]
 export const DEFAULT_WINDOW_MINUTES: WindowMinutes = 30
 
 /**
+ * 稳定性页默认不计入失败的 HTTP 状态码：400 参数错 / 403 无权限 / 429 限流 /
+ * 529 上游过载。要么由调用方触发、要么是配额与瞬时过载，和「上游账号能不能
+ * 干活」关系很弱；计进 SLA 会让高频账号长期挂着与服务质量无关的失败尾巴。
+ *
+ * 过滤在后端 SQL 里做（口径必须只有一处），这里只负责把勾选项翻成 query 参数。
+ */
+export const IGNORED_STATUS_CODES = [400, 403, 429, 529] as const
+
+/**
+ * `exclude_status` 参数值。空串是**显式**的「不排除任何状态码」——
+ * 后端把「参数缺省」和「参数为空」区分对待，后者才是关掉开关。
+ */
+export function excludeStatusParam(enabled: boolean): string {
+  return enabled ? IGNORED_STATUS_CODES.join(',') : ''
+}
+
+/**
  * Select 不能用 '' 同时表示「全部」和「未归属/未分组」桶。
  * 工具条把这两个哨兵映射回 filterRows 的 null / ''。
  */

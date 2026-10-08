@@ -387,12 +387,25 @@ export const provisionApi = {
 // ---- Stability ----
 // 窗口参数统一用 minutes：稳定性页档位下探到 5 分钟，整数小时表达不了。
 export const stabilityApi = {
-  passive: (minutes = 1440) =>
-    unwrap<{ minutes: number; generated_at?: string; items: PassiveRow[]; note?: string }>(
-      http.get<ApiResponse<{ minutes: number; generated_at?: string; items: PassiveRow[]; note?: string }>>(
-        '/stability/passive',
-        { params: { minutes } }
-      )
+  // excludeStatus 直接透传成 exclude_status：'' 表示显式不排除（关掉开关），
+  // undefined 走后端默认集合。参数拼接见 stabilityModel.excludeStatusParam。
+  passive: (minutes = 1440, excludeStatus?: string) =>
+    unwrap<{
+      minutes: number
+      generated_at?: string
+      items: PassiveRow[]
+      excluded_status_codes?: number[]
+      note?: string
+    }>(
+      http.get<
+        ApiResponse<{
+          minutes: number
+          generated_at?: string
+          items: PassiveRow[]
+          excluded_status_codes?: number[]
+          note?: string
+        }>
+      >('/stability/passive', { params: { minutes, exclude_status: excludeStatus } })
     ),
   probes: (params: { account_id?: number; page?: number; page_size?: number }) =>
     unwrap<PaginatedData<ProbeResult>>(http.get<ApiResponse<PaginatedData<ProbeResult>>>('/stability/probes', { params })),

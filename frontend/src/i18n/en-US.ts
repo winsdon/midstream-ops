@@ -571,7 +571,8 @@ export default {
   stability: {
     passive: 'Passive',
     active: 'Active Probe',
-    passiveHint: 'Real-traffic percentiles and SLA (failures from error logs, excluding business limits)',
+    passiveHint:
+      'Real-traffic percentiles and SLA (failures from error logs, excluding business limits and 400/403/429/529)',
     win5: '5m',
     win30: '30m',
     win60: '1h',
@@ -582,10 +583,12 @@ export default {
     filterAllGroups: 'All groups',
     filterAllProviders: 'All providers',
     filterAllHealth: 'All health',
+    excludeStatus: 'Exclude 400/403/429/529',
+    excludeStatusHint: 'Not counted as failures or in the SLA denominator: bad request / forbidden / rate limited / upstream overload. Turn off to restore the old formula (backend filtering)',
     expandAll: 'Expand all',
     collapseAll: 'Collapse all',
     sla: 'SLA',
-    slaHint: 'Success / (success + non-business-limit failures). Quota/balance limits are not counted as faults',
+    slaHint: 'Success / (success + non-business-limit failures). Quota/balance limits are not counted as faults; 400/403/429/529 are excluded by default',
     errorsShort: '{n} failed',
     sectionAccounts: '{n} accounts',
     sectionRequests: '{n} requests',

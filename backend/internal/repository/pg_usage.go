@@ -194,12 +194,27 @@ type PassiveStabilityRow struct {
 	CacheReadTokens int64
 }
 
+// normalizeIgnoredStatusCodes 保证传给 PG 的是非 nil 切片。
+//
+// nil 切片会被 pgx 编码成 SQL NULL，而 `x <> ALL(NULL)` 求值为 NULL ——
+// 那会把 error_agg 里所有行静默滤掉，失败数恒为 0、SLA 恒为 100。
+// 空数组才是「不排除任何状态码」。
+func normalizeIgnoredStatusCodes(codes []int32) []int32 {
+	if codes == nil {
+		return []int32{}
+	}
+	return codes
+}
+
 // PassiveStability 近 N 分钟按账号的耗时/首字分位数与 SLA 成败计数。
 //
 // 成功率口径对齐 sub2api 运维监控：分母排除 is_business_limited。
+// ignoredStatusCodes 里的状态码同样不计入失败数（空 = 不过滤）：400/403/429/529
+// 这类由调用方或配额触发的响应不代表上游服务故障，计进 SLA 会让活跃账号
+// 长期挂着一条与服务质量无关的失败尾巴。
 // usage_logs 只记录成功请求，失败在 ops_error_logs，两表 FULL OUTER JOIN
 // 后在应用层合成 —— 窗口内只有失败的账号也必须出现，否则 100% 挂掉反而从表上消失。
-func (p *PG) PassiveStability(ctx context.Context, since time.Time) ([]PassiveStabilityRow, error) {
+func (p *PG) PassiveStability(ctx context.Context, since time.Time, ignoredStatusCodes []int32) ([]PassiveStabilityRow, error) {
 	rows, err := p.pool.Query(ctx, `
 		WITH usage_agg AS (
 		    SELECT ul.account_id,
@@ -224,6 +239,7 @@ func (p *PG) PassiveStability(ctx context.Context, since time.Time) ([]PassiveSt
 		    WHERE created_at >= $1
 		      AND is_business_limited = FALSE
 		      AND COALESCE(status_code, 0) >= 400
+		      AND COALESCE(status_code, 0) <> ALL($2::int[])
 		      AND account_id IS NOT NULL
 		    GROUP BY 1
 		)
@@ -244,7 +260,7 @@ func (p *PG) PassiveStability(ctx context.Context, since time.Time) ([]PassiveSt
 		       COALESCE(u.cache_read_tokens, 0)
 		FROM usage_agg u
 		FULL OUTER JOIN error_agg e ON e.account_id = u.account_id
-		LEFT JOIN accounts a ON a.id = COALESCE(u.account_id, e.account_id)`, since)
+		LEFT JOIN accounts a ON a.id = COALESCE(u.account_id, e.account_id)`, since, normalizeIgnoredStatusCodes(ignoredStatusCodes))
 	if err != nil {
 		return nil, err
 	}
@@ -283,9 +299,10 @@ type PassiveTimelinePoint struct {
 
 // PassiveStabilityTimeline 按账号 + date_bin 分桶。
 //
-// 口径与 PassiveStability 相同：成功来自 usage_logs，失败来自 ops_error_logs
-// 且排除业务限制。分位数只来自成功请求。origin 取 since。
-func (p *PG) PassiveStabilityTimeline(ctx context.Context, since time.Time, bucket time.Duration) ([]PassiveTimelinePoint, error) {
+// 口径与 PassiveStability 完全相同（含 ignoredStatusCodes）：成功来自 usage_logs，
+// 失败来自 ops_error_logs 且排除业务限制与忽略状态码。分位数只来自成功请求。
+// origin 取 since。
+func (p *PG) PassiveStabilityTimeline(ctx context.Context, since time.Time, bucket time.Duration, ignoredStatusCodes []int32) ([]PassiveTimelinePoint, error) {
 	if bucket <= 0 {
 		bucket = time.Minute
 	}
@@ -316,6 +333,7 @@ func (p *PG) PassiveStabilityTimeline(ctx context.Context, since time.Time, buck
 		    WHERE created_at >= $1
 		      AND is_business_limited = FALSE
 		      AND COALESCE(status_code, 0) >= 400
+		      AND COALESCE(status_code, 0) <> ALL($3::int[])
 		      AND account_id IS NOT NULL
 		    GROUP BY 1, 2
 		)
@@ -336,7 +354,7 @@ func (p *PG) PassiveStabilityTimeline(ctx context.Context, since time.Time, buck
 		FROM usage_b u
 		FULL OUTER JOIN error_b e
 		  ON e.account_id = u.account_id AND e.bucket = u.bucket
-		ORDER BY 1, 2`, since, bucket.Milliseconds())
+		ORDER BY 1, 2`, since, bucket.Milliseconds(), normalizeIgnoredStatusCodes(ignoredStatusCodes))
 	if err != nil {
 		return nil, err
 	}

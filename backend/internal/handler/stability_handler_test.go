@@ -65,6 +65,54 @@ func TestDefaultWindowMinutesIsOneHour(t *testing.T) {
 	}
 }
 
+func TestParseIgnoredStatusCodes(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  []int32
+	}{
+		// 缺省 = 默认开启。参数缺省与显式空串是两种不同语义，见 parseIgnoredStatusCodes。
+		{"无参数取默认集合", "", []int32{400, 403, 429, 529}},
+		{"显式空串即不过滤", "exclude_status=", []int32{}},
+		{"只带空白也当空串", "exclude_status=%20", []int32{}},
+		{"自定义集合", "exclude_status=400,403", []int32{400, 403}},
+		{"容忍空格与重复", "exclude_status=400,%20400%20,529", []int32{400, 529}},
+		// 非法 token 被丢弃，但全非法时退回默认而不是空集合 ——
+		// 传错参数不该静默把默认过滤关掉。
+		{"全非法回退默认", "exclude_status=abc", []int32{400, 403, 429, 529}},
+		{"部分非法只留合法值", "exclude_status=abc,403", []int32{403}},
+		{"非 HTTP 区间的值被丢弃", "exclude_status=0,99,600,1000", []int32{400, 403, 429, 529}},
+		{"边界 100 与 599 合法", "exclude_status=100,599", []int32{100, 599}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseIgnoredStatusCodes(newQueryContext(tt.query))
+			if len(got) != len(tt.want) {
+				t.Fatalf("codes = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("codes = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestDefaultIgnoredStatusCodes(t *testing.T) {
+	// 顺序与集合一起锁住：它会被原样回显给前端，也会进 SQL 的 int[] 参数。
+	want := []int32{400, 403, 429, 529}
+	if len(defaultIgnoredStatusCodes) != len(want) {
+		t.Fatalf("defaultIgnoredStatusCodes = %v, want %v", defaultIgnoredStatusCodes, want)
+	}
+	for i := range want {
+		if defaultIgnoredStatusCodes[i] != want[i] {
+			t.Fatalf("defaultIgnoredStatusCodes = %v, want %v", defaultIgnoredStatusCodes, want)
+		}
+	}
+}
+
 func TestSlaPercent(t *testing.T) {
 	if got := slaPercent(99, 1); got != float64(99) {
 		t.Errorf("99/100 = %v, want 99", got)
