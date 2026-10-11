@@ -189,10 +189,14 @@ func (s *ProviderSyncService) SyncOne(ctx context.Context, providerID int64, man
 		return nil, fmt.Errorf("供应商 %s 尚未配置完整凭据，请先补全站点地址与登录信息", p.Name)
 	}
 	if manual {
-		// 手动触发绕过登录冷却并清零计数
+		// 手动触发绕过登录冷却并清零计数，同时允许立刻再试一次密码登录。
+		ctx = withManualUpstreamSync(ctx)
 		_ = s.providerRepo.ClearLoginCooldown(ctx, p.ID)
 		p.LoginFailures = 0
 		p.LoginCooldownUntil = nil
+	} else if p.LoginCooldownUntil != nil && time.Now().Before(*p.LoginCooldownUntil) && needsPasswordLogin(p) {
+		// 冷却期内又没有可用令牌：跳过本轮，不再写一条「登录冷却中」。
+		return &SyncOutcome{Provider: p}, nil
 	}
 	prevBalance := p.LastBalance
 
@@ -233,6 +237,12 @@ func (s *ProviderSyncService) SyncOne(ctx context.Context, providerID int64, man
 		outcome.Failures = s.recordFailure(ctx, p.ID, syncErr.Error())
 	} else {
 		_ = s.collectorRepo.RecordSuccess(ctx, p.ID, taskSync)
+		// 用现有令牌把余额采回来，说明站点已经可用，冷却牌子不该再挂着。
+		if p.LoginFailures > 0 || p.LoginCooldownUntil != nil {
+			_ = s.providerRepo.ClearLoginCooldown(ctx, p.ID)
+			p.LoginFailures = 0
+			p.LoginCooldownUntil = nil
+		}
 	}
 
 	if s.AfterSync != nil {
@@ -308,7 +318,12 @@ func (s *ProviderSyncService) recordFailure(ctx context.Context, providerID int6
 	if err != nil {
 		return 0
 	}
-	if b := taskBackoff(n); b > 0 {
+	b := taskBackoff(n)
+	// 网页或验证码再打密码登录也不会成功，直接拉到冷却阶梯的上限。
+	if loginHardBackoff(msg) && b < 6*time.Hour {
+		b = 6 * time.Hour
+	}
+	if b > 0 {
 		next := time.Now().Add(b)
 		_ = s.collectorRepo.UpdateBackoff(ctx, providerID, taskSync, &next)
 	}

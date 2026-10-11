@@ -161,6 +161,96 @@ func TestSyncAllSkipsCooldown(t *testing.T) {
 	}
 }
 
+func TestSyncOneSkipsCooldownWhenPasswordIsTheOnlyWay(t *testing.T) {
+	svc, repo := newTestSyncService(t)
+	var hits int64
+	srv := newUpstreamStub(t, &hits, http.StatusOK)
+	p := createProvider(t, repo, "cooling", srv.URL)
+	ctx := context.Background()
+	if err := repo.SetLoginCooldown(ctx, p.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("设置冷却失败: %v", err)
+	}
+
+	if _, err := svc.SyncOne(ctx, p.ID, false, false); err != nil {
+		t.Fatalf("SyncOne: %v", err)
+	}
+	if n := atomic.LoadInt64(&hits); n != 0 {
+		t.Fatalf("冷却中仍打了登录 %d 次", n)
+	}
+	fresh, err := repo.GetByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if fresh.LoginCooldownUntil == nil {
+		t.Fatal("跳过本轮不应把冷却清掉")
+	}
+}
+
+func TestSyncOneSuccessClearsCooldown(t *testing.T) {
+	svc, repo := newTestSyncService(t)
+	var hits int64
+	srv := newUpstreamStub(t, &hits, http.StatusOK)
+	p := createProvider(t, repo, "cached", srv.URL)
+	ctx := context.Background()
+	future := time.Now().Add(time.Hour)
+	if err := repo.UpdateTokenPair(ctx, p.ID, "tok", "rt", &future); err != nil {
+		t.Fatalf("UpdateTokenPair: %v", err)
+	}
+	if err := repo.SetLoginCooldown(ctx, p.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("设置冷却失败: %v", err)
+	}
+
+	outcome, err := svc.SyncOne(ctx, p.ID, false, false)
+	if err != nil {
+		t.Fatalf("SyncOne: %v", err)
+	}
+	if outcome.Err != nil {
+		t.Fatalf("采集失败: %v", outcome.Err)
+	}
+	if n := atomic.LoadInt64(&hits); n != 0 {
+		t.Fatalf("已有令牌仍打了登录 %d 次", n)
+	}
+	fresh, err := repo.GetByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if fresh.LoginCooldownUntil != nil || fresh.LoginFailures != 0 {
+		t.Fatalf("采集成功后冷却仍在: failures=%d until=%v", fresh.LoginFailures, fresh.LoginCooldownUntil)
+	}
+}
+
+func TestSyncOneHTMLLoginBacksOffWithoutCooldown(t *testing.T) {
+	svc, repo := newTestSyncService(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><body>login</body></html>"))
+	}))
+	t.Cleanup(srv.Close)
+	p := createProvider(t, repo, "html", srv.URL)
+
+	outcome, err := svc.SyncOne(context.Background(), p.ID, false, false)
+	if err != nil {
+		t.Fatalf("SyncOne: %v", err)
+	}
+	if outcome.Err == nil || !strings.Contains(outcome.Err.Error(), "网页") {
+		t.Fatalf("错误 = %v, 期望说明返回了网页", outcome.Err)
+	}
+	fresh, err := repo.GetByID(context.Background(), p.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if fresh.LoginCooldownUntil != nil || fresh.LoginFailures != 0 {
+		t.Fatalf("网页被记成登录冷却: failures=%d until=%v", fresh.LoginFailures, fresh.LoginCooldownUntil)
+	}
+	st, err := svc.collectorRepo.Get(context.Background(), p.ID, taskSync)
+	if err != nil {
+		t.Fatalf("collector: %v", err)
+	}
+	if st.NextEligibleAt == nil || time.Until(*st.NextEligibleAt) < 5*time.Hour {
+		t.Fatalf("退避 = %v, 网页应至少拉开 6 小时", st.NextEligibleAt)
+	}
+}
+
 // TestSyncAllRespectsConcurrencyLimit 并发数不超过 syncAllConcurrency。
 func TestSyncAllRespectsConcurrencyLimit(t *testing.T) {
 	svc, repo := newTestSyncService(t)

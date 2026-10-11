@@ -50,6 +50,71 @@ func TestSub2apiLogin429IsNotRejected(t *testing.T) {
 	}
 }
 
+func TestSub2apiLoginTurnstileAndHTMLAreNotRejected(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		wantErr error
+	}{
+		{
+			name:    "turnstile",
+			status:  http.StatusBadRequest,
+			body:    `{"code":400,"message":"turnstile verification failed","reason":"TURNSTILE_VERIFICATION_FAILED"}`,
+			wantErr: ErrRateLimited,
+		},
+		{
+			name:    "html 403",
+			status:  http.StatusForbidden,
+			body:    "<html><body>blocked</body></html>",
+			wantErr: ErrUpstreamHTML,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(c.status)
+				_, _ = w.Write([]byte(c.body))
+			}))
+			t.Cleanup(srv.Close)
+
+			_, err := NewSub2apiClient(3*time.Second).Login(context.Background(), srv.URL, "u@example.com", "pw")
+			if !errors.Is(err, c.wantErr) {
+				t.Fatalf("err = %v, 期望 %v", err, c.wantErr)
+			}
+			if IsLoginRejected(err) {
+				t.Fatalf("不该视为登录被拒: %v", err)
+			}
+		})
+	}
+}
+
+func TestSub2apiRefresh401IsInvalidAnd500IsNot(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":401,"message":"invalid refresh token","reason":"REFRESH_TOKEN_INVALID"}`))
+	}))
+	t.Cleanup(dead.Close)
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"code":502,"message":"bad gateway"}`))
+	}))
+	t.Cleanup(down.Close)
+
+	_, err := NewSub2apiClient(3*time.Second).RefreshToken(context.Background(), dead.URL, "rt")
+	if !errors.Is(err, ErrRefreshInvalid) {
+		t.Fatalf("401 err = %v, 期望 ErrRefreshInvalid", err)
+	}
+	if IsLoginRejected(err) {
+		t.Fatalf("刷新失效不该包 ErrLoginRejected: %v", err)
+	}
+
+	_, err = NewSub2apiClient(3*time.Second).RefreshToken(context.Background(), down.URL, "rt")
+	if err == nil || errors.Is(err, ErrRefreshInvalid) || errors.Is(err, ErrLoginRejected) {
+		t.Fatalf("502 应是普通失败, err = %v", err)
+	}
+}
+
 func TestSub2apiRefresh429IsNotRejected(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)

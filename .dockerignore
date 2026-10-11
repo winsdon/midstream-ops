@@ -10,6 +10,12 @@ backend/config.yaml
 config.yaml
 backend/data/
 data/
+backend/__pycache__/
+backend/_tmp_*.json
+backend/*_result*.json
+backend/*customer*.json
+backend/*customer*.py
+backend/run_customer_*.py
 *.db
 *.db-journal
 *.db-wal

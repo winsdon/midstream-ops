@@ -63,7 +63,7 @@ type loginResponse struct {
 }
 
 // Login 模拟登录供应商 sub2api 站点。
-// 站点开 Turnstile/2FA 时会返回 4xx，错误原样上抛。
+// 只有明确的凭据失败才包 ErrLoginRejected。429、验证码、网页和 5xx 不进冷却阶梯。
 func (c *Sub2apiClient) Login(ctx context.Context, baseURL, email, password string) (*ProviderLoginResult, error) {
 	body, _ := json.Marshal(map[string]string{"email": email, "password": password})
 	url := strings.TrimRight(baseURL, "/") + "/api/v1/auth/login"
@@ -83,14 +83,13 @@ func (c *Sub2apiClient) Login(ctx context.Context, baseURL, email, password stri
 	defer func() { _ = resp.Body.Close() }()
 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if bodyIsHTML(raw) {
+		return nil, fmt.Errorf("%w: 登录接口返回了网页", ErrUpstreamHTML)
+	}
 	if resp.StatusCode != http.StatusOK {
 		err := fmt.Errorf("登录失败 HTTP %d: %s", resp.StatusCode, briefBody(raw))
-		if resp.StatusCode == http.StatusTooManyRequests {
-			return nil, fmt.Errorf("%w: %w", ErrRateLimited, err)
-		}
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			// 4xx 视为被拒（密码错误 / Turnstile / 风控），调用方据此进入登录冷却
-			return nil, fmt.Errorf("%w: %w", ErrLoginRejected, err)
+		if sentinel := classifyLoginStatus(resp.StatusCode, raw); sentinel != nil {
+			return nil, fmt.Errorf("%w: %w", sentinel, err)
 		}
 		return nil, err
 	}
@@ -100,8 +99,11 @@ func (c *Sub2apiClient) Login(ctx context.Context, baseURL, email, password stri
 		return nil, fmt.Errorf("解析登录响应失败: %w", err)
 	}
 	if env.Code != 0 {
-		// HTTP 200 + 业务 code 非 0：同样是被拒（密码错误等），进入冷却
-		return nil, fmt.Errorf("%w: 登录失败: %s", ErrLoginRejected, env.Message)
+		plain := fmt.Errorf("登录失败: %s", env.Message)
+		if sentinel := classifyLoginMessage(env.Message); sentinel != nil {
+			return nil, fmt.Errorf("%w: %w", sentinel, plain)
+		}
+		return nil, plain
 	}
 
 	var lr loginResponse
@@ -127,7 +129,8 @@ type RefreshTokenResult struct {
 }
 
 // RefreshToken 用 refresh_token 换新 access_token（POST /api/v1/auth/refresh）。
-// sub2api 的 refresh token 本身无过期；4xx 视为 refresh token 失效（ErrLoginRejected）。
+// 只有 401 或正文明确说令牌失效时才返回 ErrRefreshInvalid，调用方据此才可以密码重登。
+// 限流、网页和 5xx 原样上抛，refresh token 继续留着。
 func (c *Sub2apiClient) RefreshToken(ctx context.Context, baseURL, refreshToken string) (*RefreshTokenResult, error) {
 	body, _ := json.Marshal(map[string]string{"refresh_token": refreshToken})
 	url := strings.TrimRight(baseURL, "/") + "/api/v1/auth/refresh"
@@ -149,11 +152,8 @@ func (c *Sub2apiClient) RefreshToken(ctx context.Context, baseURL, refreshToken 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
 		err := fmt.Errorf("刷新令牌失败 HTTP %d: %s", resp.StatusCode, briefBody(raw))
-		if resp.StatusCode == http.StatusTooManyRequests {
-			return nil, fmt.Errorf("%w: %w", ErrRateLimited, err)
-		}
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			return nil, fmt.Errorf("%w: %w", ErrLoginRejected, err)
+		if sentinel := classifyRefreshStatus(resp.StatusCode, raw); sentinel != nil {
+			return nil, fmt.Errorf("%w: %w", sentinel, err)
 		}
 		return nil, err
 	}
@@ -162,7 +162,14 @@ func (c *Sub2apiClient) RefreshToken(ctx context.Context, baseURL, refreshToken 
 		return nil, fmt.Errorf("解析刷新响应失败: %w", err)
 	}
 	if env.Code != 0 {
-		return nil, fmt.Errorf("%w: 刷新令牌失败: %s", ErrLoginRejected, env.Message)
+		plain := fmt.Errorf("刷新令牌失败: %s", env.Message)
+		if transientLoginText(env.Message) {
+			return nil, fmt.Errorf("%w: %w", ErrRateLimited, plain)
+		}
+		if refreshTokenDeadText(env.Message) {
+			return nil, fmt.Errorf("%w: %w", ErrRefreshInvalid, plain)
+		}
+		return nil, plain
 	}
 	var lr loginResponse
 	if err := json.Unmarshal(env.Data, &lr); err != nil {
@@ -221,8 +228,8 @@ func (c *Sub2apiClient) GetBalance(ctx context.Context, baseURL, accessToken str
 
 var errUnauthorized = errors.New("unauthorized")
 
-// ErrLoginRejected 登录被上游明确拒绝（4xx / 业务错误码）。
-// 与网络错误区分：被拒说明凭据或风控问题，重试无意义且可能触发 WAF 拉黑，须进入冷却。
+// ErrLoginRejected 登录被上游明确拒绝（密码错误、账号禁用这类凭据问题）。
+// 限流、验证码、网页和 5xx 不是被拒，不得进入冷却阶梯。
 var ErrLoginRejected = errors.New("login rejected")
 
 // ErrRateLimited 上游返回 429。瞬时限流，不是凭据错误，不得记入登录冷却。

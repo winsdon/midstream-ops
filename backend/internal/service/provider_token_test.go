@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -470,6 +471,88 @@ func TestEnsureSub2apiRefreshFallbackToLogin(t *testing.T) {
 	if fresh.LoginFailures != 0 || fresh.LoginCooldownUntil != nil {
 		t.Errorf("续期失败被误计为登录被拒：failures=%d cooldown=%v",
 			fresh.LoginFailures, fresh.LoginCooldownUntil)
+	}
+}
+
+// TestEnsureSub2apiRefreshTransientDoesNotLogin 限流和 5xx 留着 refresh token，不打密码登录。
+func TestEnsureSub2apiRefreshTransientDoesNotLogin(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusBadGateway} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			stub := newSub2apiStub(t, status, http.StatusOK)
+			repo := newTestProviderRepo(t)
+			p := newTestSub2apiProvider(t, repo, stub.url)
+			giveExpiredSub2apiPair(t, repo, p.ID)
+			m := newTokenManager(repo, NewSub2apiClient(3*time.Second), nil)
+
+			_, err := m.ensureSub2api(context.Background(), mustGetProvider(t, repo, p.ID))
+			if err == nil {
+				t.Fatal("续期失败时应返回错误")
+			}
+			if stub.loginHits.Load() != 0 {
+				t.Fatalf("登录被打了 %d 次，瞬时失败不该降级密码登录", stub.loginHits.Load())
+			}
+			fresh := mustGetProvider(t, repo, p.ID)
+			if fresh.RefreshToken != "rt-old" {
+				t.Fatalf("refresh token 被清掉了: %q", fresh.RefreshToken)
+			}
+			if fresh.LoginCooldownUntil != nil {
+				t.Fatalf("瞬时失败进入了冷却: %v", fresh.LoginCooldownUntil)
+			}
+		})
+	}
+}
+
+// TestPasswordLoginIsThrottled 同一主机、同一站点不能连续打密码登录。
+func TestPasswordLoginIsThrottled(t *testing.T) {
+	stub := newSub2apiStub(t, http.StatusOK, http.StatusTooManyRequests)
+	repo := newTestProviderRepo(t)
+	p1 := newTestSub2apiProvider(t, repo, stub.url)
+	p2, err := repo.Create(context.Background(), repository.CreateParams{
+		Name: "other", BalanceType: "sub2api", Platform: "sub2api", AuthMode: "password",
+		BaseURL: stub.url, LoginEmail: "b@example.com", LoginPassword: "pw", RechargeRate: 1,
+	})
+	if err != nil {
+		t.Fatalf("创建第二个供应商失败: %v", err)
+	}
+	m := newTokenManager(repo, NewSub2apiClient(3*time.Second), nil)
+
+	if _, err := m.ensureSub2api(context.Background(), mustGetProvider(t, repo, p1.ID)); err == nil {
+		t.Fatal("第一次 429 应失败")
+	}
+	if _, err := m.ensureSub2api(context.Background(), mustGetProvider(t, repo, p2.ID)); err == nil {
+		t.Fatal("同一主机第二下应被本地节流")
+	}
+	if got := stub.loginHits.Load(); got != 1 {
+		t.Fatalf("登录被打了 %d 次，期望只有第一次打到上游", got)
+	}
+
+	ctx := withManualUpstreamSync(context.Background())
+	if _, err := m.ensureSub2api(ctx, mustGetProvider(t, repo, p1.ID)); err == nil {
+		t.Fatal("手动刷新仍会打到上游并拿到 429")
+	}
+	if got := stub.loginHits.Load(); got != 2 {
+		t.Fatalf("手动刷新后登录次数 = %d，期望 2", got)
+	}
+}
+
+// TestEnsureNewAPIRefresh429DoesNotLogin new-api 续期 429 不能清令牌、不能密码重登。
+func TestEnsureNewAPIRefresh429DoesNotLogin(t *testing.T) {
+	stub := newNewAPIStub(t, http.StatusTooManyRequests)
+	repo := newTestProviderRepo(t)
+	p := newTestNewAPIProvider(t, repo, stub.url)
+	giveExpiredJWT(t, repo, p.ID)
+	m := newTokenManager(repo, nil, newAPITestClient())
+
+	_, err := m.ensureNewAPI(context.Background(), mustGetProvider(t, repo, p.ID))
+	if err == nil || !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("err = %v, 期望限流", err)
+	}
+	if stub.loginHits.Load() != 0 {
+		t.Fatalf("登录被打了 %d 次", stub.loginHits.Load())
+	}
+	fresh := mustGetProvider(t, repo, p.ID)
+	if fresh.RefreshToken != "r-old" {
+		t.Fatalf("refresh token = %q, 期望仍是 r-old", fresh.RefreshToken)
 	}
 }
 

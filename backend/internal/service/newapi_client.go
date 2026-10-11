@@ -163,10 +163,13 @@ func (c *NewAPIClient) Login(ctx context.Context, baseURL, username, password st
 	defer func() { _ = resp.Body.Close() }()
 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if bodyIsHTML(raw) {
+		return nil, fmt.Errorf("%w: 登录接口返回了网页", ErrUpstreamHTML)
+	}
 	if resp.StatusCode != http.StatusOK {
 		err := fmt.Errorf("登录失败 HTTP %d: %s", resp.StatusCode, briefBody(raw))
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			return nil, fmt.Errorf("%w: %w", ErrLoginRejected, err)
+		if sentinel := classifyLoginStatus(resp.StatusCode, raw); sentinel != nil {
+			return nil, fmt.Errorf("%w: %w", sentinel, err)
 		}
 		return nil, err
 	}
@@ -176,8 +179,11 @@ func (c *NewAPIClient) Login(ctx context.Context, baseURL, username, password st
 		return nil, fmt.Errorf("解析登录响应失败: %w", err)
 	}
 	if !env.Success {
-		// HTTP 200 + success:false：凭据错误，进入冷却
-		return nil, fmt.Errorf("%w: 登录失败: %s", ErrLoginRejected, env.Message)
+		plain := fmt.Errorf("登录失败: %s", env.Message)
+		if sentinel := classifyLoginMessage(env.Message); sentinel != nil {
+			return nil, fmt.Errorf("%w: %w", sentinel, plain)
+		}
+		return nil, plain
 	}
 
 	out := fillNewAPILoginResult(env.Data, resp)
@@ -223,6 +229,10 @@ func (c *NewAPIClient) RefreshSession(ctx context.Context, baseURL, refreshToken
 	case resp.StatusCode == http.StatusNotFound:
 		// 上游没有该端点（旧版或已降级）：让调用方回落到密码重登
 		return nil, errRefreshUnsupported
+	case resp.StatusCode == http.StatusTooManyRequests || transientLoginText(string(raw)):
+		return nil, fmt.Errorf("%w: 会话续期被限流 HTTP %d: %s", ErrRateLimited, resp.StatusCode, briefBody(raw))
+	case bodyIsHTML(raw):
+		return nil, fmt.Errorf("%w: 会话续期返回了网页 HTTP %d", ErrUpstreamHTML, resp.StatusCode)
 	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
 		return nil, fmt.Errorf("%w: 会话续期被拒 HTTP %d: %s", errUnauthorized, resp.StatusCode, briefBody(raw))
 	case resp.StatusCode != http.StatusOK:

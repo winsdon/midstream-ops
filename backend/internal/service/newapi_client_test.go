@@ -133,6 +133,35 @@ func TestNewAPILoginRejected(t *testing.T) {
 	}
 }
 
+func TestNewAPILogin429AndHTMLAreNotRejected(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		wantErr error
+	}{
+		{name: "空 429", status: http.StatusTooManyRequests, body: "", wantErr: ErrRateLimited},
+		{name: "网页", status: http.StatusForbidden, body: "<html>no</html>", wantErr: ErrUpstreamHTML},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(c.status)
+				_, _ = w.Write([]byte(c.body))
+			}))
+			defer srv.Close()
+
+			_, err := newAPITestClient().Login(context.Background(), srv.URL, "u", "p")
+			if !errors.Is(err, c.wantErr) {
+				t.Fatalf("err = %v, 期望 %v", err, c.wantErr)
+			}
+			if IsLoginRejected(err) {
+				t.Fatalf("不该视为登录被拒: %v", err)
+			}
+		})
+	}
+}
+
 // TestNewAPILoginNoCredential 既无 JWT 也无 Cookie 视为失败（但不是凭据被拒，不该进冷却）。
 func TestNewAPILoginNoCredential(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -223,6 +252,19 @@ func TestRefreshSessionErrors(t *testing.T) {
 			name:    "403 → Origin 校验或会话被吊销",
 			handler: func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) },
 			wantErr: errUnauthorized,
+		},
+		{
+			name:    "429 → 限流，不能降级重登",
+			handler: func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTooManyRequests) },
+			wantErr: ErrRateLimited,
+		},
+		{
+			name: "403 网页 → 不是凭据失效",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte("<html>blocked</html>"))
+			},
+			wantErr: ErrUpstreamHTML,
 		},
 		{
 			name: "success:false → 凭据失效",

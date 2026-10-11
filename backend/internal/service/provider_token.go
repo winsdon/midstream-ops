@@ -54,6 +54,9 @@ type providerTokenManager struct {
 	// 站点数量有限且长期存活，锁不回收。
 	refreshMu  sync.Mutex
 	refreshing map[int64]*sync.Mutex
+
+	// gate 限制密码登录频率。上游按出口 IP 限流，不能每个周期都打登录接口。
+	gate passwordLoginGate
 }
 
 // newTokenManager 创建 token 管理器。
@@ -63,6 +66,10 @@ func newTokenManager(repo *repository.ProviderRepo, client *Sub2apiClient, newap
 		client:       client,
 		newapiClient: newapiClient,
 		refreshing:   make(map[int64]*sync.Mutex),
+		gate: passwordLoginGate{
+			byHost: map[string]time.Time{},
+			byID:   map[int64]time.Time{},
+		},
 	}
 }
 
@@ -95,7 +102,7 @@ func (m *providerTokenManager) refresh(ctx context.Context, p *repository.Provid
 			// 静态令牌无从刷新，且库里没有更新后的凭据：401 即令牌失效。
 			return nil, fmt.Errorf("%w: 系统访问令牌已失效，请更换", ErrLoginRejected)
 		}
-		// 新版：先试续期（内部失败会自动降级重登），避免 15 分钟撞一次登录接口
+		// 新版：先试续期。只有 refresh 凭据确认失效才降级密码重登。
 		if p.RefreshToken != "" {
 			return m.refreshNewAPISession(ctx, p)
 		}
@@ -110,12 +117,12 @@ func (m *providerTokenManager) refresh(ctx context.Context, p *repository.Provid
 		if err == nil {
 			return sess, nil
 		}
-		if errors.Is(err, ErrRateLimited) || p.AuthMode == "token" {
-			return nil, err
+		if p.AuthMode == "password" && errors.Is(err, ErrRefreshInvalid) {
+			_ = m.repo.UpdateTokenPair(ctx, p.ID, "", "", nil)
+			p.AccessToken, p.RefreshToken, p.TokenExpiresAt = "", "", nil
+			return m.loginSub2api(ctx, p)
 		}
-		_ = m.repo.UpdateTokenPair(ctx, p.ID, "", "", nil)
-		p.AccessToken, p.RefreshToken, p.TokenExpiresAt = "", "", nil
-		return m.loginSub2api(ctx, p)
+		return nil, err
 	}
 	if p.AuthMode == "token" {
 		p.TokenExpiresAt = nil
@@ -130,7 +137,7 @@ func (m *providerTokenManager) refresh(ctx context.Context, p *repository.Provid
 // ---- sub2api ----
 
 // ensureSub2api password 模式登录 / token 模式按需刷新。
-// 有 refresh_token 时先续期，避免密码登录撞上游限流；续期失败才降级重登。
+// 有 refresh_token 时只续期。密码重登仅发生在 refresh token 确认失效之后。
 func (m *providerTokenManager) ensureSub2api(ctx context.Context, p *repository.Provider) (*providerSession, error) {
 	if sub2apiTokenValid(p) {
 		return &providerSession{AccessToken: p.AccessToken}, nil
@@ -141,9 +148,12 @@ func (m *providerTokenManager) ensureSub2api(ctx context.Context, p *repository.
 		if err == nil {
 			return sess, nil
 		}
-		if errors.Is(err, ErrRateLimited) || p.AuthMode == "token" {
-			return nil, err
+		if p.AuthMode == "password" && errors.Is(err, ErrRefreshInvalid) {
+			_ = m.repo.UpdateTokenPair(ctx, p.ID, "", "", nil)
+			p.AccessToken, p.RefreshToken, p.TokenExpiresAt = "", "", nil
+			return m.loginSub2api(ctx, p)
 		}
+		return nil, err
 	}
 
 	if p.AuthMode == "token" {
@@ -203,6 +213,9 @@ func (m *providerTokenManager) loginSub2api(ctx context.Context, p *repository.P
 		return nil, errors.New("供应商缺少 base_url / login_email / login_password")
 	}
 	if err := m.checkCooldown(p); err != nil {
+		return nil, err
+	}
+	if err := m.gate.take(ctx, p); err != nil {
 		return nil, err
 	}
 
@@ -267,7 +280,8 @@ func newapiJWTAuth(p *repository.Provider) NewAPIAuth {
 	return NewAPIAuth{JWT: p.AccessToken, UserID: p.UpstreamUserID}
 }
 
-// refreshNewAPISession 用 refresh token 续期新版会话；失败则清凭据降级密码重登。
+// refreshNewAPISession 用 refresh token 续期新版会话。
+// 端点不存在或 refresh 凭据失效时才清凭据并密码重登；限流、网页和 5xx 留着令牌。
 //
 // 必须串行：上游的 refresh token 每次调用都会轮换，旧值在重放窗口内被再次使用
 // 会触发重放检测并吊销整个会话——并发刷新等于自己把自己踢下线。故同一站点加锁，
@@ -291,11 +305,14 @@ func (m *providerTokenManager) refreshNewAPISession(ctx context.Context, p *repo
 
 	rr, err := m.newapiClient.RefreshSession(ctx, p.BaseURL, p.RefreshToken)
 	if err != nil {
-		// 续期失败（凭据过期/被吊销/上游降级回旧版）→ 清新版凭据，降级密码重登。
-		// 刻意不调 recordRejected：续期失败不是登录被拒，不该触发 6h 冷却阶梯。
-		_ = m.repo.UpdateTokenPair(ctx, p.ID, "", "", nil)
-		p.AccessToken, p.RefreshToken, p.TokenExpiresAt = "", "", nil
-		return m.loginNewAPI(ctx, p) // 内部自带 checkCooldown / recordRejected
+		// 只有「端点不存在」或「refresh 凭据失效」才清掉令牌并密码重登。
+		// 429、网页、5xx 留着 refresh token，下轮再换，避免把限流打成登录。
+		if errors.Is(err, errRefreshUnsupported) || errors.Is(err, errUnauthorized) {
+			_ = m.repo.UpdateTokenPair(ctx, p.ID, "", "", nil)
+			p.AccessToken, p.RefreshToken, p.TokenExpiresAt = "", "", nil
+			return m.loginNewAPI(ctx, p)
+		}
+		return nil, err
 	}
 
 	_ = m.repo.UpdateTokenPair(ctx, p.ID, rr.AccessToken, rr.RefreshToken, &rr.AccessExpiresAt)
@@ -321,6 +338,9 @@ func (m *providerTokenManager) loginNewAPI(ctx context.Context, p *repository.Pr
 		return nil, errors.New("供应商缺少 base_url / 登录账号 / 登录密码")
 	}
 	if err := m.checkCooldown(p); err != nil {
+		return nil, err
+	}
+	if err := m.gate.take(ctx, p); err != nil {
 		return nil, err
 	}
 
@@ -382,11 +402,29 @@ func (m *providerTokenManager) recordRejected(ctx context.Context, p *repository
 	p.LoginFailures = n
 }
 
-// clearRejected 登录成功后清零冷却计数。
+// clearRejected 登录或续期成功后清零冷却计数。
 func (m *providerTokenManager) clearRejected(ctx context.Context, p *repository.Provider) {
-	if p.LoginFailures > 0 {
+	if p.LoginFailures > 0 || p.LoginCooldownUntil != nil {
 		_ = m.repo.ClearLoginCooldown(ctx, p.ID)
 		p.LoginFailures = 0
 		p.LoginCooldownUntil = nil
 	}
+}
+
+// needsPasswordLogin 这次采集是否只能靠密码登录才能拿到会话。
+// 还有可用 access token 或 refresh token 时返回 false：先用令牌，不要因为冷却把采集停掉。
+func needsPasswordLogin(p *repository.Provider) bool {
+	if p.Platform == "new-api" {
+		if p.AuthMode == "user_key" {
+			return false
+		}
+		if newapiJWTValid(p) || p.RefreshToken != "" {
+			return false
+		}
+		return p.SessionCookie == "" || p.UpstreamUserID == ""
+	}
+	if p.AuthMode == "token" || sub2apiTokenValid(p) || p.RefreshToken != "" {
+		return false
+	}
+	return true
 }
