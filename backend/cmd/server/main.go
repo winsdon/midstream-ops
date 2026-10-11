@@ -102,7 +102,7 @@ func main() {
 	if err := pelicanRepo.Recover(context.Background()); err != nil {
 		log.Fatalf("恢复鹈鹕测试任务失败: %v", err)
 	}
-	pelicanSvc := service.NewPelicanService(pelicanRepo, settingsRepo, pg)
+	pelicanSvc := service.NewPelicanService(pelicanRepo, pg)
 	defer pelicanSvc.Close()
 	pelicanHandler := handler.NewPelicanHandler(pelicanSvc)
 

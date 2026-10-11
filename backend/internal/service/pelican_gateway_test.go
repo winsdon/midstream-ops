@@ -187,14 +187,31 @@ func TestPelicanGatewayCancellationAndHTTPFailure(t *testing.T) {
 		}
 	})
 }
-func TestPelicanKeyCannotCrossGroupsOrProtocols(t *testing.T) {
-	keys := []repository.PGUserKey{{ID: 1, GroupID: 2, Platform: "anthropic"}}
-	for _, target := range []PelicanTarget{{KeyID: 1, GroupID: 3, Protocol: "messages"}, {KeyID: 1, GroupID: 2, Protocol: "chat"}, {KeyID: 7, GroupID: 2, Protocol: "messages"}} {
-		if _, err := pelicanKey(keys, target); err == nil {
-			t.Fatalf("accepted invalid target %+v", target)
+func TestPelicanManualBaseURLNormalization(t *testing.T) {
+	for input, want := range map[string]string{
+		"https://api.example.com/":                  "https://api.example.com",
+		"https://api.example.com/v1/messages":       "https://api.example.com",
+		"https://api.example.com/v1/chat/completions": "https://api.example.com",
+	} {
+		got, err := normalizePelicanBaseURL(input)
+		if err != nil || got != want {
+			t.Fatalf("%s → %s (%v), want %s", input, got, err, want)
 		}
 	}
-	if _, err := pelicanKey(keys, PelicanTarget{KeyID: 1, GroupID: 2, Protocol: "messages"}); err != nil {
+	if _, err := normalizePelicanBaseURL("api.example.com"); err == nil {
+		t.Fatal("accepted a base URL without scheme")
+	}
+}
+func TestPelicanProtocolMatchesAccountPlatform(t *testing.T) {
+	if err := pelicanProtocolPlatform("messages", "anthropic"); err != nil {
 		t.Fatal(err)
+	}
+	if err := pelicanProtocolPlatform("responses", "openai"); err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range [][2]string{{"chat", "anthropic"}, {"messages", "openai"}, {"messages", "gemini"}} {
+		if err := pelicanProtocolPlatform(pair[0], pair[1]); err == nil {
+			t.Fatalf("accepted %s on %s", pair[0], pair[1])
+		}
 	}
 }

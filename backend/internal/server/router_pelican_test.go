@@ -15,7 +15,7 @@ func TestPelicanRouteAuthentication(t *testing.T) {
 	h := handler.NewPelicanHandler(nil)
 	h.SetIssuer(handler.NewEmbedSessionIssuer(nil, sessions, "test"))
 	r := NewRouter(&config.Config{}, nil, &Handlers{Auth: handler.NewAuthHandler(nil), Pelican: h, EmbedPelican: h, EmbedSessions: sessions, EmbedFrameOrigin: "https://sub.example"})
-	for _, path := range []string{"/api/v1/pelican/config", "/api/v1/pelican/groups", "/api/v1/pelican/results", "/api/v1/pelican/results/1", "/api/v1/embed/pelican/results", "/api/v1/embed/pelican/results/1", "/api/v1/embed/pelican/filters"} {
+	for _, path := range []string{"/api/v1/pelican/accounts", "/api/v1/pelican/groups", "/api/v1/pelican/results", "/api/v1/pelican/results/1", "/api/v1/embed/pelican/results", "/api/v1/embed/pelican/results/1", "/api/v1/embed/pelican/filters"} {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != 401 {

@@ -43,6 +43,13 @@ const SVG_FIT_STYLE =
   'body{display:flex;align-items:center;justify-content:center}' +
   'body>svg{width:100%;height:100%}'
 
+/**
+ * 缩放预览（鹈鹕作品卡片/详情）用：整幅作品渲染在固定虚拟视口里再等比缩小，
+ * 由外层负责缩放。这里只关掉作品自己的滚动条 —— 固定像素尺寸的页面在缩放后
+ * 仍有内滚动条，缩略图上会看到多余的滚动控件。
+ */
+const HTML_FIT_STYLE = 'html,body{overflow:hidden!important}'
+
 /** 安全头：必须排在作品之前，作品里再写 CSP 也只能收紧、放不开。 */
 const PREVIEW_HEAD =
   `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}">` +
@@ -51,9 +58,15 @@ const PREVIEW_HEAD =
 
 export type ArtifactKind = 'svg' | 'html'
 
-/** 拼出 iframe srcdoc。作品原样嵌入，不做任何修补。 */
-export function artifactPreviewDocument(document: string, kind: ArtifactKind): string {
-  if (kind === 'html') return PREVIEW_HEAD + document
+/**
+ * 作品的虚拟桌面视口。缩放预览把作品渲染在这个尺寸里，再由外层整体等比缩小：
+ * 固定像素尺寸的页面也能整幅看到，且不会出现 iframe 自己的滚动条。
+ */
+export const ARTIFACT_PREVIEW_VIEW = { width: 1280, height: 800 }
+
+/** 拼出 iframe srcdoc。作品原样嵌入，不做任何修补；fit 只追加去掉滚动条的样式。 */
+export function artifactPreviewDocument(document: string, kind: ArtifactKind, fit = false): string {
+  if (kind === 'html') return PREVIEW_HEAD + (fit ? `<style>${HTML_FIT_STYLE}</style>` : '') + document
   return `<!doctype html><html><head>${PREVIEW_HEAD}<style>${SVG_FIT_STYLE}</style></head><body>${document}</body></html>`
 }
 

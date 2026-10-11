@@ -20,9 +20,19 @@ type PelicanOutput struct {
 	Usage    json.RawMessage `json:"usage,omitempty"`
 }
 type PelicanMetadata struct {
-	GroupName      string     `json:"group_name"`
-	Protocol       string     `json:"protocol"`
-	KeyID          int64      `json:"key_id"`
+	GroupName string `json:"group_name"`
+	Protocol  string `json:"protocol"`
+	// Source 目标凭据来源：account（本站已建档上游账号）/ manual（手填地址与 Key）。
+	// 空表示改造前的旧记录（专用测试用户的分组 Key），只读保留。
+	Source string `json:"source,omitempty"`
+	// AccountID 账号来源的本站账号 id。
+	AccountID int64 `json:"account_id,omitempty"`
+	// BaseURL 手填来源的网关地址（不含凭据，可安全落库）。
+	BaseURL string `json:"base_url,omitempty"`
+	// KeyFP 手填来源 Key 的指纹；明文只在进程内使用，绝不入库。
+	KeyFP string `json:"key_fp,omitempty"`
+	// KeyID 旧记录的分组 Key id。新记录不再写入，仅保留以便旧记录仍能解析。
+	KeyID          int64      `json:"key_id,omitempty"`
 	RetryOf        int64      `json:"retry_of,omitempty"`
 	Prompt         string     `json:"prompt"`
 	MaxTokens      int        `json:"max_tokens"`

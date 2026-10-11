@@ -175,8 +175,7 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 
 			if h.Pelican != nil {
 				p := auth.Group("/pelican")
-				p.GET("/config", h.Pelican.Config)
-				p.PUT("/config", h.Pelican.SaveConfig)
+				p.GET("/accounts", h.Pelican.Accounts)
 				p.GET("/groups", h.Pelican.Groups)
 				p.POST("/batches", h.Pelican.Start)
 				p.GET("/batches/:id", h.Pelican.Batch)

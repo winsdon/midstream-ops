@@ -11,30 +11,49 @@ import (
 	"log"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"sub2api-account-monitor/internal/pkg/keyidentity"
 	"sub2api-account-monitor/internal/repository"
+	"sub2api-account-monitor/internal/service/modeldetect"
 )
 
 var ErrPelicanUnavailable = errors.New("plaza.errors.databaseUnavailable")
 var ErrPelicanInvalid = errors.New("pelican.errors.invalid")
 
+// 目标凭据来源：本站已建档上游账号，或手填网关地址 + Key。两者都直连上游。
+const (
+	PelicanSourceAccount = "account"
+	PelicanSourceManual  = "manual"
+)
+
+// 手填地址与 Key 的上限，避免超长垃圾进请求体。
+const (
+	pelicanMaxBaseURLLen = 512
+	pelicanMaxAPIKeyLen  = 512
+)
+
 type pelicanPG interface {
 	ListGroups(context.Context) ([]repository.PGGroup, error)
-	ListUsers(context.Context) ([]repository.PGUser, error)
-	ListPelicanKeys(context.Context, string) ([]repository.PGUserKey, error)
+	ListGroupAvailableModels(context.Context) ([]repository.PGGroupModels, error)
+	ListProbeCandidates(context.Context) ([]repository.PGAccount, error)
 	PelicanVisibleGroups(context.Context) ([]int64, error)
 }
-type PelicanConfig struct {
-	GatewayURL string `json:"gateway_url"`
-	UserID     string `json:"user_id"`
-}
+
+// PelicanTarget 一个测试目标的来源与生成参数。
+//
+// APIKey 只在提交请求里出现：落库前会被剥掉，只在进程内用于发请求。
 type PelicanTarget struct {
-	GroupID  int64  `json:"group_id"`
-	KeyID    int64  `json:"key_id"`
+	GroupID int64  `json:"group_id"`
+	Source  string `json:"source"`
+	// AccountID 账号来源的本站账号 id。
+	AccountID int64 `json:"account_id,omitempty"`
+	// BaseURL 手填来源的网关地址。
+	BaseURL string `json:"base_url,omitempty"`
+	// APIKey 手填来源的密钥，绝不落库。
+	APIKey   string `json:"api_key,omitempty"`
 	Model    string `json:"model"`
 	Protocol string `json:"protocol"`
 	RetryOf  int64  `json:"retry_of,omitempty"`
@@ -47,32 +66,35 @@ type PelicanRequest struct {
 	MaxTokens      int             `json:"max_tokens"`
 	TimeoutSeconds int             `json:"timeout_seconds"`
 }
-type PelicanKeyOption struct {
-	ID     int64  `json:"id"`
-	Name   string `json:"name"`
-	Masked string `json:"masked"`
-}
+
+// PelicanGroupOption 作品归属分组：只决定 group_id / group_name 与可见范围。
 type PelicanGroupOption struct {
-	ID       int64              `json:"id"`
-	Name     string             `json:"name"`
-	Platform string             `json:"platform"`
-	Models   []string           `json:"models"`
-	Keys     []PelicanKeyOption `json:"keys"`
-	Reason   string             `json:"reason,omitempty"`
-}
-type PelicanService struct {
-	Repo     *repository.PelicanRepo
-	settings *repository.SettingsRepo
-	pg       pelicanPG
-	gateway  *PelicanGateway
-	mu       sync.Mutex
-	jobs     map[int64]context.CancelFunc
-	workers  sync.WaitGroup
-	closing  bool
+	ID       int64    `json:"id"`
+	Name     string   `json:"name"`
+	Platform string   `json:"platform"`
+	Models   []string `json:"models"`
 }
 
-func NewPelicanService(repo *repository.PelicanRepo, settings *repository.SettingsRepo, pg pelicanPG) *PelicanService {
-	return &PelicanService{Repo: repo, settings: settings, pg: pg, gateway: NewPelicanGateway(), jobs: map[int64]context.CancelFunc{}}
+// PelicanAccountOption 可选的本站账号，只回展示字段，密钥不出后端。
+type PelicanAccountOption struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Platform string `json:"platform"`
+	BaseURL  string `json:"base_url"`
+}
+
+type PelicanService struct {
+	Repo    *repository.PelicanRepo
+	pg      pelicanPG
+	gateway *PelicanGateway
+	mu      sync.Mutex
+	jobs    map[int64]context.CancelFunc
+	workers sync.WaitGroup
+	closing bool
+}
+
+func NewPelicanService(repo *repository.PelicanRepo, pg pelicanPG) *PelicanService {
+	return &PelicanService{Repo: repo, pg: pg, gateway: NewPelicanGateway(), jobs: map[int64]context.CancelFunc{}}
 }
 func (s *PelicanService) Close() {
 	s.mu.Lock()
@@ -86,98 +108,111 @@ func (s *PelicanService) Close() {
 	s.mu.Unlock()
 	s.workers.Wait()
 }
-func (s *PelicanService) Config(ctx context.Context) (PelicanConfig, error) {
-	var c PelicanConfig
-	raw, err := s.settings.Get(ctx, "pelican")
-	if err != nil {
-		return c, err
-	}
-	if raw != "" {
-		err = json.Unmarshal([]byte(raw), &c)
-	}
-	return c, err
-}
-func (s *PelicanService) SaveConfig(ctx context.Context, c PelicanConfig) error {
-	c.GatewayURL = strings.TrimRight(strings.TrimSpace(c.GatewayURL), "/")
-	c.UserID = strings.TrimSpace(c.UserID)
-	u, err := url.Parse(c.GatewayURL)
-	id, e := strconv.ParseInt(c.UserID, 10, 64)
-	if err != nil || e != nil || id <= 0 || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return ErrPelicanInvalid
-	}
-	for _, suffix := range []string{"/messages", "/responses", "/chat/completions"} {
-		if strings.HasSuffix(u.Path, suffix) {
-			return ErrPelicanInvalid
-		}
-	}
-	users, err := s.pg.ListUsers(ctx)
-	if err != nil {
-		return ErrPelicanUnavailable
-	}
-	found := false
-	for _, user := range users {
-		if user.ID == id && user.Status == "active" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return ErrPelicanInvalid
-	}
-	raw, err := json.Marshal(c)
-	if err != nil {
-		return err
-	}
-	return s.settings.Set(ctx, "pelican", string(raw))
-}
+
+// Groups 列出可选的作品归属分组，并带上分组实际可用的模型作为输入提示。
 func (s *PelicanService) Groups(ctx context.Context) ([]PelicanGroupOption, error) {
-	cfg, err := s.Config(ctx)
-	if err != nil {
-		return nil, err
-	}
 	groups, err := s.pg.ListGroups(ctx)
 	if err != nil {
 		return nil, ErrPelicanUnavailable
 	}
-	keys := []repository.PGUserKey{}
-	if cfg.UserID != "" {
-		keys, err = s.pg.ListPelicanKeys(ctx, cfg.UserID)
-		if err != nil {
-			return nil, ErrPelicanUnavailable
-		}
+	models, err := s.pg.ListGroupAvailableModels(ctx)
+	if err != nil {
+		return nil, ErrPelicanUnavailable
 	}
-	out := make([]PelicanGroupOption, 0)
+	byGroup := map[int64][]string{}
+	for _, m := range models {
+		byGroup[m.GroupID] = m.Models
+	}
+	out := make([]PelicanGroupOption, 0, len(groups))
 	for _, g := range groups {
 		if g.Status != "active" {
 			continue
 		}
-		v := PelicanGroupOption{ID: g.ID, Name: g.Name, Platform: g.Platform, Models: []string{}, Keys: []PelicanKeyOption{}}
-		models := map[string]bool{}
-		for _, k := range keys {
-			if k.GroupID == g.ID {
-				mask := "••••"
-				if len(k.Key) > 8 {
-					mask += k.Key[len(k.Key)-4:]
-				}
-				v.Keys = append(v.Keys, PelicanKeyOption{ID: k.ID, Name: k.Name, Masked: mask})
-				for _, m := range k.Models {
-					models[m] = true
-				}
-			}
+		list := byGroup[g.ID]
+		if list == nil {
+			list = []string{}
 		}
-		for m := range models {
-			v.Models = append(v.Models, m)
+		out = append(out, PelicanGroupOption{ID: g.ID, Name: g.Name, Platform: g.Platform, Models: list})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// Accounts 列出可选的本站上游账号（anthropic / openai 的 api_key 账号）。
+func (s *PelicanService) Accounts(ctx context.Context) ([]PelicanAccountOption, error) {
+	accounts, err := s.pg.ListProbeCandidates(ctx)
+	if err != nil {
+		return nil, ErrPelicanUnavailable
+	}
+	out := make([]PelicanAccountOption, 0, len(accounts))
+	for _, a := range accounts {
+		if !pelicanPlatform(a.Platform) || strings.TrimSpace(a.APIKey) == "" {
+			continue
 		}
-		sort.Strings(v.Models)
-		if g.Platform != "anthropic" && g.Platform != "openai" && g.Platform != "composite" {
-			v.Reason = "pelican.unsupported"
-		} else if len(v.Keys) == 0 {
-			v.Reason = "pelican.noKey"
+		base := strings.TrimRight(strings.TrimSpace(a.BaseURL), "/")
+		if base == "" {
+			continue
 		}
-		out = append(out, v)
+		out = append(out, PelicanAccountOption{ID: a.ID, Name: a.Name, Platform: strings.ToLower(strings.TrimSpace(a.Platform)), BaseURL: base})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name == out[j].Name {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
+}
+
+func pelicanPlatform(platform string) bool {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "anthropic", "openai":
+		return true
+	default:
+		return false
+	}
+}
+
+// normalizePelicanBaseURL 归一化手填地址：去掉具体生成路径后缀，禁止内嵌凭据与查询串。
+func normalizePelicanBaseURL(raw string) (string, error) {
+	v := strings.TrimSpace(raw)
+	u, err := url.Parse(v)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", ErrPelicanInvalid
+	}
+	out, err := modeldetect.NormalizeBaseURL(v)
+	if err != nil {
+		return "", ErrPelicanInvalid
+	}
+	for _, suffix := range []string{"/v1/messages/count_tokens", "/v1/messages", "/v1/responses", "/v1/chat/completions", "/messages", "/responses", "/chat/completions"} {
+		if strings.HasSuffix(strings.ToLower(out), suffix) {
+			out = strings.TrimRight(out[:len(out)-len(suffix)], "/")
+			break
+		}
+	}
+	if out == "" || len(out) > pelicanMaxBaseURLLen {
+		return "", ErrPelicanInvalid
 	}
 	return out, nil
 }
+
+// pelicanProtocolPlatform 校验协议与账号平台是否匹配。
+func pelicanProtocolPlatform(protocol, platform string) error {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "anthropic":
+		if protocol != "messages" {
+			return ErrPelicanInvalid
+		}
+	case "openai":
+		if protocol == "messages" {
+			return ErrPelicanInvalid
+		}
+	default:
+		return errors.New("pelican.errors.accountUnavailable")
+	}
+	return nil
+}
+
 func normalizePelicanRequest(r *PelicanRequest) error {
 	if strings.TrimSpace(r.Prompt) == "" {
 		r.Prompt = DefaultPelicanPrompt
@@ -198,25 +233,71 @@ func normalizePelicanRequest(r *PelicanRequest) error {
 	for i := range r.Targets {
 		t := &r.Targets[i]
 		t.Model = strings.TrimSpace(t.Model)
-		key := fmt.Sprintf("%d/%s", t.GroupID, t.Model)
-		if t.GroupID <= 0 || t.KeyID <= 0 || t.Model == "" || len(t.Model) > 256 || seen[key] || (t.Protocol != "messages" && t.Protocol != "responses" && t.Protocol != "chat") {
+		t.Protocol = strings.TrimSpace(t.Protocol)
+		if t.GroupID <= 0 || t.Model == "" || len(t.Model) > 256 || (t.Protocol != "messages" && t.Protocol != "responses" && t.Protocol != "chat") {
+			return ErrPelicanInvalid
+		}
+		switch t.Source {
+		case PelicanSourceAccount:
+			if t.AccountID <= 0 || t.BaseURL != "" || t.APIKey != "" {
+				return ErrPelicanInvalid
+			}
+		case PelicanSourceManual:
+			if t.AccountID != 0 || strings.TrimSpace(t.APIKey) == "" || len(t.APIKey) > pelicanMaxAPIKeyLen {
+				return ErrPelicanInvalid
+			}
+			base, err := normalizePelicanBaseURL(t.BaseURL)
+			if err != nil {
+				return err
+			}
+			t.BaseURL = base
+		default:
+			return ErrPelicanInvalid
+		}
+		key := fmt.Sprintf("%d|%s|%s|%d|%s", t.GroupID, t.Model, t.Source, t.AccountID, t.BaseURL)
+		if seen[key] {
 			return ErrPelicanInvalid
 		}
 		seen[key] = true
 	}
 	return nil
 }
-func pelicanKey(keys []repository.PGUserKey, t PelicanTarget) (repository.PGUserKey, error) {
-	for _, k := range keys {
-		if k.ID == t.KeyID && k.GroupID == t.GroupID {
-			if (k.Platform == "anthropic" && t.Protocol != "messages") || (k.Platform == "openai" && t.Protocol == "messages") || (k.Platform != "anthropic" && k.Platform != "openai" && k.Platform != "composite") {
-				return repository.PGUserKey{}, ErrPelicanInvalid
-			}
-			return k, nil
-		}
+
+// sanitizePelicanRequest 剥掉手填 Key，写入任务表前必须调用。
+func sanitizePelicanRequest(r PelicanRequest) PelicanRequest {
+	out := r
+	out.Targets = make([]PelicanTarget, len(r.Targets))
+	copy(out.Targets, r.Targets)
+	for i := range out.Targets {
+		out.Targets[i].APIKey = ""
 	}
-	return repository.PGUserKey{}, errors.New("pelican.errors.keyUnavailable")
+	return out
 }
+
+// pelicanCredential 一个目标实际发请求用的地址与密钥，只留在进程内。
+type pelicanCredential struct {
+	base string
+	key  string
+}
+
+func pelicanTargetCredential(t PelicanTarget, accounts map[int64]repository.PGAccount) (pelicanCredential, error) {
+	if t.Source == PelicanSourceManual {
+		return pelicanCredential{base: t.BaseURL, key: t.APIKey}, nil
+	}
+	a, ok := accounts[t.AccountID]
+	if !ok || strings.TrimSpace(a.APIKey) == "" {
+		return pelicanCredential{}, errors.New("pelican.errors.accountUnavailable")
+	}
+	if err := pelicanProtocolPlatform(t.Protocol, a.Platform); err != nil {
+		return pelicanCredential{}, err
+	}
+	base, err := normalizePelicanBaseURL(a.BaseURL)
+	if err != nil {
+		return pelicanCredential{}, errors.New("pelican.errors.accountUnavailable")
+	}
+	return pelicanCredential{base: base, key: a.APIKey}, nil
+}
+
 func (s *PelicanService) Start(ctx context.Context, r PelicanRequest) (*repository.PelicanBatch, error) {
 	if err := normalizePelicanRequest(&r); err != nil {
 		return nil, err
@@ -224,7 +305,7 @@ func (s *PelicanService) Start(ctx context.Context, r PelicanRequest) (*reposito
 	raw, _ := json.Marshal(r)
 	sum := sha256.Sum256(raw)
 	hash := hex.EncodeToString(sum[:])
-	// A retry of an accepted submission must work even if keys/config later changed.
+	// A retry of an accepted submission must work even if accounts/groups later changed.
 	if existing, err := s.Repo.FindBatch(ctx, r.RequestID); err == nil {
 		if existing.Hash != hash {
 			return nil, repository.ErrPelicanConflict
@@ -233,20 +314,39 @@ func (s *PelicanService) Start(ctx context.Context, r PelicanRequest) (*reposito
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
-	cfg, err := s.Config(ctx)
+	groups, err := s.Groups(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if cfg.UserID == "" || cfg.GatewayURL == "" {
-		return nil, errors.New("pelican.errors.notConfigured")
+	groupNames := map[int64]string{}
+	for _, g := range groups {
+		groupNames[g.ID] = g.Name
 	}
-	keys, err := s.pg.ListPelicanKeys(ctx, cfg.UserID)
-	if err != nil {
-		return nil, ErrPelicanUnavailable
+	accounts := map[int64]repository.PGAccount{}
+	needAccounts := false
+	for _, t := range r.Targets {
+		if t.Source == PelicanSourceAccount {
+			needAccounts = true
+			break
+		}
+	}
+	if needAccounts {
+		list, err := s.pg.ListProbeCandidates(ctx)
+		if err != nil {
+			return nil, ErrPelicanUnavailable
+		}
+		for _, a := range list {
+			accounts[a.ID] = a
+		}
 	}
 	results := make([]*repository.PelicanResult, 0, len(r.Targets))
+	creds := make([]pelicanCredential, 0, len(r.Targets))
 	for _, t := range r.Targets {
-		k, err := pelicanKey(keys, t)
+		name := groupNames[t.GroupID]
+		if name == "" {
+			return nil, ErrPelicanInvalid
+		}
+		cred, err := pelicanTargetCredential(t, accounts)
 		if err != nil {
 			return nil, err
 		}
@@ -259,12 +359,17 @@ func (s *PelicanService) Start(ctx context.Context, r PelicanRequest) (*reposito
 				return nil, ErrPelicanInvalid
 			}
 		}
-		results = append(results, &repository.PelicanResult{GroupID: t.GroupID, Model: t.Model, Status: "queued", PelicanMetadata: repository.PelicanMetadata{GroupName: k.GroupName, Protocol: t.Protocol, KeyID: t.KeyID, RetryOf: t.RetryOf, Prompt: r.Prompt, MaxTokens: r.MaxTokens, TimeoutSeconds: r.TimeoutSeconds}})
+		meta := repository.PelicanMetadata{GroupName: name, Protocol: t.Protocol, Source: t.Source, AccountID: t.AccountID, BaseURL: t.BaseURL, Prompt: r.Prompt, MaxTokens: r.MaxTokens, TimeoutSeconds: r.TimeoutSeconds, RetryOf: t.RetryOf}
+		if t.Source == PelicanSourceManual {
+			meta.KeyFP = keyidentity.Fingerprint(t.APIKey)
+		}
+		results = append(results, &repository.PelicanResult{GroupID: t.GroupID, Model: t.Model, Status: "queued", PelicanMetadata: meta})
+		creds = append(creds, cred)
 	}
-	stored, _ := json.Marshal(struct {
-		PelicanRequest
-		Config PelicanConfig `json:"config"`
-	}{r, cfg})
+	stored, err := json.Marshal(sanitizePelicanRequest(r))
+	if err != nil {
+		return nil, err
+	}
 	batch := &repository.PelicanBatch{RequestID: r.RequestID, Hash: hash, Request: stored}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -282,25 +387,32 @@ func (s *PelicanService) Start(ctx context.Context, r PelicanRequest) (*reposito
 		defer s.workers.Done()
 		defer cancel()
 		defer func() { s.mu.Lock(); delete(s.jobs, batch.ID); s.mu.Unlock() }()
-		s.run(jobCtx, cfg, r.Concurrency, results)
+		s.run(jobCtx, creds, r.Concurrency, results)
 	}()
 	return batch, nil
 }
-func (s *PelicanService) run(ctx context.Context, cfg PelicanConfig, concurrency int, results []*repository.PelicanResult) {
+
+func (s *PelicanService) run(ctx context.Context, creds []pelicanCredential, concurrency int, results []*repository.PelicanResult) {
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	defer wg.Wait()
-	for _, v := range results {
+	for i, v := range results {
 		select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():
 			return
 		}
 		wg.Add(1)
-		go func(v *repository.PelicanResult) { defer wg.Done(); defer func() { <-sem }(); s.execute(ctx, cfg, v) }(v)
+		go func(v *repository.PelicanResult, cred pelicanCredential) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			s.execute(ctx, cred, v)
+		}(v, creds[i])
 	}
 }
-func (s *PelicanService) execute(parent context.Context, cfg PelicanConfig, v *repository.PelicanResult) {
+
+// execute 用批次开始时解析好的凭据发请求：手填 Key 不落库，只能靠这份内存快照。
+func (s *PelicanService) execute(parent context.Context, cred pelicanCredential, v *repository.PelicanResult) {
 	if parent.Err() != nil {
 		v.Status = "cancelled"
 		finished := time.Now().UTC()
@@ -327,15 +439,11 @@ func (s *PelicanService) execute(parent context.Context, cfg PelicanConfig, v *r
 		}
 		return
 	}
-	keys, err := s.pg.ListPelicanKeys(ctx, cfg.UserID)
-	if err == nil {
-		var key repository.PGUserKey
-		key, err = pelicanKey(keys, PelicanTarget{GroupID: v.GroupID, KeyID: v.KeyID, Protocol: v.Protocol})
-		if err == nil {
-			v.Output, err = s.gateway.Generate(ctx, cfg.GatewayURL, key.Key, v)
-		}
+	var err error
+	if strings.TrimSpace(cred.base) == "" || strings.TrimSpace(cred.key) == "" {
+		err = errors.New("pelican.errors.credentialsUnavailable")
 	} else {
-		err = ErrPelicanUnavailable
+		v.Output, err = s.gateway.Generate(ctx, cred.base, cred.key, v)
 	}
 	end := time.Now().UTC()
 	v.FinishedAt = &end

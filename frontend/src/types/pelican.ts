@@ -1,11 +1,17 @@
 export type PelicanProtocol = 'messages' | 'responses' | 'chat'
-export interface PelicanConfig { gateway_url: string; user_id: string }
+/** 目标凭据来源：本站已建档上游账号 / 手填网关地址 + Key。 */
+export type PelicanSource = 'account' | 'manual'
 export interface PelicanGroup {
   id: number; name: string; platform: string; models: string[]
-  keys: { id: number; name: string; masked: string }[]
-  reason?: string
 }
-export interface PelicanTarget { group_id: number; key_id: number; model: string; protocol: PelicanProtocol; retry_of?: number }
+export interface PelicanAccount {
+  id: number; name: string; platform: string; base_url: string
+}
+export interface PelicanTarget {
+  group_id: number; source: PelicanSource
+  account_id?: number; base_url?: string; api_key?: string
+  model: string; protocol: PelicanProtocol; retry_of?: number
+}
 export interface PelicanRequest {
   request_id: string; prompt: string; targets: PelicanTarget[]
   concurrency: number; max_tokens: number; timeout_seconds: number
@@ -14,7 +20,9 @@ export interface PelicanResult {
   id: number; group_id: number; group_name: string; model: string
   tested_at: string; published_at: string | null; duration_ms: number
   prompt: string; protocol: PelicanProtocol; max_tokens: number; has_document: boolean
-  batch_id?: number; key_id?: number; retry_of?: number; timeout_seconds?: number
+  batch_id?: number; retry_of?: number; timeout_seconds?: number
+  /** account / manual；旧的分组 Key 记录为空且不可重新测试 */
+  source?: string; account_id?: number; base_url?: string
   started_at?: string; finished_at?: string; status?: string; error?: string
   output?: { document?: string; kind?: 'html' | 'svg'; text?: string; usage?: Record<string, unknown>; request?: Record<string, unknown> }
 }

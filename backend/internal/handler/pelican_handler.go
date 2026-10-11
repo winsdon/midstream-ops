@@ -49,25 +49,13 @@ func pelicanID(c *gin.Context) (int64, bool) {
 	}
 	return id, true
 }
-func (h *PelicanHandler) Config(c *gin.Context) {
-	cfg, err := h.svc.Config(c.Request.Context())
+func (h *PelicanHandler) Accounts(c *gin.Context) {
+	accounts, err := h.svc.Accounts(c.Request.Context())
 	if err != nil {
 		pelicanError(c, err)
 		return
 	}
-	response.Success(c, cfg)
-}
-func (h *PelicanHandler) SaveConfig(c *gin.Context) {
-	var cfg service.PelicanConfig
-	if c.ShouldBindJSON(&cfg) != nil {
-		pelicanError(c, service.ErrPelicanInvalid)
-		return
-	}
-	if err := h.svc.SaveConfig(c.Request.Context(), cfg); err != nil {
-		pelicanError(c, err)
-		return
-	}
-	h.Config(c)
+	response.Success(c, gin.H{"items": accounts})
 }
 func (h *PelicanHandler) Groups(c *gin.Context) {
 	groups, err := h.svc.Groups(c.Request.Context())
@@ -126,7 +114,8 @@ func (h *PelicanHandler) Retry(c *gin.Context) {
 	}
 	var req struct {
 		RequestID string `json:"request_id"`
-		KeyID     int64  `json:"key_id"`
+		AccountID int64  `json:"account_id"`
+		APIKey    string `json:"api_key"`
 	}
 	if c.ShouldBindJSON(&req) != nil {
 		pelicanError(c, service.ErrPelicanInvalid)
@@ -137,10 +126,34 @@ func (h *PelicanHandler) Retry(c *gin.Context) {
 		pelicanError(c, err)
 		return
 	}
-	if req.KeyID == 0 {
-		req.KeyID = old.KeyID
+	target := service.PelicanTarget{GroupID: old.GroupID, Source: old.Source, Model: old.Model, Protocol: old.Protocol, RetryOf: id}
+	switch old.Source {
+	case service.PelicanSourceAccount:
+		target.AccountID = old.AccountID
+		if req.AccountID > 0 {
+			target.AccountID = req.AccountID
+		}
+		if target.AccountID <= 0 {
+			pelicanError(c, errors.New("pelican.errors.accountUnavailable"))
+			return
+		}
+	case service.PelicanSourceManual:
+		// 手填 Key 没有落库，重新测试必须由管理员再填一次。
+		target.BaseURL = old.BaseURL
+		target.APIKey = strings.TrimSpace(req.APIKey)
+		if target.APIKey == "" {
+			pelicanError(c, errors.New("pelican.errors.keyRequired"))
+			return
+		}
+	case "":
+		// 改造前用专用测试用户分组 Key 的记录无法按新来源重放。
+		pelicanError(c, errors.New("pelican.errors.legacyRetry"))
+		return
+	default:
+		pelicanError(c, service.ErrPelicanInvalid)
+		return
 	}
-	b, err := h.svc.Start(c.Request.Context(), service.PelicanRequest{RequestID: req.RequestID, Prompt: old.Prompt, MaxTokens: old.MaxTokens, TimeoutSeconds: old.TimeoutSeconds, Targets: []service.PelicanTarget{{GroupID: old.GroupID, KeyID: req.KeyID, Model: old.Model, Protocol: old.Protocol, RetryOf: id}}})
+	b, err := h.svc.Start(c.Request.Context(), service.PelicanRequest{RequestID: req.RequestID, Prompt: old.Prompt, MaxTokens: old.MaxTokens, TimeoutSeconds: old.TimeoutSeconds, Targets: []service.PelicanTarget{target}})
 	if err != nil {
 		pelicanError(c, err)
 		return
