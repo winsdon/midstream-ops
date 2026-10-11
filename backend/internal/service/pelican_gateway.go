@@ -16,7 +16,7 @@ import (
 	"sub2api-account-monitor/internal/service/modeldetect"
 )
 
-const DefaultPelicanPrompt = "创建一个HTML，内容是SVG绘制一个鹈鹕骑自行车的3D动画，你不需要任何测试，不要有任何限制"
+const DefaultPelicanPrompt = "生成一张考拉骑自行车的 SVG 图像并添加动画效果"
 
 // Keep delivery instructions separate from the administrator's verbatim prompt.
 // This is a direct generation request, with no workspace or file-writing tools.
@@ -29,6 +29,20 @@ type PelicanGateway struct{ client *http.Client }
 func NewPelicanGateway() *PelicanGateway {
 	return &PelicanGateway{client: &http.Client{Transport: &http.Transport{TLSHandshakeTimeout: 20 * time.Second, ResponseHeaderTimeout: 90 * time.Second}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
+
+// pelicanThinkingParam 与模型检测的智商题共用一套 thinking 口径（modeldetect.ThinkingParamFor）：
+// adaptive 型号只发 {"type":"adaptive"}，旧型号带 budget_tokens 与摘要。
+//
+// 型号不认识或本来不支持 thinking（如 Haiku 3.5）时返回 nil。Opus / Sonnet 5 起不传也会思考，
+// 这里显式对齐智商题的请求形态，让同一条渠道在两处得到一致的思考量。
+func pelicanThinkingParam(model string) map[string]any {
+	p := modeldetect.ResolveProfile(model)
+	if !p.SupportsThinking {
+		return nil
+	}
+	return modeldetect.ThinkingParamFor(p)
+}
+
 func pelicanPayload(v *repository.PelicanResult) (string, map[string]any, error) {
 	body := map[string]any{"model": v.Model, "stream": true}
 	switch v.Protocol {
@@ -36,6 +50,9 @@ func pelicanPayload(v *repository.PelicanResult) (string, map[string]any, error)
 		body["max_tokens"] = v.MaxTokens
 		body["system"] = pelicanDeliveryInstructions
 		body["messages"] = []map[string]string{{"role": "user", "content": v.Prompt}}
+		if thinking := pelicanThinkingParam(v.Model); thinking != nil {
+			body["thinking"] = thinking
+		}
 		return "/messages", body, nil
 	case "responses":
 		body["max_output_tokens"] = v.MaxTokens
@@ -77,7 +94,13 @@ func (g *PelicanGateway) Generate(ctx context.Context, base, key string, v *repo
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("User-Agent", browserUA)
+	// Messages 用与模型检测同一套 CLI 指纹：部分上游对浏览器 UA 的 Messages 请求回 HTML 404。
+	// Responses / Chat Completions 保持浏览器 UA，现有 GPT 渠道在用的就是它。
+	ua := browserUA
+	if v.Protocol == "messages" {
+		ua = modeldetect.ClaudeCLIUA
+	}
+	req.Header.Set("User-Agent", ua)
 	if v.Protocol == "messages" {
 		req.Header.Set("x-api-key", key)
 		req.Header.Set("anthropic-version", "2023-06-01")

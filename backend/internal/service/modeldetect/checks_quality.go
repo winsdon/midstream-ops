@@ -26,7 +26,7 @@ func checkQualityBaseline(ctx context.Context, c *Client, st *runState) *CheckRe
 	meta, _ := checkByID("quality-baseline")
 	r := newResult(meta)
 	probeID := nonce("QUALITY")
-	thinking := qualityThinkingParam(st.profile)
+	thinking := ThinkingParamFor(st.profile)
 	probes := []qualityProbe{
 		{
 			name: "精确算术",
@@ -94,13 +94,6 @@ func checkQualityBaseline(ctx context.Context, c *Client, st *runState) *CheckRe
 	}
 
 	return r.finish(fmt.Sprintf("质量 %d/%d；成功 %d/%d；总耗时 %dms", passed, len(probes), successful, len(probes), r.DurationMs))
-}
-
-func qualityThinkingParam(profile ThinkingProfile) map[string]any {
-	if profile.Adaptive {
-		return map[string]any{"type": "adaptive"}
-	}
-	return profile.ThinkingParam("summarized")
 }
 
 func runFableEffortPairs(ctx context.Context, c *Client, r *CheckResult) []fableProbe {

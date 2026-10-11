@@ -11,9 +11,10 @@ import (
 	"unicode/utf8"
 )
 
-// claudeCLIUA 用于 Claude 协议检测：部分上游对浏览器 UA 的 Messages 请求返回 HTML 404。
+// ClaudeCLIUA 用于 Claude 协议请求：部分上游对浏览器 UA 的 Messages 请求返回 HTML 404。
 // 采用已验证可用的 CLI 标识；供应商有其他要求时仍可通过 ExtraHeaders 覆盖。
-const claudeCLIUA = "claude-cli/2.1.0 (external, cli)"
+// 分组鹈鹕测试的 Messages 请求同样用它，与智商题保持同一套指纹。
+const ClaudeCLIUA = "claude-cli/2.1.0 (external, cli)"
 
 // redacted 报告中替换凭据的占位符。
 const redacted = "••••••••"
@@ -98,7 +99,7 @@ func (c *Client) headers(stream bool) map[string]string {
 	h := map[string]string{
 		"content-type":      "application/json",
 		"anthropic-version": "2023-06-01",
-		"user-agent":        claudeCLIUA,
+		"user-agent":        ClaudeCLIUA,
 	}
 	if stream {
 		h["accept"] = "text/event-stream"

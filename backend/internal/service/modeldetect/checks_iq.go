@@ -55,7 +55,7 @@ const (
 func askIQ(ctx context.Context, c *Client, st *runState, r *CheckResult, prompt string, maxTokens int) (streamedReply, bool) {
 	ex := c.PostStreamWithin(ctx, KindMessages, map[string]any{
 		"model": c.Target().Model, "max_tokens": maxTokens, "stream": true,
-		"thinking": qualityThinkingParam(st.profile),
+		"thinking": ThinkingParamFor(st.profile),
 		"messages": []map[string]any{{"role": "user", "content": prompt}},
 	}, iqStreamBudget)
 	r.Exchanges = []*Exchange{ex}

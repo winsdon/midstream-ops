@@ -478,29 +478,30 @@ func TestSameModelRequiresMinorVersion(t *testing.T) {
 
 func TestProfileThinkingBehaviour(t *testing.T) {
 	cases := []struct {
-		model                         string
-		adaptive, defaultThink, keeps bool
-		minCache                      int
+		model                                   string
+		adaptive, defaultThink, keeps, supports bool
+		minCache                                int
 	}{
-		{"claude-opus-5-5", true, true, true, 512},
-		{"claude-fable-5-1", true, true, true, 512},
-		{"claude-opus-4-8", true, false, true, 1024},
-		{"claude-opus-4-6", true, false, true, 4096},
-		{"claude-sonnet-4-6", true, false, true, 1024},
-		{"claude-sonnet-5", true, true, true, 1024},
-		{"claude-opus-4-5-20251101", false, false, true, 4096},
-		{"claude-sonnet-4-5-20250929", false, false, false, 1024},
-		{"claude-haiku-4-5-20251001", false, false, false, 4096},
-		{"claude-opus-4-1-20250805", false, false, false, 1024},
-		{"claude-sonnet-4-20250514", false, false, false, 1024}, // 日期不是小版本号
-		{"claude-3-7-sonnet-20250219", false, false, false, 1024},
+		{"claude-opus-5-5", true, true, true, true, 512},
+		{"claude-fable-5-1", true, true, true, true, 512},
+		{"claude-opus-4-8", true, false, true, true, 1024},
+		{"claude-opus-4-6", true, false, true, true, 4096},
+		{"claude-sonnet-4-6", true, false, true, true, 1024},
+		{"claude-sonnet-5", true, true, true, true, 1024},
+		{"claude-opus-4-5-20251101", false, false, true, true, 4096},
+		{"claude-sonnet-4-5-20250929", false, false, false, true, 1024},
+		{"claude-haiku-4-5-20251001", false, false, false, true, 4096},
+		{"claude-opus-4-1-20250805", false, false, false, true, 1024},
+		{"claude-sonnet-4-20250514", false, false, false, true, 1024}, // 日期不是小版本号
+		{"claude-3-7-sonnet-20250219", false, false, false, true, 1024},
+		{"claude-3-5-haiku-20241022", false, false, false, false, 2048}, // thinking 会 400
 	}
 	for _, tc := range cases {
 		p := ResolveProfile(tc.model)
 		if !p.Recognized || p.Adaptive != tc.adaptive || p.DefaultThinking != tc.defaultThink ||
-			p.KeepsThinking != tc.keeps || p.MinCacheTokens != tc.minCache {
-			t.Fatalf("%s：期望 adaptive=%v default=%v keeps=%v minCache=%d，实际 %+v",
-				tc.model, tc.adaptive, tc.defaultThink, tc.keeps, tc.minCache, p)
+			p.KeepsThinking != tc.keeps || p.SupportsThinking != tc.supports || p.MinCacheTokens != tc.minCache {
+			t.Fatalf("%s：期望 adaptive=%v default=%v keeps=%v supports=%v minCache=%d，实际 %+v",
+				tc.model, tc.adaptive, tc.defaultThink, tc.keeps, tc.supports, tc.minCache, p)
 		}
 	}
 }

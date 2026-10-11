@@ -21,7 +21,9 @@
 ## 执行与历史
 
 - Claude 使用 Anthropic Messages；GPT 默认 OpenAI Responses，也可选择 Chat Completions。协议与账号平台必须匹配，不匹配的目标在提交时即被拒。
-- 默认并发 3、每项超时 900 秒、输出上限 32,000 tokens；高级选项可调整。不强制开启额外思考参数。
+- 默认并发 3、每项超时 900 秒、输出上限 32,000 tokens；高级选项可调整。
+- 默认提示词为 `生成一张考拉骑自行车的 SVG 图像并添加动画效果`，页面可以改写本轮提示词；实际使用的提示词随记录留痕。
+- Messages 请求与模型检测的智商题共用一套 thinking 口径（`modeldetect.ThinkingParamFor`）：adaptive 型号发 `{"type":"adaptive"}`，旧型号带 `budget_tokens`，型号不认识或本来不支持 thinking（如 Haiku 3.5）时不发；Messages 同时复用同一套 `claude-cli` User-Agent。Opus / Sonnet 5 起不传也会思考且关不掉，思考量与正文共用 `max_tokens` 上限，输出上限给小了会在写完前被截断。
 - 管理员填写的提示词作为用户消息原样发送；另附统一交付指令，要求在回复正文中直接返回完整独立 HTML，不依赖外部资源，不用文件路径或“已创建文件”的说明代替代码。Messages 使用 `system`，Responses 使用 `instructions`，Chat Completions 使用 system 消息。完整请求（含交付指令，不含 Key）保存在结果详情的请求参数中。不提供文件写入或工作区工具。
 - Responses 流优先读取 `response.completed` 中的最终正文；完成事件没有正文时才使用累计文本增量，避免只收到前言增量而漏掉最终 HTML。
 - 流式响应必须正常结束；截断、异常断流、无完整 HTML/SVG 都不允许发布。可在详情查看已收到的原始回复。

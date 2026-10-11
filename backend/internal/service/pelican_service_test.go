@@ -86,6 +86,16 @@ func TestPelicanRequestValidation(t *testing.T) {
 	}
 }
 
+func TestPelicanDefaultPromptFallsBackToKoala(t *testing.T) {
+	r := PelicanRequest{RequestID: "request-123", Targets: []PelicanTarget{{GroupID: 1, Source: PelicanSourceAccount, AccountID: 2, Model: "claude-opus-5-5", Protocol: "messages"}}}
+	if err := normalizePelicanRequest(&r); err != nil || r.Prompt != DefaultPelicanPrompt {
+		t.Fatalf("prompt=%q err=%v", r.Prompt, err)
+	}
+	if !strings.Contains(r.Prompt, "考拉") || !strings.Contains(r.Prompt, "SVG") {
+		t.Fatalf("default prompt must ask for an animated koala SVG: %q", r.Prompt)
+	}
+}
+
 func TestPelicanGroupsAndAccountsHideSecrets(t *testing.T) {
 	s := NewPelicanService(nil, &pelicanTestPG{accounts: []repository.PGAccount{
 		{ID: 2, Name: "claude", Platform: "anthropic", BaseURL: "https://api.example.com/", APIKey: "sk-secret"},

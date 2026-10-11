@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ARTIFACT_PREVIEW_VIEW } from './detectArtifact'
 import {
+  DEFAULT_PELICAN_PROMPT,
   pelicanDateRange,
   pelicanPending,
   pelicanPreviewScale,
@@ -8,6 +9,13 @@ import {
   pelicanTargetReady,
   type PelicanTargetDraft
 } from './pelican'
+
+describe('pelican default prompt', () => {
+  // 与后端 service.DefaultPelicanPrompt 必须逐字一致：改一处不改另一处就是两边提示词不同。
+  it('asks for an animated koala SVG', () => {
+    expect(DEFAULT_PELICAN_PROMPT).toBe('生成一张考拉骑自行车的 SVG 图像并添加动画效果')
+  })
+})
 
 describe('pelican history boundaries', () => {
   it('includes the whole selected final day without depending on server timezone', () => {

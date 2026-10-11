@@ -1,5 +1,5 @@
 export const pelicanZh = {
-  title: '鹈鹕测试', intro: '查看各分组在实际测试时生成的鹈鹕骑车作品。一次作品仅代表当次生成效果。',
+  title: '鹈鹕测试', intro: '查看各分组在实际测试时生成的动画作品。一次作品仅代表当次生成效果。',
   adminIntro: '选本站账号或手填地址 + Key 直连上游生成作品，预览后发布给客户。',
   config: '测试配置', prompt: '本次提示词', resetPrompt: '恢复默认提示词', advanced: '高级选项', concurrency: '并发数', maxTokens: '最大输出 tokens', timeout: '单项超时（秒）',
   deliveryHint: '提示词原样发送，另附统一交付要求：直接返回完整 HTML 代码，不依赖外部资源，不以文件链接或完成说明代替作品。',
@@ -26,7 +26,7 @@ export const pelicanZh = {
   errors: { invalid: '参数无效，请检查分组、账号 / 地址、模型、协议和高级选项。', conflict: '状态已变更、记录不可发布，或提交标识已用于其他参数，请刷新后重试。', notFound: '作品不存在或尚未公开。', failed: '操作失败，请稍后重试。', noDocument: '未取得完整的 HTML / SVG 作品。', accountUnavailable: '账号不存在、已停用或缺少可用密钥 / 地址。', credentialsUnavailable: '本次凭据已失效（进程内密钥不落库），请重新发起测试。', keyRequired: '手填来源的 Key 不会保存，重新测试需要再填一次。', legacyRetry: '旧版分组 Key 记录不支持重新测试。', unavailable: '服务暂不可用。' }
 }
 export const pelicanEn = {
-  title: 'Pelican test', intro: 'See pelican bicycle artwork generated through each group. Each piece represents one generation at the stated time.',
+  title: 'Pelican test', intro: 'See animated artwork generated through each group. Each piece represents one generation at the stated time.',
   adminIntro: 'Generate artwork straight from a local account or a hand-entered URL and key, preview it, then publish it to customers.',
   config: 'Test configuration', prompt: 'Prompt', resetPrompt: 'Restore default prompt', advanced: 'Advanced options', concurrency: 'Concurrency', maxTokens: 'Maximum output tokens', timeout: 'Timeout per target (seconds)',
   deliveryHint: 'Your prompt is sent unchanged, with a separate delivery instruction to return complete HTML source without external dependencies, file links, or completion reports.',

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"sub2api-account-monitor/internal/repository"
+	"sub2api-account-monitor/internal/service/modeldetect"
 )
 
 func TestPelicanProtocols(t *testing.T) {
@@ -56,7 +57,7 @@ func TestPelicanGatewayRequestAndRedaction(t *testing.T) {
 					t.Error("invalid JSON")
 				}
 				if body["model"] != "test-model" || body["stream"] != true || body["thinking"] != nil {
-					t.Errorf("unexpected payload %v", body)
+					t.Errorf("unexpected payload for a model without thinking support: %v", body)
 				}
 				prompt := ""
 				instructions := ""
@@ -117,6 +118,53 @@ func TestPelicanGatewayRequestAndRedaction(t *testing.T) {
 			}
 			if !strings.Contains(string(out.Request), pelicanDeliveryInstructions) {
 				t.Fatal("actual delivery instructions missing from request snapshot")
+			}
+		})
+	}
+}
+
+// 分组鹈鹕测试的 Messages 请求形态对齐模型检测的智商题：thinking 按型号档案发，UA 用同一套
+// CLI 指纹。型号不认识或本来不支持 thinking 时不发——GPT 协议的 thinking 字段会直接 400。
+func TestPelicanMessagesRequestShape(t *testing.T) {
+	cases := []struct {
+		model string
+		want  map[string]any
+	}{
+		{"claude-opus-5-5", map[string]any{"type": "adaptive"}},
+		{"claude-opus-4-5", map[string]any{"type": "enabled", "budget_tokens": 1024, "display": "summarized"}},
+		{"claude-3-5-haiku-20241022", nil},
+		{"gpt-5.1", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			var body map[string]any
+			var ua string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ua = r.Header.Get("User-Agent")
+				if json.NewDecoder(r.Body).Decode(&body) != nil {
+					t.Error("invalid JSON")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `{"content":[{"type":"text","text":"<svg></svg>"}],"stop_reason":"end_turn","usage":{"output_tokens":1}}`)
+			}))
+			defer server.Close()
+			_, err := NewPelicanGateway().Generate(context.Background(), server.URL, "test-key", &repository.PelicanResult{
+				Model: tc.model, PelicanMetadata: repository.PelicanMetadata{Protocol: "messages", Prompt: "画一只考拉", MaxTokens: 32000},
+			})
+			if err != nil {
+				t.Fatalf("err=%v", err)
+			}
+			// 用 JSON 比对：解码后的数字是 float64，与手写的 int 字面量 DeepEqual 不等。
+			want, _ := json.Marshal(tc.want)
+			got, _ := json.Marshal(body["thinking"])
+			if string(got) != string(want) {
+				t.Fatalf("thinking=%s want %s", got, want)
+			}
+			if body["max_tokens"] != float64(32000) || body["stream"] != true {
+				t.Fatalf("unexpected tokens or stream flag: %v", body)
+			}
+			if ua != modeldetect.ClaudeCLIUA {
+				t.Fatalf("messages must carry the detection CLI UA, got %q", ua)
 			}
 		})
 	}

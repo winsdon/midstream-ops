@@ -158,6 +158,9 @@ type ThinkingProfile struct {
 	Family string
 	// Adaptive 为 true 时用 {"type":"adaptive"}，否则用 {"type":"enabled","budget_tokens":1024}。
 	Adaptive bool
+	// SupportsThinking 型号本身接不接受 thinking 参数：官方自 Opus 4 / Sonnet 3.7 / Haiku 4.5 起支持，
+	// Haiku 3.5 与更早的型号收到 thinking 会直接 400。调用方据此决定发不发，避免把本来能跑的请求改坏。
+	SupportsThinking bool
 	// DefaultThinking 不传 thinking 也会思考：Opus / Sonnet 5 起与 Fable / Mythos 5 起（Opus 5.5、
 	// Fable 5.1 更是关不掉）。Opus 4.6–4.8、Sonnet 4.6 虽然用 adaptive，不传就不思考。
 	DefaultThinking bool
@@ -232,16 +235,20 @@ func ResolveProfile(model string) ThinkingProfile {
 		p.Adaptive = v.atLeast(4, 6)
 		p.DefaultThinking = v.major >= 5
 		p.KeepsThinking = v.atLeast(4, 5)
+		p.SupportsThinking = v.major >= 4
 	case "sonnet":
 		p.Adaptive = v.atLeast(4, 6)
 		p.DefaultThinking = v.major >= 5
 		p.KeepsThinking = v.atLeast(4, 6)
+		p.SupportsThinking = v.atLeast(3, 7)
 	case "haiku":
 		p.KeepsThinking = v.atLeast(4, 6)
+		p.SupportsThinking = v.atLeast(4, 5)
 	case "fable", "mythos":
 		p.Adaptive = v.major >= 5
 		p.DefaultThinking = v.major >= 5
 		p.KeepsThinking = v.major >= 5
+		p.SupportsThinking = v.major >= 5
 	}
 	if p.Adaptive {
 		p.BudgetTokens = 0
@@ -287,6 +294,17 @@ func (p ThinkingProfile) ThinkingParam(display string) map[string]any {
 		return map[string]any{"type": "adaptive", "display": display}
 	}
 	return map[string]any{"type": "enabled", "budget_tokens": p.BudgetTokens, "display": display}
+}
+
+// ThinkingParamFor 检测与生成共用的一套 thinking 口径：adaptive 型号只发 type，display 交给
+// 上游默认（Opus 4.7 起默认不回思考正文）；旧型号带 budget_tokens 与摘要。
+//
+// 调用方应先看 SupportsThinking：型号不认识或本来不支持 thinking 时不要发这个字段。
+func ThinkingParamFor(p ThinkingProfile) map[string]any {
+	if p.Adaptive {
+		return map[string]any{"type": "adaptive"}
+	}
+	return p.ThinkingParam("summarized")
 }
 
 // OfficialCutoff 官方公布的知识截止（reliable = 最可靠知识，training = 训练数据结束）。

@@ -1,7 +1,7 @@
 import { ARTIFACT_PREVIEW_VIEW } from '@/utils/detectArtifact'
 import type { PelicanProtocol, PelicanSource } from '@/types/pelican'
 
-export const DEFAULT_PELICAN_PROMPT = '创建一个HTML，内容是SVG绘制一个鹈鹕骑自行车的3D动画，你不需要任何测试，不要有任何限制'
+export const DEFAULT_PELICAN_PROMPT = '生成一张考拉骑自行车的 SVG 图像并添加动画效果'
 
 /** Inclusive local calendar dates become an exclusive UTC upper bound. */
 export function pelicanDateRange(from: string, to: string): Record<string, string> {
