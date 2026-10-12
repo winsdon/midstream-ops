@@ -53,6 +53,70 @@ export interface PelicanTargetDraft {
   protocol: PelicanProtocol | ''
 }
 
+/** 表单里的一行。uid 只用于列表 key，不提交。 */
+export interface PelicanTargetRow extends PelicanTargetDraft {
+  uid: number
+  account_id: number
+  base_url: string
+  api_key: string
+}
+
+export type PelicanStatusVariant = 'primary' | 'success' | 'warning' | 'danger' | 'gray'
+
+/** 状态徽章颜色。未知状态用灰色，避免进行中和失败看起来一样。 */
+export function pelicanStatusVariant(status?: string): PelicanStatusVariant {
+  switch (status) {
+    case 'completed': return 'success'
+    case 'failed': return 'danger'
+    case 'queued':
+    case 'running': return 'primary'
+    case 'cancelled':
+    case 'interrupted': return 'warning'
+    default: return 'gray'
+  }
+}
+
+/** 已发布或仍在生成的记录不能删除。 */
+export function pelicanDeletable(item?: { published_at?: string | null; status?: string } | null): boolean {
+  return !!item && !item.published_at && !pelicanPending(item.status)
+}
+
+export function pelicanAccountPlatform(
+  accounts: ReadonlyArray<{ id: number; platform: string }>,
+  row: { source: PelicanSource | ''; account_id?: number }
+): string | undefined {
+  if (row.source !== 'account') return undefined
+  return accounts.find(account => account.id === row.account_id)?.platform
+}
+
+/** 协议落在当前来源允许的范围内；不允许时改成该范围的第一项。 */
+export function pelicanNormalizeRow(row: PelicanTargetRow, platform?: string): PelicanTargetRow {
+  const allowed = pelicanProtocolOptions(platform)
+  if (row.protocol && allowed.includes(row.protocol)) return row
+  return { ...row, protocol: allowed[0] ?? '' }
+}
+
+/** 新建一行。只有一个账号时直接选中，并按该账号平台锁定协议。 */
+export function pelicanBlankRow(uid: number, accounts: ReadonlyArray<{ id: number; platform: string }>): PelicanTargetRow {
+  const only = accounts.length === 1 ? accounts[0] : undefined
+  const row: PelicanTargetRow = {
+    uid,
+    group_id: 0,
+    source: accounts.length ? 'account' : 'manual',
+    account_id: only?.id ?? 0,
+    base_url: '',
+    api_key: '',
+    model: '',
+    protocol: ''
+  }
+  return pelicanNormalizeRow(row, only ? only.platform : undefined)
+}
+
+export function pelicanProtocolLabel(protocol: string): string {
+  const labels: Record<PelicanProtocol, string> = { messages: 'Messages', responses: 'Responses', chat: 'Chat Completions' }
+  return labels[protocol as PelicanProtocol] ?? protocol
+}
+
 export function pelicanTargetReady(row: PelicanTargetDraft): boolean {
   if (!(row.group_id > 0) || !row.model.trim() || !row.protocol) return false
   if (row.source === 'account') return (row.account_id ?? 0) > 0

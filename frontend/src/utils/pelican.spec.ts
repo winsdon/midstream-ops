@@ -2,12 +2,17 @@ import { describe, expect, it } from 'vitest'
 import { ARTIFACT_PREVIEW_VIEW } from './detectArtifact'
 import {
   DEFAULT_PELICAN_PROMPT,
+  pelicanBlankRow,
   pelicanDateRange,
+  pelicanDeletable,
+  pelicanNormalizeRow,
   pelicanPending,
   pelicanPreviewScale,
   pelicanProtocolOptions,
+  pelicanStatusVariant,
   pelicanTargetReady,
-  type PelicanTargetDraft
+  type PelicanTargetDraft,
+  type PelicanTargetRow
 } from './pelican'
 
 describe('pelican default prompt', () => {
@@ -73,5 +78,42 @@ describe('pelican target readiness', () => {
     expect(pelicanTargetReady({ ...base, source: '' })).toBe(false)
     expect(pelicanTargetReady({ ...base, account_id: 0 })).toBe(false)
     expect(pelicanTargetReady({ group_id: 1, source: 'manual', base_url: 'https://api.example.com', model: 'm', protocol: 'chat' })).toBe(false)
+  })
+})
+
+describe('pelican target rows', () => {
+  const row = (protocol: PelicanTargetRow['protocol']): PelicanTargetRow => ({
+    uid: 1, group_id: 1, source: 'account', account_id: 7, base_url: '', api_key: '', model: 'm', protocol
+  })
+  it('preselects the only account and locks its protocol', () => {
+    const blank = pelicanBlankRow(3, [{ id: 7, platform: 'anthropic' }])
+    expect(blank).toMatchObject({ uid: 3, source: 'account', account_id: 7, protocol: 'messages' })
+  })
+  it('starts manual when no account is on file', () => {
+    expect(pelicanBlankRow(1, []).source).toBe('manual')
+  })
+  it('replaces a protocol the account platform does not allow', () => {
+    expect(pelicanNormalizeRow(row('chat'), 'anthropic').protocol).toBe('messages')
+  })
+  it('keeps a protocol the source still allows', () => {
+    expect(pelicanNormalizeRow({ ...row('chat'), source: 'manual' }).protocol).toBe('chat')
+  })
+})
+
+describe('pelican status and delete rules', () => {
+  it('colors in-flight work differently from failures', () => {
+    expect(pelicanStatusVariant('completed')).toBe('success')
+    expect(pelicanStatusVariant('failed')).toBe('danger')
+    expect(pelicanStatusVariant('running')).toBe('primary')
+    expect(pelicanStatusVariant('queued')).toBe('primary')
+    expect(pelicanStatusVariant('cancelled')).toBe('warning')
+    expect(pelicanStatusVariant('interrupted')).toBe('warning')
+    expect(pelicanStatusVariant(undefined)).toBe('gray')
+  })
+  it('refuses delete while published or still generating', () => {
+    expect(pelicanDeletable({ published_at: null, status: 'completed' })).toBe(true)
+    expect(pelicanDeletable({ published_at: '2026-01-01', status: 'completed' })).toBe(false)
+    expect(pelicanDeletable({ published_at: null, status: 'running' })).toBe(false)
+    expect(pelicanDeletable(null)).toBe(false)
   })
 })
