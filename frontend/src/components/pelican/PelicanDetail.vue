@@ -24,7 +24,7 @@
 
       <aside class="space-y-3 text-sm">
         <div class="flex flex-wrap gap-2">
-          <Badge :variant="pelicanStatusVariant(detail.status)">{{ t(`pelican.statuses.${detail.status}`) }}</Badge>
+          <Badge v-if="admin" :variant="pelicanStatusVariant(detail.status)">{{ t(`pelican.statuses.${detail.status}`) }}</Badge>
           <Badge v-if="admin" :variant="detail.published_at ? 'success' : 'gray'">{{ t(detail.published_at ? 'pelican.published' : 'pelican.draft') }}</Badge>
         </div>
         <p class="text-gray-500">{{ t('pelican.testedAt') }}: <time :datetime="detail.tested_at">{{ fullDate(detail.tested_at) }}</time></p>

@@ -67,7 +67,7 @@
         <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2.5 text-xs text-gray-500">
           <time :datetime="item.tested_at" :title="fullDate(item.tested_at)">{{ date(item.tested_at) }}</time>
           <span v-if="item.duration_ms > 0">· {{ fmtMs(item.duration_ms) }}</span>
-          <Badge :variant="pelicanStatusVariant(item.status)">{{ t(`pelican.statuses.${item.status}`) }}</Badge>
+          <Badge v-if="admin" :variant="pelicanStatusVariant(item.status)">{{ t(`pelican.statuses.${item.status}`) }}</Badge>
           <Badge v-if="admin" :variant="item.published_at ? 'success' : 'gray'">{{ t(item.published_at ? 'pelican.published' : 'pelican.draft') }}</Badge>
         </div>
         <p v-if="admin && item.error" class="line-clamp-2 break-words px-3 pb-3 text-xs text-red-600">{{ t(item.error) }}</p>
