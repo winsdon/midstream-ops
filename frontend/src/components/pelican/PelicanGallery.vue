@@ -20,8 +20,7 @@
         </label>
         <label class="text-sm">{{ t('pelican.from') }}<input v-model="from" type="date" class="input mt-1 block" @change="applyFilters" /></label>
         <label class="text-sm">{{ t('pelican.to') }}<input v-model="to" type="date" :min="from" class="input mt-1 block" @change="applyFilters" /></label>
-        <label v-if="admin" class="text-sm">{{ t('pelican.batchFilter') }}<input v-model="batchID" type="number" min="1" class="input mt-1 block w-24" @input="queueTextFilter" /></label>
-        <div v-else class="flex rounded-lg bg-gray-100 p-0.5 text-xs dark:bg-dark-800" role="group" :aria-label="t('pelican.history')">
+        <div v-if="!admin" class="flex rounded-lg bg-gray-100 p-0.5 text-xs dark:bg-dark-800" role="group" :aria-label="t('pelican.history')">
           <button type="button" class="rounded-md px-2.5 py-1.5 font-medium" :class="history ? idleTab : activeTab" @click="setHistory(false)">{{ t('pelican.latest') }}</button>
           <button type="button" class="rounded-md px-2.5 py-1.5 font-medium" :class="history ? activeTab : idleTab" @click="setHistory(true)">{{ t('pelican.history') }}</button>
         </div>
@@ -98,7 +97,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { embedPelicanAPI, pelicanAPI } from '@/api/pelican'
 import { errorMessage } from '@/api/client'
@@ -113,8 +112,7 @@ import type { PelicanAccount, PelicanFacet, PelicanGroup, PelicanResult } from '
 import PelicanDetail from './PelicanDetail.vue'
 import PelicanPreview from './PelicanPreview.vue'
 
-const props = defineProps<{ admin?: boolean; groups?: PelicanGroup[]; accounts?: PelicanAccount[]; focusBatch?: number }>()
-const emit = defineEmits<{ submitted: [id: number] }>()
+const props = defineProps<{ admin?: boolean; groups?: PelicanGroup[]; accounts?: PelicanAccount[] }>()
 const { t, locale } = useI18n()
 const api = props.admin ? pelicanAPI : embedPelicanAPI
 const activeTab = 'bg-white text-gray-900 shadow-sm dark:bg-dark-700 dark:text-white'
@@ -127,7 +125,6 @@ const groupID = ref('')
 const model = ref('')
 const from = ref('')
 const to = ref('')
-const batchID = ref(props.focusBatch ? String(props.focusBatch) : '')
 const history = ref(false)
 const page = ref(1)
 const pages = ref(1)
@@ -167,7 +164,7 @@ function togglePage() {
 }
 function deleteOpen() { if (detail.value) void remove(detail.value) }
 function filterSignature() {
-  return [groupID.value, model.value, from.value, to.value, batchID.value, history.value ? '1' : '0'].join('\u0000')
+  return [groupID.value, model.value, from.value, to.value, history.value ? '1' : '0'].join('\u0000')
 }
 function applyFilters() {
   const next = filterSignature()
@@ -207,7 +204,6 @@ async function refresh() {
     const query = new URLSearchParams({ page: String(page.value), page_size: '12', history: String(history.value), ...pelicanDateRange(from.value, to.value) })
     if (groupID.value) query.set('group_id', groupID.value)
     if (model.value) query.set('model', model.value)
-    if (batchID.value) query.set('batch_id', batchID.value)
     const [data, filters] = await Promise.all([api.list(query.toString()), props.admin ? Promise.resolve(null) : embedPelicanAPI.filters()])
     if (own !== version || disposed) return
     items.value = data.items
@@ -264,26 +260,12 @@ async function retry() {
   if (!retryRequest || retryRequest.fingerprint !== fingerprint) retryRequest = { fingerprint, request: pelicanRequestID() }
   busy.value = true
   try {
-    const batch = await pelicanAPI.retry(record.id, { request_id: retryRequest.request, account_id: account || undefined, api_key: key || undefined })
+    await pelicanAPI.retry(record.id, { request_id: retryRequest.request, account_id: account || undefined, api_key: key || undefined })
     retryRequest = undefined
     closeDetail()
-    emit('submitted', batch.id)
     await refresh()
   } catch (e) { error.value = t(errorMessage(e)) } finally { busy.value = false }
 }
-
-watch(() => props.focusBatch, (id, previous) => {
-  if (!id || id === previous) return
-  clearTimeout(textTimer)
-  page.value = 1
-  groupID.value = ''
-  model.value = ''
-  from.value = ''
-  to.value = ''
-  batchID.value = String(id)
-  appliedFilters = filterSignature()
-  void refresh()
-})
 
 appliedFilters = filterSignature()
 

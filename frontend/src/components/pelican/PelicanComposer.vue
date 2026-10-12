@@ -92,20 +92,11 @@
       </div>
       <div class="flex flex-wrap gap-2">
         <button v-if="pending && !submitting" type="button" class="btn btn-secondary btn-sm" @click="emit('discard')">{{ t('pelican.discardSubmission') }}</button>
-        <button v-if="batchActive" type="button" class="btn btn-secondary btn-sm" @click="emit('cancel')">{{ t('pelican.cancel') }}</button>
         <button type="button" class="btn btn-primary btn-sm" :disabled="submitting || !ready" @click="ready && !submitting && emit('submit')">
           <Icon name="play" size="sm" />
           {{ t(submitting ? 'pelican.starting' : pending ? 'pelican.retrySubmission' : 'pelican.start') }}
         </button>
       </div>
-    </div>
-
-    <div v-if="batchId && batchItems.length" class="flex flex-wrap items-center gap-2 border-t border-gray-100 px-4 py-3 dark:border-dark-700 sm:px-5">
-      <span class="text-sm font-medium text-gray-900 dark:text-white">{{ t('pelican.batch', { id: batchId }) }}</span>
-      <span class="text-sm text-gray-500">{{ t('pelican.progress', { done: batchDone, total: batchItems.length }) }}</span>
-      <Badge v-for="item in batchSorted" :key="item.id" :variant="pelicanStatusVariant(item.status)" :title="`${item.group_name} · ${item.model}`">
-        <span class="max-w-[14rem] truncate">{{ item.group_name }} · {{ item.model }}</span>
-      </Badge>
     </div>
   </form>
 </template>
@@ -113,26 +104,23 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import Badge from '@/components/common/Badge.vue'
 import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
-import type { PelicanAccount, PelicanGroup, PelicanProtocol, PelicanResult, PelicanSource } from '@/types/pelican'
-import { DEFAULT_PELICAN_PROMPT, pelicanAccountPlatform, pelicanBlankRow, pelicanHost, pelicanNormalizeRow, pelicanPending, pelicanProtocolLabel, pelicanProtocolOptions, pelicanStatusVariant, pelicanTargetReady, type PelicanTargetRow } from '@/utils/pelican'
+import type { PelicanAccount, PelicanGroup, PelicanProtocol, PelicanSource } from '@/types/pelican'
+import { DEFAULT_PELICAN_PROMPT, pelicanAccountPlatform, pelicanBlankRow, pelicanHost, pelicanNormalizeRow, pelicanProtocolLabel, pelicanProtocolOptions, pelicanTargetReady, type PelicanTargetRow } from '@/utils/pelican'
 
 const props = defineProps<{
   groups: PelicanGroup[]
   accounts: PelicanAccount[]
   submitting: boolean
   pending: boolean
-  batchId: number
-  batchItems: PelicanResult[]
 }>()
 const prompt = defineModel<string>('prompt', { required: true })
 const concurrency = defineModel<number>('concurrency', { required: true })
 const maxTokens = defineModel<number>('maxTokens', { required: true })
 const timeout = defineModel<number>('timeout', { required: true })
 const targets = defineModel<PelicanTargetRow[]>('targets', { required: true })
-const emit = defineEmits<{ submit: []; discard: []; cancel: [] }>()
+const emit = defineEmits<{ submit: []; discard: [] }>()
 
 const { t } = useI18n()
 const sourceOptions = computed(() => [
@@ -143,9 +131,6 @@ const groupOptions = computed(() => props.groups.map(group => ({ value: group.id
 const accountOptions = computed(() => props.accounts.map(account => ({ value: account.id, label: `${account.name} · ${account.platform} · ${pelicanHost(account.base_url)}` })))
 const readyCount = computed(() => targets.value.filter(pelicanTargetReady).length)
 const ready = computed(() => targets.value.length > 0 && targets.value.every(pelicanTargetReady))
-const batchSorted = computed(() => [...props.batchItems].sort((a, b) => a.id - b.id))
-const batchDone = computed(() => props.batchItems.filter(item => !pelicanPending(item.status)).length)
-const batchActive = computed(() => props.batchItems.some(item => pelicanPending(item.status)))
 
 function modelsFor(row: PelicanTargetRow) {
   return props.groups.find(group => group.id === row.group_id)?.models ?? []

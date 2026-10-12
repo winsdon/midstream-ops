@@ -22,8 +22,8 @@ export const pelicanZh = {
   deleteBlockedRunning: '生成中的作品不能删除，请先取消本批测试。',
   legacyRetryHint: '这条记录来自旧版「专用测试用户分组 Key」链路，不支持重新测试。',
   confirmPublish: '发布所选作品？所有登录客户可查看普通分组的作品。',
-  reply: '模型原始回复', usage: '接口返回用量', parameters: '请求参数', batch: '批次 #{id}', batchFilter: '批次 ID',
-  progress: '{done} / {total} 项已结束', previous: '上一页', next: '下一页', page: '第 {page} / {pages} 页 · 共 {total} 项',
+  reply: '模型原始回复', usage: '接口返回用量', parameters: '请求参数',
+  previous: '上一页', next: '下一页', page: '第 {page} / {pages} 页 · 共 {total} 项',
   statuses: { queued: '等待中', running: '生成中', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '服务重启中断' },
   errors: { invalid: '参数无效，请检查分组、账号 / 地址、模型、协议和高级选项。', conflict: '状态已变更、记录不可发布，或提交标识已用于其他参数，请刷新后重试。', notFound: '作品不存在或尚未公开。', failed: '操作失败，请稍后重试。', noDocument: '未取得完整的 HTML / SVG 作品。', accountUnavailable: '账号不存在、已停用或缺少可用密钥 / 地址。', credentialsUnavailable: '本次凭据已失效（进程内密钥不落库），请重新发起测试。', keyRequired: '手填来源的 Key 不会保存，重新测试需要再填一次。', legacyRetry: '旧版分组 Key 记录不支持重新测试。', unavailable: '服务暂不可用。' }
 }
@@ -51,8 +51,8 @@ export const pelicanEn = {
   deleteBlockedRunning: 'Artwork still generating cannot be deleted — cancel the batch first.',
   legacyRetryHint: 'This record came from the retired group-key flow and cannot be re-run.',
   confirmPublish: 'Publish selected artwork? All signed-in customers can view artwork from ordinary groups.',
-  reply: 'Original model reply', usage: 'Reported usage', parameters: 'Request parameters', batch: 'Batch #{id}', batchFilter: 'Batch ID',
-  progress: '{done} / {total} targets finished', previous: 'Previous', next: 'Next', page: 'Page {page} / {pages} · {total} items',
+  reply: 'Original model reply', usage: 'Reported usage', parameters: 'Request parameters',
+  previous: 'Previous', next: 'Next', page: 'Page {page} / {pages} · {total} items',
   statuses: { queued: 'Queued', running: 'Generating', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted by restart' },
   errors: { invalid: 'Invalid parameters. Check the group, account or URL, model, protocol and advanced options.', conflict: 'The state changed, this result cannot be published, or the request ID belongs to different parameters. Refresh and retry.', notFound: 'Artwork is unavailable or unpublished.', failed: 'Operation failed. Please try again.', noDocument: 'No complete HTML / SVG artwork was returned.', accountUnavailable: 'The account is missing, disabled, or has no usable key / URL.', credentialsUnavailable: 'The in-memory credential for this batch is gone; start the test again.', keyRequired: 'Hand-entered keys are never stored — re-enter the key to run again.', legacyRetry: 'Records from the retired group-key flow cannot be re-run.', unavailable: 'Service unavailable.' }
 }

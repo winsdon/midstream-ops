@@ -12,25 +12,22 @@
       :accounts="accounts"
       :submitting="submitting"
       :pending="pending !== null"
-      :batch-id="activeBatch"
-      :batch-items="batchItems"
       @submit="submit"
       @discard="clearPending"
-      @cancel="cancelBatch"
     />
-    <PelicanGallery ref="gallery" admin :groups="groups" :accounts="accounts" :focus-batch="activeBatch" @submitted="trackBatch" />
+    <PelicanGallery ref="gallery" admin :groups="groups" :accounts="accounts" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { pelicanAPI } from '@/api/pelican'
 import { errorMessage } from '@/api/client'
 import PelicanComposer from '@/components/pelican/PelicanComposer.vue'
 import PelicanGallery from '@/components/pelican/PelicanGallery.vue'
-import type { PelicanAccount, PelicanGroup, PelicanProtocol, PelicanRequest, PelicanResult, PelicanTarget } from '@/types/pelican'
-import { DEFAULT_PELICAN_PROMPT, pelicanAccountPlatform, pelicanBlankRow, pelicanNormalizeRow, pelicanPending, pelicanRequestID, pelicanTargetReady, type PelicanTargetRow } from '@/utils/pelican'
+import type { PelicanAccount, PelicanGroup, PelicanProtocol, PelicanRequest, PelicanTarget } from '@/types/pelican'
+import { DEFAULT_PELICAN_PROMPT, pelicanAccountPlatform, pelicanBlankRow, pelicanNormalizeRow, pelicanRequestID, pelicanTargetReady, type PelicanTargetRow } from '@/utils/pelican'
 
 const { t } = useI18n()
 const groups = ref<PelicanGroup[]>([])
@@ -45,15 +42,8 @@ const submitting = ref(false)
 const pending = ref<PelicanRequest | null>(null)
 const targets = ref<PelicanTargetRow[]>([])
 const gallery = ref<InstanceType<typeof PelicanGallery>>()
-const activeBatch = ref(storedBatch())
-const batchItems = ref<PelicanResult[]>([])
 let nextUID = 1
-let disposed = false
-let batchTimer: ReturnType<typeof setTimeout> | undefined
 
-function storedBatch() {
-  try { return Number(sessionStorage.getItem('pelican.batch')) || 0 } catch { return 0 }
-}
 function toTarget(row: PelicanTargetRow): PelicanTarget {
   const base = { group_id: row.group_id, model: row.model.trim(), protocol: row.protocol as PelicanProtocol }
   return row.source === 'manual'
@@ -89,30 +79,11 @@ async function submit() {
   pending.value = payload
   persistPending()
   try {
-    const batch = await pelicanAPI.start(payload)
+    await pelicanAPI.start(payload)
     clearPending()
-    trackBatch(batch.id)
     notice.value = t('pelican.submitted')
+    await gallery.value?.refresh()
   } catch (e) { error.value = t(errorMessage(e)) } finally { submitting.value = false }
-}
-function trackBatch(id: number) {
-  activeBatch.value = id
-  sessionStorage.setItem('pelican.batch', String(id))
-  void pollBatch()
-}
-async function pollBatch() {
-  clearTimeout(batchTimer)
-  const id = activeBatch.value
-  try {
-    const data = await pelicanAPI.batch(id)
-    if (disposed || id !== activeBatch.value) return
-    batchItems.value = data.items
-    if (data.items.some(item => pelicanPending(item.status))) batchTimer = setTimeout(pollBatch, 2500)
-  } catch (e) { if (!disposed) error.value = t(errorMessage(e)) }
-}
-async function cancelBatch() {
-  try { await pelicanAPI.cancel(activeBatch.value); await pollBatch(); await gallery.value?.refresh() }
-  catch (e) { error.value = t(errorMessage(e)) }
 }
 /** 账号加载前创建的空行改成本站账号；已填写或从待确认提交恢复的行保持原样。 */
 function hydrate(row: PelicanTargetRow): PelicanTargetRow {
@@ -161,8 +132,6 @@ onMounted(async () => {
     groups.value = groupData.items
     accounts.value = accountData.items
     targets.value = targets.value.map(hydrate)
-    if (activeBatch.value > 0) trackBatch(activeBatch.value)
   } catch (e) { error.value = t(errorMessage(e)) }
 })
-onBeforeUnmount(() => { disposed = true; clearTimeout(batchTimer) })
 </script>
