@@ -12,8 +12,11 @@ import (
 // 真正的 Anthropic 后端（含 Bedrock / Vertex）会拒掉非法参数；逆向实现与 OpenAI 格式转换层
 // 普遍照单全收。但中间隔着网关时，「被接受」多半是网关先把请求规范化了（Go 网关丢掉未知字段、
 // 把 max_tokens=0 当成未设再补默认值、改写 thinking 配置），真后端根本没见到非法参数——实测
-// 有渠道 budget_tokens=200 被接受却思考了 249 token，签名完整性照样通过。所以本项只说明
-// 「这条链路改写了请求」，记包装分，不封顶真实性。
+// 有渠道 budget_tokens=200 被接受却思考了 249 token，签名完整性照样通过。
+//
+// 计分口径：**本项只作为真实性评分的加分项**。符合官方行为按项加 5 分，被放行则本项拿不到分；
+// 放行多少项都不产生包装 / 伪装证据，也不改判定状态——网关规范化请求、中转改写参数是链路行为
+// （一条 one-api 前面挂着真 Bedrock 也会放行未知字段），回答不了「后端是不是真 Claude」。
 //
 // max_tokens=0 不是非法参数：官方把它当缓存预热，返回空 content、stop_reason=max_tokens、
 // 不生成输出。有输出才说明网关把它换成了别的值。
@@ -79,8 +82,12 @@ func checkParamStrict(ctx context.Context, c *Client, st *runState) *CheckResult
 	}
 
 	rejected := 0
+	hardTotal := 0
 	accepted := make([]string, 0, len(cases))
 	for _, tc := range cases {
+		if !tc.soft {
+			hardTotal++
+		}
 		ex := c.Post(ctx, KindMessages, tc.body)
 		r.Exchanges = append(r.Exchanges, ex)
 		r.DurationMs += ex.DurationMs
@@ -103,11 +110,8 @@ func checkParamStrict(ctx context.Context, c *Client, st *runState) *CheckResult
 		if rejectedByAPI && !tc.hint(ex.ErrorText()) {
 			detail += "（报错未命中官方特征，仍按拒绝计）"
 		}
-		if tc.soft {
-			r.diagnose(tc.label, ok, detail+"｜"+tc.comment)
-		} else {
-			r.assert(tc.label, ok, detail+"｜"+tc.comment)
-		}
+		// 全部记诊断断言：本项只加分，被放行不是「协议失败」。
+		r.diagnose(tc.label, ok, detail+"｜"+tc.comment)
 		if ok {
 			if !tc.soft {
 				rejected++
@@ -117,21 +121,18 @@ func checkParamStrict(ctx context.Context, c *Client, st *runState) *CheckResult
 		accepted = append(accepted, tc.key)
 	}
 
-	// 三个硬校验各值 5 分，真实性满分 15；软项不计分。
-	// 放行两项以上记一条包装证据；只放行 budget 一项时单独记——同一次观察不重复计分。
+	// 三个硬校验各值 5 分，真实性满分 15；软项不计分。这是本项唯一的输出：
+	// 加分不判负 —— 被放行既不记包装证据，也不置「结果可疑」，更不封顶真实性。
 	r.AuthScore = rejected * 5
-	switch {
-	case len(accepted) >= 2:
-		r.addEvidence("loose_validation", "多个非法参数被放行",
-			strings.Join(accepted, ", ")+"（网关规范化了请求或后端未校验）", ClassWrapper, 3)
-	case len(accepted) == 1 && accepted[0] == "thinking_budget_200":
-		r.addEvidence("budget_200_accepted", "thinking.budget_tokens=200 被接受",
-			"非原样官方 thinking 口", ClassWrapper, 2)
+	if rejected < hardTotal {
+		r.Status = StatusInconclusive
+		if len(accepted) > 0 {
+			r.diagnose("未观察到官方参数校验", false,
+				strings.Join(accepted, ", ")+" 被放行：网关规范化了请求或后端未校验，本项不加分，"+
+					"也不作为包装 / 伪装判据")
+		}
 	}
-	if len(accepted) == len(cases) {
-		r.Status = StatusSuspicious
-	}
-	return r.finish(fmt.Sprintf("%d/3 个硬校验符合官方行为", rejected))
+	return r.finish(fmt.Sprintf("%d/%d 个硬校验符合官方行为（本项只加真实性分）", rejected, hardTotal))
 }
 
 // noOutputPrewarm max_tokens=0 的官方行为：200、带完整 usage、不生成任何输出（缓存预热，content 为空）。

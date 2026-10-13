@@ -84,14 +84,88 @@ func TestParamAcceptanceDoesNotCapGenuineBackend(t *testing.T) {
 	if ps == nil || ps.AuthCapReason != "" {
 		t.Fatalf("参数放行不应再封顶真实性：%+v", ps)
 	}
-	if !hasEvidenceKey(ps, "loose_validation") || hasEvidenceKey(ps, "budget_200_accepted") {
-		t.Fatalf("多项放行只记 loose_validation 一条：%+v", ps.Evidence)
+	assertNoWrapperEvidence(t, "参数校验严格性", ps)
+	// 假上游把 max_tokens=0 按官方的缓存预热形态返回（零输出），这一项本就符合官方行为；
+	// 另外两项被放行，拿不到分。关键是放行不产生任何负分证据。
+	if ps.AuthScore >= 15 {
+		t.Fatalf("被放行的硬校验不应得分，实际 %d", ps.AuthScore)
 	}
 	if !hasEvidenceKey(findCheck(run.Checks, "sig-tamper"), "signature_verified") {
 		t.Fatal("签名校验应通过")
 	}
 	if run.Verdict.Authenticity.Capped || run.Verdict.Authenticity.Grade == GradeFake {
 		t.Fatalf("签名级证据成立的后端不应判 fake：%+v", run.Verdict.Authenticity)
+	}
+}
+
+// TestLooseParamsNeverJudgeWrapper 参数校验严格性只作加分项：非法参数被放行既不产生包装证据、
+// 不加包装分、不判「结果可疑」，也不会因此落到 wrapper —— 放行是网关行为，不是后端身份。
+func TestLooseParamsNeverJudgeWrapper(t *testing.T) {
+	up := &fakeUpstream{behaviour: "official", strictParams: false, signatureChecked: true}
+	run := runAgainst(t, up, []string{"param-strict"})
+
+	ps := findCheck(run.Checks, "param-strict")
+	if ps == nil {
+		t.Fatal("缺少 param-strict 结果")
+	}
+	if ps.Status != StatusInconclusive {
+		t.Fatalf("参数被放行应记「未观察到官方参数校验」，实际 %s", ps.Status)
+	}
+	if ps.AuthScore >= 15 {
+		t.Fatalf("被放行的硬校验不应得分，实际 %d", ps.AuthScore)
+	}
+	assertNoWrapperEvidence(t, "参数校验严格性", ps)
+	if run.Verdict == nil {
+		t.Fatal("应给出判定")
+	}
+	if run.Verdict.Scores[ClassWrapper] != 0 || run.Verdict.Label == LabelWrapper {
+		t.Fatalf("参数放行不得判包装：%s %v", run.Verdict.Label, run.Verdict.Scores)
+	}
+	if run.Verdict.Authenticity.Capped {
+		t.Fatalf("参数放行不得封顶真实性：%v", run.Verdict.Authenticity.CapReason)
+	}
+}
+
+// TestParamStrictIsBonusOnly 四项全被放行时：本项 0 分、状态「未观察到官方参数校验」、
+// 不产出任何证据 —— 没有证据就没有包装分，也就不会把真后端判成 wrapper / fake。
+func TestParamStrictIsBonusOnly(t *testing.T) {
+	res := checkParamStrict(context.Background(), looseParamServer(t),
+		&runState{profile: ResolveProfile("claude-opus-5-5")})
+
+	if res.AuthScore != 0 {
+		t.Fatalf("非法参数全被放行不应得分，实际 %d", res.AuthScore)
+	}
+	if res.Status != StatusInconclusive {
+		t.Fatalf("应记证据不足（本项不加分），实际 %s", res.Status)
+	}
+	if len(res.Evidence) != 0 {
+		t.Fatalf("参数严格性不应产出包装证据：%+v", res.Evidence)
+	}
+	if res.AuthCapReason != "" {
+		t.Fatalf("参数放行不得封顶真实性：%s", res.AuthCapReason)
+	}
+}
+
+// looseParamServer 网关把所有非法请求规范化后转发：一律 200，max_tokens=0 也被换成默认值生成输出。
+func looseParamServer(t *testing.T) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, map[string]any{"id": "msg_01ABC", "type": "message", "stop_reason": "end_turn",
+			"content": []any{map[string]any{"type": "text", "text": "Hi there!"}},
+			"usage":   map[string]any{"input_tokens": 8, "output_tokens": 44}})
+	}))
+	t.Cleanup(srv.Close)
+	target, _ := Target{Name: "t", BaseURL: srv.URL, APIKey: "sk-test-key-1234567890", Model: "claude-opus-5-5"}.Normalize()
+	return NewClient(target)
+}
+
+// assertNoWrapperEvidence 该检测项不得给出任何包装证据（含带权重的其他类别证据）。
+func assertNoWrapperEvidence(t *testing.T, name string, res *CheckResult) {
+	t.Helper()
+	for _, ev := range res.Evidence {
+		if ev.Class == ClassWrapper || ev.Weight > 0 {
+			t.Fatalf("%s 出现包装证据：%+v", name, ev)
+		}
 	}
 }
 
@@ -123,13 +197,16 @@ func TestParamStrictMaxTokensZeroIsPrewarm(t *testing.T) {
 	if res.Status != StatusPassed || res.AuthScore != 15 || len(res.Evidence) > 0 {
 		t.Fatalf("官方的缓存预热应算符合官方行为，实际 %s score=%d %+v", res.Status, res.AuthScore, res.Evidence)
 	}
-	// 网关把 max_tokens=0 换成了默认值：生成了输出。
+	// 网关把 max_tokens=0 换成了默认值：生成了输出。少得 5 分，但不产生包装证据。
 	rewritten := map[string]any{"id": "msg_01ABC", "type": "message", "stop_reason": "end_turn",
 		"content": []any{map[string]any{"type": "text", "text": "Hi there!"}},
 		"usage":   map[string]any{"input_tokens": 8, "output_tokens": 44}}
 	res = checkParamStrict(context.Background(), paramServer(t, rewritten), st)
-	if res.Status != StatusFailed || res.AuthScore != 10 {
-		t.Fatalf("max_tokens=0 却生成了输出应判不符合，实际 %s score=%d", res.Status, res.AuthScore)
+	if res.Status != StatusInconclusive || res.AuthScore != 10 {
+		t.Fatalf("max_tokens=0 却生成了输出应判未观察到官方参数校验，实际 %s score=%d", res.Status, res.AuthScore)
+	}
+	if len(res.Evidence) > 0 {
+		t.Fatalf("参数被放行不记证据：%+v", res.Evidence)
 	}
 }
 

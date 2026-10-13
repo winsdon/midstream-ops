@@ -273,7 +273,7 @@ var Checks = []Check{
 		Note: "固定题目校验质量并记录 TTFT；Fable 额外对照 low/max", Requires: []string{}},
 
 	{ID: "param-strict", Title: "参数校验严格性", Group: GroupProtocol, Default: true, Cost: CostLow, Requests: 4,
-		Note: "四个应被官方拒绝的非法请求"},
+		Note: "四个应被官方拒绝的非法请求；只作真实性加分项，被放行不记包装 / 伪装"},
 	{ID: "max-tokens-strict", Title: "max_tokens 硬上限", Group: GroupProtocol, Default: true, Cost: CostLow, Requests: 1},
 	{ID: "tool-use", Title: "强制工具调用", Group: GroupProtocol, Default: true, Cost: CostMedium, Requests: 2,
 		Note: "tool_use id 前缀是区分 Bedrock / Vertex 的强指纹"},
