@@ -26,6 +26,10 @@ type PGGroup struct {
 	Platform       string
 	Status         string
 	RateMultiplier float64
+	// SortOrder 是 sub2api 后台「分组管理」里拖拽出来的展示顺序（升序在前，
+	// 默认 0）。本站所有列出分组的界面都跟随它，别再按 id 或名字排 ——
+	// 运营把常看的组拖到前面，本站顺序必须和后台一致。
+	SortOrder int
 }
 
 // ListActiveAccounts 返回所有未删除账号（聚合/前缀扫描用，不含 api_key）。
@@ -143,12 +147,23 @@ func (p *PG) ListAccountKeyFingerprints(ctx context.Context) ([]AccountKeyFinger
 	return out, rows.Err()
 }
 
-// ListGroups 返回所有未删除分组。
+// ListGroups 返回所有未删除分组，按 sub2api 后台的展示顺序（sort_order 升序）排列。
+//
+// 排序刻意放在 SQL 而不是调用方：这是「分组在线上后台长什么样」的属性，不是某个
+// 下拉框的偏好。此前没有 ORDER BY，PG 返回的是物理顺序 —— 建组 / 改组 / 后台拖拽
+// 排序都会让它漂移，同一个界面刷新两次都可能不一样。sort_order 相同的组用 id 兜底，
+// 保证顺序稳定可复现。
+//
+// sort_order 走 to_jsonb 而非直接取列：它是 sub2api 后加的列，老 schema 没有。
+// 直接 SELECT 会让整个分组下拉 500，而排序只是显示问题 —— 老 schema 应退化成
+// 「顺序不保证」，不该升级成「列不出分组」。同 pg_media_keys.go 的 models_list_config。
 func (p *PG) ListGroups(ctx context.Context) ([]PGGroup, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT id, COALESCE(name,''), COALESCE(platform,''), COALESCE(status,''),
-		       COALESCE(rate_multiplier,1)
-		FROM groups WHERE deleted_at IS NULL`)
+		SELECT g.id, COALESCE(g.name,''), COALESCE(g.platform,''), COALESCE(g.status,''),
+		       COALESCE(g.rate_multiplier,1),
+		       COALESCE((to_jsonb(g) -> 'sort_order')::int, 0)
+		FROM groups g WHERE g.deleted_at IS NULL
+		ORDER BY COALESCE((to_jsonb(g) -> 'sort_order')::int, 0) ASC, g.id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +171,7 @@ func (p *PG) ListGroups(ctx context.Context) ([]PGGroup, error) {
 	var out []PGGroup
 	for rows.Next() {
 		var g PGGroup
-		if err := rows.Scan(&g.ID, &g.Name, &g.Platform, &g.Status, &g.RateMultiplier); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.Platform, &g.Status, &g.RateMultiplier, &g.SortOrder); err != nil {
 			return nil, err
 		}
 		out = append(out, g)
