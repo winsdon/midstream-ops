@@ -39,6 +39,7 @@ type pelicanPG interface {
 	ListGroups(context.Context) ([]repository.PGGroup, error)
 	ListGroupAvailableModels(context.Context) ([]repository.PGGroupModels, error)
 	ListProbeCandidates(context.Context) ([]repository.PGAccount, error)
+	ListAccountGroupIDs(context.Context) (map[int64][]int64, error)
 	PelicanVisibleGroups(context.Context) ([]int64, error)
 }
 
@@ -81,6 +82,9 @@ type PelicanAccountOption struct {
 	Name     string `json:"name"`
 	Platform string `json:"platform"`
 	BaseURL  string `json:"base_url"`
+	// GroupIDs 该账号归属的分组 id（含 composite 分组的跨平台归属）。管理端据此
+	// 按归属分组过滤账号选择项；为空表示账号没挂任何启用中的分组。
+	GroupIDs []int64 `json:"group_ids"`
 }
 
 type PelicanService struct {
@@ -144,6 +148,10 @@ func (s *PelicanService) Accounts(ctx context.Context) ([]PelicanAccountOption, 
 	if err != nil {
 		return nil, ErrPelicanUnavailable
 	}
+	groupIDs, err := s.pg.ListAccountGroupIDs(ctx)
+	if err != nil {
+		return nil, ErrPelicanUnavailable
+	}
 	out := make([]PelicanAccountOption, 0, len(accounts))
 	for _, a := range accounts {
 		if !pelicanPlatform(a.Platform) || strings.TrimSpace(a.APIKey) == "" {
@@ -153,7 +161,11 @@ func (s *PelicanService) Accounts(ctx context.Context) ([]PelicanAccountOption, 
 		if base == "" {
 			continue
 		}
-		out = append(out, PelicanAccountOption{ID: a.ID, Name: a.Name, Platform: strings.ToLower(strings.TrimSpace(a.Platform)), BaseURL: base})
+		groups := groupIDs[a.ID]
+		if groups == nil {
+			groups = []int64{}
+		}
+		out = append(out, PelicanAccountOption{ID: a.ID, Name: a.Name, Platform: strings.ToLower(strings.TrimSpace(a.Platform)), BaseURL: base, GroupIDs: groups})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Name == out[j].Name {
@@ -360,6 +372,10 @@ func (s *PelicanService) Start(ctx context.Context, r PelicanRequest) (*reposito
 			}
 		}
 		meta := repository.PelicanMetadata{GroupName: name, Protocol: t.Protocol, Source: t.Source, AccountID: t.AccountID, BaseURL: t.BaseURL, Prompt: r.Prompt, MaxTokens: r.MaxTokens, TimeoutSeconds: r.TimeoutSeconds, RetryOf: t.RetryOf}
+		if t.Source == PelicanSourceAccount {
+			// 账号名随记录快照：账号改名或删除后，管理端作品卡片仍能显示当时的名字。
+			meta.AccountName = accounts[t.AccountID].Name
+		}
 		if t.Source == PelicanSourceManual {
 			meta.KeyFP = keyidentity.Fingerprint(t.APIKey)
 		}

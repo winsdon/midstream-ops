@@ -1,7 +1,13 @@
 import { ARTIFACT_PREVIEW_VIEW } from '@/utils/detectArtifact'
-import type { PelicanProtocol, PelicanSource } from '@/types/pelican'
+import type { PelicanAccount, PelicanProtocol, PelicanRequest, PelicanSource, PelicanTarget } from '@/types/pelican'
 
 export const DEFAULT_PELICAN_PROMPT = '生成一张考拉骑自行车的 SVG 图像并添加动画效果'
+/** 与后端 normalizePelicanRequest 的默认值一致：高级选项不填时按这套参数提交。 */
+export const PELICAN_DEFAULT_CONCURRENCY = 3
+export const PELICAN_DEFAULT_MAX_TOKENS = 32000
+export const PELICAN_DEFAULT_TIMEOUT_SECONDS = 900
+/** 单个批次的目标数上限，与后端 normalizePelicanRequest 的校验保持一致。 */
+export const PELICAN_MAX_TARGETS = 100
 
 /** Inclusive local calendar dates become an exclusive UTC upper bound. */
 export function pelicanDateRange(from: string, to: string): Record<string, string> {
@@ -42,25 +48,6 @@ export function pelicanProtocolOptions(platform?: string): PelicanProtocol[] {
   }
 }
 
-/** 目标行草稿：协议在未选定时为空串。 */
-export interface PelicanTargetDraft {
-  group_id: number
-  source: PelicanSource | ''
-  account_id?: number
-  base_url?: string
-  api_key?: string
-  model: string
-  protocol: PelicanProtocol | ''
-}
-
-/** 表单里的一行。uid 只用于列表 key，不提交。 */
-export interface PelicanTargetRow extends PelicanTargetDraft {
-  uid: number
-  account_id: number
-  base_url: string
-  api_key: string
-}
-
 export type PelicanStatusVariant = 'primary' | 'success' | 'warning' | 'danger' | 'gray'
 
 /** 状态徽章颜色。未知状态用灰色，避免进行中和失败看起来一样。 */
@@ -81,45 +68,132 @@ export function pelicanDeletable(item?: { published_at?: string | null; status?:
   return !!item && !item.published_at && !pelicanPending(item.status)
 }
 
-export function pelicanAccountPlatform(
-  accounts: ReadonlyArray<{ id: number; platform: string }>,
-  row: { source: PelicanSource | ''; account_id?: number }
-): string | undefined {
-  if (row.source !== 'account') return undefined
-  return accounts.find(account => account.id === row.account_id)?.platform
-}
-
-/** 协议落在当前来源允许的范围内；不允许时改成该范围的第一项。 */
-export function pelicanNormalizeRow(row: PelicanTargetRow, platform?: string): PelicanTargetRow {
-  const allowed = pelicanProtocolOptions(platform)
-  if (row.protocol && allowed.includes(row.protocol)) return row
-  return { ...row, protocol: allowed[0] ?? '' }
-}
-
-/** 新建一行。只有一个账号时直接选中，并按该账号平台锁定协议。 */
-export function pelicanBlankRow(uid: number, accounts: ReadonlyArray<{ id: number; platform: string }>): PelicanTargetRow {
-  const only = accounts.length === 1 ? accounts[0] : undefined
-  const row: PelicanTargetRow = {
-    uid,
-    group_id: 0,
-    source: accounts.length ? 'account' : 'manual',
-    account_id: only?.id ?? 0,
-    base_url: '',
-    api_key: '',
-    model: '',
-    protocol: ''
-  }
-  return pelicanNormalizeRow(row, only ? only.platform : undefined)
-}
-
 export function pelicanProtocolLabel(protocol: string): string {
   const labels: Record<PelicanProtocol, string> = { messages: 'Messages', responses: 'Responses', chat: 'Chat Completions' }
   return labels[protocol as PelicanProtocol] ?? protocol
 }
 
-export function pelicanTargetReady(row: PelicanTargetDraft): boolean {
-  if (!(row.group_id > 0) || !row.model.trim() || !row.protocol) return false
-  if (row.source === 'account') return (row.account_id ?? 0) > 0
-  if (row.source === 'manual') return !!row.base_url?.trim() && !!row.api_key?.trim()
-  return false
+/** 发起测试弹窗的表单：一个归属分组 + 一个模型，账号可多选，每个账号生成一件作品。 */
+export interface PelicanDraft {
+  group_id: number
+  source: PelicanSource
+  /** 账号来源勾选的账号 id（提交时一个账号一个测试目标）。 */
+  account_ids: number[]
+  base_url: string
+  api_key: string
+  model: string
+  /** 手填来源三选一；账号来源只用于 OpenAI 账号（anthropic 恒为 messages）。 */
+  protocol: PelicanProtocol | ''
+  prompt: string
+  concurrency: number
+  max_tokens: number
+  timeout_seconds: number
+}
+
+/** 空白表单。分组与账号等账号列表加载完成后再由调用方水合。 */
+export function pelicanEmptyDraft(): PelicanDraft {
+  return {
+    group_id: 0,
+    source: 'account',
+    account_ids: [],
+    base_url: '',
+    api_key: '',
+    model: '',
+    // 手填来源必须自己挑协议（和改造前一致，避免默认值打错端点）；
+    // 账号来源下这个空值不影响提交：anthropic 恒为 messages，OpenAI 落到 responses。
+    protocol: '',
+    prompt: DEFAULT_PELICAN_PROMPT,
+    concurrency: PELICAN_DEFAULT_CONCURRENCY,
+    max_tokens: PELICAN_DEFAULT_MAX_TOKENS,
+    timeout_seconds: PELICAN_DEFAULT_TIMEOUT_SECONDS
+  }
+}
+
+/** 归属分组下的可选账号：后端按 account_groups 给出 group_ids，前端只做匹配。 */
+export function pelicanAccountsForGroup(accounts: readonly PelicanAccount[], groupID: number): PelicanAccount[] {
+  if (!(groupID > 0)) return []
+  return accounts.filter(account => (account.group_ids ?? []).includes(groupID))
+}
+
+/** 勾选账号归一化：去重，并丢掉当前分组下已不可选的账号（保持勾选顺序）。 */
+export function pelicanPruneAccountIDs(ids: readonly number[], available: readonly PelicanAccount[]): number[] {
+  const selectable = new Set(available.map(account => account.id))
+  return [...new Set(ids)].filter(id => selectable.has(id))
+}
+
+/** 账号平台决定协议：anthropic 固定 Messages，其余（OpenAI）用弹窗里选的 Responses / Chat。 */
+export function pelicanAccountProtocol(platform: string | undefined, choice: PelicanProtocol | ''): PelicanProtocol {
+  if ((platform ?? '').toLowerCase() === 'anthropic') return 'messages'
+  return choice === 'chat' ? 'chat' : 'responses'
+}
+
+/** 已选账号可用的协议选项：全 anthropic 时只剩 Messages；未选账号时为空。 */
+export function pelicanAccountProtocolChoices(selected: readonly PelicanAccount[]): PelicanProtocol[] {
+  if (!selected.length) return []
+  return selected.some(account => pelicanAccountProtocol(account.platform, 'responses') !== 'messages') ? ['responses', 'chat'] : ['messages']
+}
+
+/**
+ * 表单转提交目标。缺项、或账号已不在可选列表里时返回空数组，表单据此禁用提交。
+ * `available` 应当传 pelicanAccountsForGroup 的结果：这样提交的账号一定属于所选分组。
+ * 目标数封顶 PELICAN_MAX_TARGETS（后端超过就整单拒绝，这里不让它发生）。
+ */
+export function pelicanDraftTargets(draft: PelicanDraft, available: readonly PelicanAccount[]): PelicanTarget[] {
+  const group_id = draft.group_id
+  const model = draft.model.trim()
+  if (!(group_id > 0) || !model) return []
+  if (draft.source === 'manual') {
+    const base_url = draft.base_url.trim()
+    const api_key = draft.api_key.trim()
+    if (!base_url || !api_key || !draft.protocol) return []
+    return [{ group_id, source: 'manual', base_url, api_key, model, protocol: draft.protocol }]
+  }
+  const targets: PelicanTarget[] = []
+  const seen = new Set<number>()
+  for (const id of draft.account_ids) {
+    if (targets.length >= PELICAN_MAX_TARGETS) break
+    const account = available.find(item => item.id === id)
+    if (!account || seen.has(id)) continue
+    seen.add(id)
+    targets.push({ group_id, source: 'account', account_id: account.id, model, protocol: pelicanAccountProtocol(account.platform, draft.protocol) })
+  }
+  return targets
+}
+
+/**
+ * 表单指纹：判断待确认提交恢复之后管理员有没有改过参数。手填 Key 永不落库，不参与比较；
+ * 账号按集合比较，勾选顺序不算改动（提交顺序按勾选顺序，但同一次提交的目标集合没变）。
+ */
+export function pelicanDraftFingerprint(draft: PelicanDraft): string {
+  return JSON.stringify({ ...draft, api_key: '', account_ids: [...new Set(draft.account_ids)].sort((a, b) => a - b) })
+}
+
+/**
+ * 待确认提交回填表单（手填 Key 除外）：目标必须同分组、同模型、同来源，也就是多选
+ * 账号一次性提交的形状；其他形状（旧版多行目标）返回 null，按新测试处理。
+ */
+export function pelicanDraftFromRequest(request: PelicanRequest): PelicanDraft | null {
+  const targets = request.targets ?? []
+  if (!targets.length) return null
+  const first = targets[0]
+  const source = first.source
+  if (source !== 'account' && source !== 'manual') return null
+  if (!(first.group_id > 0) || !first.model?.trim()) return null
+  if (!targets.every(target => target.group_id === first.group_id && target.model === first.model && target.source === source)) return null
+  const draft = pelicanEmptyDraft()
+  draft.group_id = first.group_id
+  draft.source = source
+  draft.model = first.model
+  if (request.prompt?.trim()) draft.prompt = request.prompt
+  if (request.concurrency > 0) draft.concurrency = request.concurrency
+  if (request.max_tokens > 0) draft.max_tokens = request.max_tokens
+  if (request.timeout_seconds > 0) draft.timeout_seconds = request.timeout_seconds
+  if (source === 'account') {
+    draft.account_ids = [...new Set(targets.map(target => target.account_id ?? 0).filter(id => id > 0))]
+    draft.protocol = targets.some(target => target.protocol === 'chat') ? 'chat' : 'responses'
+  } else {
+    draft.base_url = first.base_url ?? ''
+    draft.protocol = first.protocol
+  }
+  return draft
 }

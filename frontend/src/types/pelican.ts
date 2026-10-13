@@ -6,6 +6,8 @@ export interface PelicanGroup {
 }
 export interface PelicanAccount {
   id: number; name: string; platform: string; base_url: string
+  /** 账号归属的分组 id，用于按归属分组过滤账号选择项。 */
+  group_ids: number[]
 }
 export interface PelicanTarget {
   group_id: number; source: PelicanSource
@@ -23,6 +25,8 @@ export interface PelicanResult {
   batch_id?: number; retry_of?: number; timeout_seconds?: number
   /** account / manual；旧的分组 Key 记录为空且不可重新测试 */
   source?: string; account_id?: number; base_url?: string
+  /** 发起测试时的账号名称快照（仅管理端接口返回，客户接口不下发） */
+  account_name?: string
   started_at?: string; finished_at?: string; status?: string; error?: string
   output?: { document?: string; kind?: 'html' | 'svg'; text?: string; usage?: Record<string, unknown>; request?: Record<string, unknown> }
 }

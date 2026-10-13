@@ -27,6 +27,9 @@ type PelicanMetadata struct {
 	Source string `json:"source,omitempty"`
 	// AccountID 账号来源的本站账号 id。
 	AccountID int64 `json:"account_id,omitempty"`
+	// AccountName 账号来源发起测试时的账号名称快照（管理端作品卡片展示用）。
+	// 账号改名或删除后历史记录仍然显示当时的名字。
+	AccountName string `json:"account_name,omitempty"`
 	// BaseURL 手填来源的网关地址（不含凭据，可安全落库）。
 	BaseURL string `json:"base_url,omitempty"`
 	// KeyFP 手填来源 Key 的指纹；明文只在进程内使用，绝不入库。

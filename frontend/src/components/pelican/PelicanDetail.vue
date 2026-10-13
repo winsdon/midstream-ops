@@ -31,6 +31,7 @@
         <p class="text-gray-500">{{ t('pelican.duration') }}: {{ fmtMs(detail.duration_ms) }}</p>
         <p v-if="detail.published_at" class="text-gray-500">{{ t('pelican.publishedAt') }}: {{ fullDate(detail.published_at) }}</p>
         <p class="text-gray-500">{{ t('pelican.parameters') }}: {{ pelicanProtocolLabel(detail.protocol) }} · max_tokens={{ detail.max_tokens }}<span v-if="detail.source"> · {{ detail.source === 'manual' ? t('pelican.sourceManual') : t('pelican.sourceAccount') }}</span></p>
+        <p v-if="accountLabel" class="text-gray-500">{{ t('pelican.accountName') }}: {{ accountLabel }}</p>
         <p v-if="admin && detail.error" class="text-red-600">{{ t(detail.error) }}</p>
         <h4 class="font-semibold text-gray-900 dark:text-white">{{ t('pelican.prompt') }}</h4>
         <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-3 text-xs dark:bg-dark-900">{{ detail.prompt }}</pre>
@@ -64,7 +65,7 @@ import Badge from '@/components/common/Badge.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
 import { fmtMs } from '@/utils/format'
-import { pelicanDeletable, pelicanHost, pelicanPending, pelicanProtocolLabel, pelicanStatusVariant } from '@/utils/pelican'
+import { pelicanAccountsForGroup, pelicanDeletable, pelicanHost, pelicanPending, pelicanProtocolLabel, pelicanStatusVariant } from '@/utils/pelican'
 import type { PelicanAccount, PelicanResult } from '@/types/pelican'
 import PelicanPreview from './PelicanPreview.vue'
 
@@ -84,8 +85,23 @@ const emit = defineEmits<{ close: []; delete: []; retry: []; cancel: [id: number
 
 const { t, locale } = useI18n()
 const view = ref<Tab>('preview')
-const retryAccountOptions = computed(() => (props.accounts ?? []).map(account => ({ value: account.id, label: `${account.name} · ${account.platform} · ${pelicanHost(account.base_url)}` })))
+/** 重新测试的账号选项按记录的归属分组限定；该分组没有可用账号时回退全部账号。 */
+const retryAccountOptions = computed(() => {
+  const all = props.accounts ?? []
+  const scoped = props.detail ? pelicanAccountsForGroup(all, props.detail.group_id) : []
+  const list = scoped.length ? scoped : all
+  return list.map(account => ({ value: account.id, label: `${account.name} · ${account.platform} · ${pelicanHost(account.base_url)}` }))
+})
 const showPreview = computed(() => !!props.detail?.has_document && (!props.admin || view.value === 'preview'))
+/** 所属账号：优先用记录里的名称快照，旧记录回落到账号列表；只给管理端看。 */
+const accountLabel = computed(() => {
+  const item = props.detail
+  if (!item || !props.admin) return ''
+  if (item.account_name) return item.account_name
+  if (item.account_id) return (props.accounts ?? []).find(account => account.id === item.account_id)?.name ?? ''
+  if (item.source === 'manual') return item.base_url ? `${t('pelican.sourceManualShort')} ${pelicanHost(item.base_url)}` : ''
+  return ''
+})
 const deleteHint = computed(() => {
   const item = props.detail
   if (!item) return ''

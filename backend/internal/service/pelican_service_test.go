@@ -17,6 +17,7 @@ import (
 
 type pelicanTestPG struct {
 	accounts []repository.PGAccount
+	groups   map[int64][]int64
 	fail     bool
 }
 
@@ -28,6 +29,12 @@ func (p *pelicanTestPG) ListGroupAvailableModels(context.Context) ([]repository.
 }
 func (p *pelicanTestPG) ListProbeCandidates(context.Context) ([]repository.PGAccount, error) {
 	return p.accounts, nil
+}
+func (p *pelicanTestPG) ListAccountGroupIDs(context.Context) (map[int64][]int64, error) {
+	if p.fail {
+		return nil, errors.New("offline")
+	}
+	return p.groups, nil
 }
 func (p *pelicanTestPG) PelicanVisibleGroups(context.Context) ([]int64, error) {
 	if p.fail {
@@ -97,14 +104,21 @@ func TestPelicanDefaultPromptFallsBackToKoala(t *testing.T) {
 }
 
 func TestPelicanGroupsAndAccountsHideSecrets(t *testing.T) {
-	s := NewPelicanService(nil, &pelicanTestPG{accounts: []repository.PGAccount{
-		{ID: 2, Name: "claude", Platform: "anthropic", BaseURL: "https://api.example.com/", APIKey: "sk-secret"},
-		{ID: 3, Name: "no-key", Platform: "openai", BaseURL: "https://api.example.com", APIKey: ""},
-		{ID: 4, Name: "gemini", Platform: "gemini", BaseURL: "https://api.example.com", APIKey: "sk-secret"},
-	}})
+	s := NewPelicanService(nil, &pelicanTestPG{
+		accounts: []repository.PGAccount{
+			{ID: 2, Name: "claude", Platform: "anthropic", BaseURL: "https://api.example.com/", APIKey: "sk-secret"},
+			{ID: 3, Name: "no-key", Platform: "openai", BaseURL: "https://api.example.com", APIKey: ""},
+			{ID: 4, Name: "gemini", Platform: "gemini", BaseURL: "https://api.example.com", APIKey: "sk-secret"},
+		},
+		groups: map[int64][]int64{2: {1, 7}},
+	})
 	accounts, err := s.Accounts(context.Background())
 	if err != nil || len(accounts) != 1 || accounts[0].ID != 2 || accounts[0].BaseURL != "https://api.example.com" {
 		t.Fatalf("accounts %+v %v", accounts, err)
+	}
+	// 分组归属随账号一起下发，管理端才能按归属分组过滤选择项。
+	if len(accounts[0].GroupIDs) != 2 || accounts[0].GroupIDs[0] != 1 || accounts[0].GroupIDs[1] != 7 {
+		t.Fatalf("group ids %+v", accounts[0].GroupIDs)
 	}
 	raw, _ := json.Marshal(accounts)
 	if strings.Contains(string(raw), "sk-secret") || strings.Contains(string(raw), "api_key") {
@@ -113,6 +127,19 @@ func TestPelicanGroupsAndAccountsHideSecrets(t *testing.T) {
 	groups, err := s.Groups(context.Background())
 	if err != nil || len(groups) != 1 || groups[0].Name != "group" || len(groups[0].Models) != 1 {
 		t.Fatalf("groups %+v %v", groups, err)
+	}
+	// 账号没挂任何分组时回空数组，前端拿到的是 [] 而不是 null。
+	plain := NewPelicanService(nil, &pelicanTestPG{accounts: []repository.PGAccount{{ID: 5, Name: "solo", Platform: "anthropic", BaseURL: "https://api.example.com", APIKey: "k"}}})
+	plainAccounts, err := plain.Accounts(context.Background())
+	if err != nil || len(plainAccounts) != 1 {
+		t.Fatalf("accounts %+v %v", plainAccounts, err)
+	}
+	if raw, _ := json.Marshal(plainAccounts); !strings.Contains(string(raw), `"group_ids":[]`) {
+		t.Fatalf("group_ids must serialize as an array: %s", raw)
+	}
+	// 分组归属查询失败必须关门，不能悄悄下发不过滤的账号列表。
+	if _, err := NewPelicanService(nil, &pelicanTestPG{fail: true}).Accounts(context.Background()); !errors.Is(err, ErrPelicanUnavailable) {
+		t.Fatalf("want unavailable, got %v", err)
 	}
 }
 
@@ -213,6 +240,10 @@ func TestPelicanAccountTargetUsesAccountCredential(t *testing.T) {
 	}
 	if rows[0].Source != PelicanSourceAccount || rows[0].AccountID != 7 || rows[0].KeyFP != "" {
 		t.Fatalf("metadata %+v", rows[0].PelicanMetadata)
+	}
+	// 账号名随记录留痕：管理端作品卡片直接展示，不必再查账号表。
+	if rows[0].AccountName != "acct" {
+		t.Fatalf("account name not snapshotted: %+v", rows[0].PelicanMetadata)
 	}
 	if auth != "sk-account" {
 		t.Fatalf("account key not used: %q", auth)

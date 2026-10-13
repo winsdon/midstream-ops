@@ -28,6 +28,9 @@ func (p *pelicanHandlerPG) ListGroupAvailableModels(context.Context) ([]reposito
 func (p *pelicanHandlerPG) ListProbeCandidates(context.Context) ([]repository.PGAccount, error) {
 	return nil, nil
 }
+func (p *pelicanHandlerPG) ListAccountGroupIDs(context.Context) (map[int64][]int64, error) {
+	return nil, nil
+}
 func (p *pelicanHandlerPG) PelicanVisibleGroups(context.Context) ([]int64, error) {
 	if p.unavailable {
 		return nil, errors.New("upstream offline")

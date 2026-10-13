@@ -1,6 +1,9 @@
 <template>
   <section class="space-y-3">
-    <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('pelican.results') }}</h2>
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('pelican.results') }}</h2>
+      <slot name="actions" />
+    </div>
     <div class="-mx-1 px-1 py-2" :class="admin ? 'sticky top-16 z-20 bg-gray-50/95 backdrop-blur dark:bg-dark-950/95' : ''">
       <div v-if="admin && selected.length" class="card flex flex-wrap items-center gap-2 p-3">
         <span class="text-sm font-medium">{{ t('pelican.selected', { count: selected.length }) }}</span>
@@ -33,7 +36,7 @@
 
     <p v-if="error" role="alert" class="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">{{ error }}</p>
     <EmptyState v-else-if="!items.length" icon="sparkles" :title="loading ? t('common.loading') : t('pelican.empty')" :description="!loading && !admin ? t('pelican.emptyHint') : undefined" />
-    <div v-else class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+    <div v-else class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
       <article
         v-for="item in items"
         :key="item.id"
@@ -42,10 +45,12 @@
         @click="openDetail(item.id)"
         @keydown.enter.prevent="openDetail(item.id)"
       >
-        <header class="flex items-start justify-between gap-2 px-3 pt-3">
+        <header class="flex items-start justify-between gap-2 px-2.5 pt-2">
           <div class="min-w-0">
             <h3 class="truncate text-sm font-semibold text-gray-900 dark:text-white" :title="item.model">{{ item.model }}</h3>
-            <p class="truncate text-xs text-gray-500" :title="item.group_name">{{ item.group_name }}</p>
+            <p class="truncate text-xs text-gray-500" :title="ownerTitle(item)">
+              {{ item.group_name }}<template v-if="ownerLabel(item)"> · {{ ownerLabel(item) }}</template>
+            </p>
           </div>
           <input
             v-if="admin"
@@ -57,20 +62,20 @@
             @click.stop
           />
         </header>
-        <div class="relative mx-3 mt-2 aspect-[16/10] overflow-hidden rounded-lg border border-gray-100 bg-white dark:border-dark-700">
+        <div class="relative mx-2 mt-1.5 aspect-[16/10] overflow-hidden rounded-lg border border-gray-100 bg-white dark:border-dark-700">
           <PelicanPreview v-if="item.has_document" :id="item.id" :title="item.group_name" :fetch-result="api.detail" />
           <div v-else class="flex h-full flex-col items-center justify-center gap-2 bg-gray-50 p-3 text-center text-xs text-gray-500 dark:bg-dark-900">
             <LoadingSpinner v-if="pelicanPending(item.status)" />
             <span>{{ t(`pelican.statuses.${item.status}`) }}</span>
           </div>
         </div>
-        <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2.5 text-xs text-gray-500">
+        <div class="flex flex-wrap items-center gap-x-1.5 gap-y-1 px-2.5 py-1.5 text-xs text-gray-500">
           <time :datetime="item.tested_at" :title="fullDate(item.tested_at)">{{ date(item.tested_at) }}</time>
           <span v-if="item.duration_ms > 0">· {{ fmtMs(item.duration_ms) }}</span>
           <Badge v-if="admin" :variant="pelicanStatusVariant(item.status)">{{ t(`pelican.statuses.${item.status}`) }}</Badge>
           <Badge v-if="admin" :variant="item.published_at ? 'success' : 'gray'">{{ t(item.published_at ? 'pelican.published' : 'pelican.draft') }}</Badge>
         </div>
-        <p v-if="admin && item.error" class="line-clamp-2 break-words px-3 pb-3 text-xs text-red-600">{{ t(item.error) }}</p>
+        <p v-if="admin && item.error" class="line-clamp-2 break-words px-2.5 pb-2 text-xs text-red-600">{{ t(item.error) }}</p>
       </article>
     </div>
     <div class="flex flex-wrap items-center justify-between gap-3 text-sm">
@@ -107,7 +112,7 @@ import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { fmtDateTime, fmtMs } from '@/utils/format'
-import { pelicanDateRange, pelicanDeletable, pelicanPending, pelicanRequestID, pelicanStatusVariant } from '@/utils/pelican'
+import { pelicanAccountsForGroup, pelicanDateRange, pelicanDeletable, pelicanHost, pelicanPending, pelicanRequestID, pelicanStatusVariant } from '@/utils/pelican'
 import type { PelicanAccount, PelicanFacet, PelicanGroup, PelicanResult } from '@/types/pelican'
 import PelicanDetail from './PelicanDetail.vue'
 import PelicanPreview from './PelicanPreview.vue'
@@ -152,6 +157,18 @@ const pageIds = computed(() => items.value.map(item => item.id))
 
 function date(value: string) { return fmtDateTime(value) }
 function fullDate(value: string) { return new Date(value).toLocaleString(locale.value, { timeZoneName: 'short' }) }
+/** 所属账号：优先用记录里的名称快照，旧记录回落到账号列表；只给管理端看。 */
+function ownerLabel(item: PelicanResult): string {
+  if (!props.admin) return ''
+  if (item.account_name) return item.account_name
+  if (item.account_id) return (props.accounts ?? []).find(account => account.id === item.account_id)?.name ?? ''
+  if (item.source === 'manual') return item.base_url ? `${t('pelican.sourceManualShort')} ${pelicanHost(item.base_url)}` : ''
+  return ''
+}
+function ownerTitle(item: PelicanResult) {
+  const owner = ownerLabel(item)
+  return owner ? `${item.group_name} · ${owner}` : item.group_name
+}
 function closeDetail() { detailVersion++; detail.value = null; retryKey.value = '' }
 function clearSelection() { selected.value = [] }
 function togglePage() {
@@ -192,7 +209,10 @@ async function openDetail(id: number) {
     detail.value = value
     retryKey.value = ''
     const known = (props.accounts ?? []).some(account => account.id === value.account_id)
-    retryAccountID.value = value.account_id && known ? value.account_id : ((props.accounts ?? []).length === 1 ? props.accounts![0].id : 0)
+    // 记录的账号已失效时，优先预选同一归属分组下唯一可选账号，与详情的选项范围一致。
+    const scoped = pelicanAccountsForGroup(props.accounts ?? [], value.group_id)
+    const fallback = scoped.length ? scoped : (props.accounts ?? [])
+    retryAccountID.value = value.account_id && known ? value.account_id : (fallback.length === 1 ? fallback[0].id : 0)
   } catch (e) { if (own === detailVersion) error.value = t(errorMessage(e)) }
 }
 
