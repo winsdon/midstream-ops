@@ -35,16 +35,18 @@ type PelicanMetadata struct {
 	// KeyFP 手填来源 Key 的指纹；明文只在进程内使用，绝不入库。
 	KeyFP string `json:"key_fp,omitempty"`
 	// KeyID 旧记录的分组 Key id。新记录不再写入，仅保留以便旧记录仍能解析。
-	KeyID          int64      `json:"key_id,omitempty"`
-	RetryOf        int64      `json:"retry_of,omitempty"`
-	Prompt         string     `json:"prompt"`
-	MaxTokens      int        `json:"max_tokens"`
-	TimeoutSeconds int        `json:"timeout_seconds"`
-	StartedAt      *time.Time `json:"started_at,omitempty"`
-	FinishedAt     *time.Time `json:"finished_at,omitempty"`
-	DurationMs     int64      `json:"duration_ms"`
-	Error          string     `json:"error,omitempty"`
-	HasDocument    bool       `json:"has_document"`
+	KeyID          int64  `json:"key_id,omitempty"`
+	RetryOf        int64  `json:"retry_of,omitempty"`
+	Prompt         string `json:"prompt"`
+	MaxTokens      int    `json:"max_tokens"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+	// Effort 请求的思考强度（output_config.effort），只对 Messages 协议生效；空表示未指定。
+	Effort      string     `json:"effort,omitempty"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
+	DurationMs  int64      `json:"duration_ms"`
+	Error       string     `json:"error,omitempty"`
+	HasDocument bool       `json:"has_document"`
 }
 type PelicanResult struct {
 	ID          int64      `json:"id"`

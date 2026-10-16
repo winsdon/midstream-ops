@@ -1,20 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import { ARTIFACT_PREVIEW_VIEW } from './detectArtifact'
 import {
+  DEFAULT_PELICAN_CLAUDE_PROMPT,
   DEFAULT_PELICAN_PROMPT,
   PELICAN_DEFAULT_CONCURRENCY,
+  PELICAN_DEFAULT_EFFORT,
   PELICAN_DEFAULT_MAX_TOKENS,
   PELICAN_DEFAULT_TIMEOUT_SECONDS,
+  PELICAN_EFFORTS,
   PELICAN_MAX_TARGETS,
   pelicanAccountProtocol,
   pelicanAccountProtocolChoices,
   pelicanAccountsForGroup,
   pelicanDateRange,
+  pelicanDefaultPrompt,
   pelicanDeletable,
   pelicanDraftFingerprint,
   pelicanDraftFromRequest,
   pelicanDraftTargets,
   pelicanEmptyDraft,
+  pelicanIsDefaultPrompt,
   pelicanPending,
   pelicanPreviewScale,
   pelicanProtocolOptions,
@@ -30,6 +35,27 @@ describe('pelican default prompt', () => {
   // 与后端 service.DefaultPelicanPrompt 必须逐字一致：改一处不改另一处就是两边提示词不同。
   it('asks for an animated koala SVG', () => {
     expect(DEFAULT_PELICAN_PROMPT).toBe('生成一张考拉骑自行车的 SVG 图像并添加动画效果')
+  })
+  // 与后端 service.DefaultPelicanClaudePrompt 逐字一致。
+  it('uses the Miku prompt only when every target is Claude (Messages)', () => {
+    expect(DEFAULT_PELICAN_CLAUDE_PROMPT).toBe('做个初音未来.html带人物')
+    expect(pelicanDefaultPrompt([{ protocol: 'messages' }, { protocol: 'messages' }])).toBe(DEFAULT_PELICAN_CLAUDE_PROMPT)
+    expect(pelicanDefaultPrompt([{ protocol: 'messages' }, { protocol: 'responses' }])).toBe(DEFAULT_PELICAN_PROMPT)
+    expect(pelicanDefaultPrompt([{ protocol: 'chat' }])).toBe(DEFAULT_PELICAN_PROMPT)
+    expect(pelicanDefaultPrompt([])).toBe(DEFAULT_PELICAN_PROMPT)
+  })
+  it('only treats the built-in prompts as untouched defaults', () => {
+    expect(pelicanIsDefaultPrompt(DEFAULT_PELICAN_PROMPT)).toBe(true)
+    expect(pelicanIsDefaultPrompt(DEFAULT_PELICAN_CLAUDE_PROMPT)).toBe(true)
+    expect(pelicanIsDefaultPrompt(`${DEFAULT_PELICAN_CLAUDE_PROMPT}，加点樱花`)).toBe(false)
+  })
+})
+
+describe('pelican effort', () => {
+  it('defaults new tests to low', () => {
+    expect(PELICAN_DEFAULT_EFFORT).toBe('low')
+    expect(pelicanEmptyDraft().effort).toBe('low')
+    expect(PELICAN_EFFORTS).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
   })
 })
 
@@ -153,7 +179,7 @@ describe('pelican draft fingerprint', () => {
   it('changes as soon as a submitted parameter changes', () => {
     const changed: Array<Partial<PelicanDraft>> = [
       { group_id: 2 }, { model: 'n' }, { account_ids: [1] }, { prompt: 'other' },
-      { protocol: 'chat' }, { concurrency: 5 }, { max_tokens: 100 }, { timeout_seconds: 60 },
+      { protocol: 'chat' }, { concurrency: 5 }, { max_tokens: 100 }, { timeout_seconds: 60 }, { effort: 'max' },
       { source: 'manual' }, { base_url: 'https://api.example.com' }
     ]
     for (const patch of changed) {
@@ -187,6 +213,12 @@ describe('pelican pending submission restore', () => {
   it('falls back to the built-in defaults for missing parameters', () => {
     const restored = pelicanDraftFromRequest({ request_id: 'r', prompt: '', concurrency: 0, max_tokens: 0, timeout_seconds: 0, targets: [{ group_id: 3, source: 'account', account_id: 7, model: 'm', protocol: 'messages' }] })
     expect(restored).toMatchObject({ prompt: DEFAULT_PELICAN_PROMPT, concurrency: PELICAN_DEFAULT_CONCURRENCY, max_tokens: PELICAN_DEFAULT_MAX_TOKENS, timeout_seconds: PELICAN_DEFAULT_TIMEOUT_SECONDS })
+  })
+  it('restores effort, and leaves it unset for submissions made before effort existed', () => {
+    const target = { group_id: 3, source: 'account' as const, account_id: 7, model: 'm', protocol: 'messages' as const }
+    expect(pelicanDraftFromRequest({ ...request([target]), effort: 'xhigh' })?.effort).toBe('xhigh')
+    expect(pelicanDraftFromRequest(request([target]))?.effort).toBe('')
+    expect(pelicanDraftFromRequest({ ...request([target]), effort: 'bogus' })?.effort).toBe('')
   })
 })
 

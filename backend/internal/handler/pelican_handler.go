@@ -153,7 +153,7 @@ func (h *PelicanHandler) Retry(c *gin.Context) {
 		pelicanError(c, service.ErrPelicanInvalid)
 		return
 	}
-	b, err := h.svc.Start(c.Request.Context(), service.PelicanRequest{RequestID: req.RequestID, Prompt: old.Prompt, MaxTokens: old.MaxTokens, TimeoutSeconds: old.TimeoutSeconds, Targets: []service.PelicanTarget{target}})
+	b, err := h.svc.Start(c.Request.Context(), service.PelicanRequest{RequestID: req.RequestID, Prompt: old.Prompt, MaxTokens: old.MaxTokens, TimeoutSeconds: old.TimeoutSeconds, Effort: old.Effort, Targets: []service.PelicanTarget{target}})
 	if err != nil {
 		pelicanError(c, err)
 		return

@@ -93,13 +93,53 @@ func TestPelicanRequestValidation(t *testing.T) {
 	}
 }
 
-func TestPelicanDefaultPromptFallsBackToKoala(t *testing.T) {
-	r := PelicanRequest{RequestID: "request-123", Targets: []PelicanTarget{{GroupID: 1, Source: PelicanSourceAccount, AccountID: 2, Model: "claude-opus-5-5", Protocol: "messages"}}}
-	if err := normalizePelicanRequest(&r); err != nil || r.Prompt != DefaultPelicanPrompt {
-		t.Fatalf("prompt=%q err=%v", r.Prompt, err)
+// 空提示词按协议取默认：全部 Messages（Claude）用初音未来，含 GPT 协议时回到考拉。
+func TestPelicanDefaultPromptByProtocol(t *testing.T) {
+	claude := PelicanTarget{GroupID: 1, Source: PelicanSourceAccount, AccountID: 2, Model: "claude-opus-5-5", Protocol: "messages"}
+	gpt := PelicanTarget{GroupID: 1, Source: PelicanSourceAccount, AccountID: 3, Model: "gpt-5.1", Protocol: "responses"}
+	cases := []struct {
+		name    string
+		targets []PelicanTarget
+		want    string
+	}{
+		{"claude only", []PelicanTarget{claude}, DefaultPelicanClaudePrompt},
+		{"gpt only", []PelicanTarget{gpt}, DefaultPelicanPrompt},
+		{"mixed", []PelicanTarget{claude, gpt}, DefaultPelicanPrompt},
 	}
-	if !strings.Contains(r.Prompt, "考拉") || !strings.Contains(r.Prompt, "SVG") {
-		t.Fatalf("default prompt must ask for an animated koala SVG: %q", r.Prompt)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := PelicanRequest{RequestID: "request-123", Targets: tc.targets}
+			if err := normalizePelicanRequest(&r); err != nil || r.Prompt != tc.want {
+				t.Fatalf("prompt=%q err=%v", r.Prompt, err)
+			}
+		})
+	}
+	if !strings.Contains(DefaultPelicanPrompt, "考拉") || !strings.Contains(DefaultPelicanPrompt, "SVG") {
+		t.Fatalf("default prompt must ask for an animated koala SVG: %q", DefaultPelicanPrompt)
+	}
+}
+
+func TestPelicanEffortValidation(t *testing.T) {
+	target := PelicanTarget{GroupID: 1, Source: PelicanSourceAccount, AccountID: 2, Model: "claude-opus-5-5", Protocol: "messages"}
+	for _, ok := range []string{"", "low", "medium", "high", " xhigh ", "max"} {
+		r := PelicanRequest{RequestID: "request-123", Effort: ok, Targets: []PelicanTarget{target}}
+		if err := normalizePelicanRequest(&r); err != nil {
+			t.Fatalf("rejected effort %q: %v", ok, err)
+		}
+		if r.Effort != strings.TrimSpace(ok) {
+			t.Fatalf("effort not trimmed: %q", r.Effort)
+		}
+	}
+	for _, bad := range []string{"HIGH", "minimal", "ultra"} {
+		r := PelicanRequest{RequestID: "request-123", Effort: bad, Targets: []PelicanTarget{target}}
+		if normalizePelicanRequest(&r) == nil {
+			t.Fatalf("accepted effort %q", bad)
+		}
+	}
+	// 不指定思考强度时请求序列化不带 effort：旧待确认提交重放时 hash 不变。
+	raw, _ := json.Marshal(PelicanRequest{RequestID: "request-123"})
+	if strings.Contains(string(raw), "effort") {
+		t.Fatalf("empty effort must be omitted: %s", raw)
 	}
 }
 
@@ -218,8 +258,10 @@ func TestPelicanAccountTargetUsesAccountCredential(t *testing.T) {
 	}
 	defer cleanup()
 	var auth string
+	var sent map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth = r.Header.Get("x-api-key")
+		_ = json.NewDecoder(r.Body).Decode(&sent)
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"content":[{"type":"text","text":"<svg></svg>"}],"stop_reason":"end_turn"}`)
 	}))
@@ -229,7 +271,7 @@ func TestPelicanAccountTargetUsesAccountCredential(t *testing.T) {
 	s := NewPelicanService(repo, pg)
 	defer s.Close()
 	ctx := context.Background()
-	batch, err := s.Start(ctx, PelicanRequest{RequestID: "account-request", Targets: []PelicanTarget{{GroupID: 1, Source: PelicanSourceAccount, AccountID: 7, Model: "test", Protocol: "messages"}}})
+	batch, err := s.Start(ctx, PelicanRequest{RequestID: "account-request", Effort: "high", Targets: []PelicanTarget{{GroupID: 1, Source: PelicanSourceAccount, AccountID: 7, Model: "claude-opus-5-5", Protocol: "messages"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,6 +289,13 @@ func TestPelicanAccountTargetUsesAccountCredential(t *testing.T) {
 	}
 	if auth != "sk-account" {
 		t.Fatalf("account key not used: %q", auth)
+	}
+	// 思考强度随记录留痕，并按 output_config.effort 发给上游。
+	if rows[0].Effort != "high" {
+		t.Fatalf("effort not recorded: %+v", rows[0].PelicanMetadata)
+	}
+	if cfg, _ := sent["output_config"].(map[string]any); cfg["effort"] != "high" {
+		t.Fatalf("effort not sent: %v", sent)
 	}
 	if _, err := s.Start(ctx, PelicanRequest{RequestID: "account-bad-proto", Targets: []PelicanTarget{{GroupID: 1, Source: PelicanSourceAccount, AccountID: 7, Model: "test", Protocol: "chat"}}}); err == nil {
 		t.Fatal("anthropic account accepted chat completions")

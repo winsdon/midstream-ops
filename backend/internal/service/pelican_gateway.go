@@ -18,6 +18,9 @@ import (
 
 const DefaultPelicanPrompt = "生成一张考拉骑自行车的 SVG 图像并添加动画效果"
 
+// DefaultPelicanClaudePrompt 全部目标都走 Messages（Claude）时的默认题目。
+const DefaultPelicanClaudePrompt = "做个初音未来.html带人物"
+
 // Keep delivery instructions separate from the administrator's verbatim prompt.
 // This is a direct generation request, with no workspace or file-writing tools.
 const pelicanDeliveryInstructions = "Return a complete standalone HTML document in your response. Do not use Markdown fences or external dependencies. Return the HTML source directly, not a file path or a report about files created in a workspace."
@@ -52,6 +55,9 @@ func pelicanPayload(v *repository.PelicanResult) (string, map[string]any, error)
 		body["messages"] = []map[string]string{{"role": "user", "content": v.Prompt}}
 		if thinking := pelicanThinkingParam(v.Model); thinking != nil {
 			body["thinking"] = thinking
+		}
+		if effort := modeldetect.EffortFor(v.Model, v.Effort); effort != "" {
+			body["output_config"] = map[string]any{"effort": effort}
 		}
 		return "/messages", body, nil
 	case "responses":

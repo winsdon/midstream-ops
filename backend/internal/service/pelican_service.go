@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -66,6 +67,8 @@ type PelicanRequest struct {
 	Concurrency    int             `json:"concurrency"`
 	MaxTokens      int             `json:"max_tokens"`
 	TimeoutSeconds int             `json:"timeout_seconds"`
+	// Effort 思考强度，只对 Messages 协议生效；空表示不发（上游默认）。omitempty 让旧请求的 hash 不变。
+	Effort string `json:"effort,omitempty"`
 }
 
 // PelicanGroupOption 作品归属分组：只决定 group_id / group_name 与可见范围。
@@ -225,9 +228,26 @@ func pelicanProtocolPlatform(protocol, platform string) error {
 	return nil
 }
 
+// defaultPelicanPrompt 全部目标都走 Messages（Claude）时用 Claude 题目，否则用通用题目。
+func defaultPelicanPrompt(targets []PelicanTarget) string {
+	if len(targets) == 0 {
+		return DefaultPelicanPrompt
+	}
+	for _, t := range targets {
+		if strings.TrimSpace(t.Protocol) != "messages" {
+			return DefaultPelicanPrompt
+		}
+	}
+	return DefaultPelicanClaudePrompt
+}
+
 func normalizePelicanRequest(r *PelicanRequest) error {
 	if strings.TrimSpace(r.Prompt) == "" {
-		r.Prompt = DefaultPelicanPrompt
+		r.Prompt = defaultPelicanPrompt(r.Targets)
+	}
+	r.Effort = strings.TrimSpace(r.Effort)
+	if r.Effort != "" && !slices.Contains(modeldetect.EffortLevels, r.Effort) {
+		return ErrPelicanInvalid
 	}
 	if r.Concurrency == 0 {
 		r.Concurrency = 3
@@ -371,7 +391,7 @@ func (s *PelicanService) Start(ctx context.Context, r PelicanRequest) (*reposito
 				return nil, ErrPelicanInvalid
 			}
 		}
-		meta := repository.PelicanMetadata{GroupName: name, Protocol: t.Protocol, Source: t.Source, AccountID: t.AccountID, BaseURL: t.BaseURL, Prompt: r.Prompt, MaxTokens: r.MaxTokens, TimeoutSeconds: r.TimeoutSeconds, RetryOf: t.RetryOf}
+		meta := repository.PelicanMetadata{GroupName: name, Protocol: t.Protocol, Source: t.Source, AccountID: t.AccountID, BaseURL: t.BaseURL, Prompt: r.Prompt, MaxTokens: r.MaxTokens, TimeoutSeconds: r.TimeoutSeconds, Effort: r.Effort, RetryOf: t.RetryOf}
 		if t.Source == PelicanSourceAccount {
 			// 账号名随记录快照：账号改名或删除后，管理端作品卡片仍能显示当时的名字。
 			meta.AccountName = accounts[t.AccountID].Name
@@ -481,19 +501,37 @@ func (s *PelicanService) execute(parent context.Context, cred pelicanCredential,
 	}
 	s.persistResult(v)
 }
+
+// pelicanPersistTimeout 单次落库超时：库在远端、回复正文可达数百 KB，5 秒不够用。
+const pelicanPersistTimeout = 30 * time.Second
+
 func (s *PelicanService) persistResult(v *repository.PelicanResult) {
+	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := s.Repo.Update(ctx, v)
+		ctx, cancel := context.WithTimeout(context.Background(), pelicanPersistTimeout)
+		err = s.Repo.Update(ctx, v)
 		cancel()
 		if err == nil || errors.Is(err, repository.ErrPelicanConflict) {
 			return
 		}
+		log.Printf("[pelican] persist result %d attempt %d failed: %v", v.ID, attempt+1, err)
 		if attempt < 2 {
 			time.Sleep(time.Duration(attempt+1) * time.Second)
 		}
 	}
-	log.Printf("[pelican] cannot persist result %d; recovery will mark it interrupted on restart", v.ID)
+	// 带正文写不进去（内容被库拒绝或过大）时退一步只记失败，不让记录一直停在「生成中」。
+	fallback := *v
+	fallback.Output = nil
+	fallback.HasDocument = false
+	if fallback.Status != "cancelled" {
+		fallback.Status = "failed"
+		fallback.Error = "pelican.errors.persistFailed"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pelicanPersistTimeout)
+	defer cancel()
+	if e := s.Repo.Update(ctx, &fallback); e != nil && !errors.Is(e, repository.ErrPelicanConflict) {
+		log.Printf("[pelican] cannot persist result %d (last error: %v); recovery will mark it interrupted on restart", v.ID, e)
+	}
 }
 func (s *PelicanService) Cancel(ctx context.Context, id int64) error {
 	s.mu.Lock()

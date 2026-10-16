@@ -2,6 +2,12 @@ import { ARTIFACT_PREVIEW_VIEW } from '@/utils/detectArtifact'
 import type { PelicanAccount, PelicanProtocol, PelicanRequest, PelicanSource, PelicanTarget } from '@/types/pelican'
 
 export const DEFAULT_PELICAN_PROMPT = '生成一张考拉骑自行车的 SVG 图像并添加动画效果'
+/** 全部目标都走 Messages（Claude）时的默认题目，与后端 DefaultPelicanClaudePrompt 一致。 */
+export const DEFAULT_PELICAN_CLAUDE_PROMPT = '做个初音未来.html带人物'
+/** 思考强度（output_config.effort），只对 Messages 协议生效；与后端 modeldetect.EffortLevels 一致。 */
+export const PELICAN_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+export type PelicanEffort = typeof PELICAN_EFFORTS[number]
+export const PELICAN_DEFAULT_EFFORT: PelicanEffort = 'low'
 /** 与后端 normalizePelicanRequest 的默认值一致：高级选项不填时按这套参数提交。 */
 export const PELICAN_DEFAULT_CONCURRENCY = 3
 export const PELICAN_DEFAULT_MAX_TOKENS = 32000
@@ -88,6 +94,8 @@ export interface PelicanDraft {
   concurrency: number
   max_tokens: number
   timeout_seconds: number
+  /** 思考强度；空串表示不指定（只会出现在旧的待确认提交里）。 */
+  effort: PelicanEffort | ''
 }
 
 /** 空白表单。分组与账号等账号列表加载完成后再由调用方水合。 */
@@ -105,8 +113,19 @@ export function pelicanEmptyDraft(): PelicanDraft {
     prompt: DEFAULT_PELICAN_PROMPT,
     concurrency: PELICAN_DEFAULT_CONCURRENCY,
     max_tokens: PELICAN_DEFAULT_MAX_TOKENS,
-    timeout_seconds: PELICAN_DEFAULT_TIMEOUT_SECONDS
+    timeout_seconds: PELICAN_DEFAULT_TIMEOUT_SECONDS,
+    effort: PELICAN_DEFAULT_EFFORT
   }
+}
+
+/** 按目标协议取默认题目：全部走 Messages（Claude）用初音未来，含 GPT 协议或尚无目标时用考拉。 */
+export function pelicanDefaultPrompt(targets: readonly Pick<PelicanTarget, 'protocol'>[]): string {
+  return targets.length && targets.every(target => target.protocol === 'messages') ? DEFAULT_PELICAN_CLAUDE_PROMPT : DEFAULT_PELICAN_PROMPT
+}
+
+/** 提示词仍是某一句默认题目（管理员没改过），换目标时可以跟着协议切换。 */
+export function pelicanIsDefaultPrompt(prompt: string): boolean {
+  return prompt === DEFAULT_PELICAN_PROMPT || prompt === DEFAULT_PELICAN_CLAUDE_PROMPT
 }
 
 /** 归属分组下的可选账号：后端按 account_groups 给出 group_ids，前端只做匹配。 */
@@ -188,6 +207,8 @@ export function pelicanDraftFromRequest(request: PelicanRequest): PelicanDraft |
   if (request.concurrency > 0) draft.concurrency = request.concurrency
   if (request.max_tokens > 0) draft.max_tokens = request.max_tokens
   if (request.timeout_seconds > 0) draft.timeout_seconds = request.timeout_seconds
+  // 旧提交没有 effort 字段：回填空串，重放时不凭空多出一个参数（否则 hash 对不上）。
+  draft.effort = PELICAN_EFFORTS.find(level => level === request.effort) ?? ''
   if (source === 'account') {
     draft.account_ids = [...new Set(targets.map(target => target.account_id ?? 0).filter(id => id > 0))]
     draft.protocol = targets.some(target => target.protocol === 'chat') ? 'chat' : 'responses'

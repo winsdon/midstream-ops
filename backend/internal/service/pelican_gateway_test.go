@@ -170,6 +170,41 @@ func TestPelicanMessagesRequestShape(t *testing.T) {
 	}
 }
 
+// 思考强度只发给 Messages 协议的 adaptive 型号：旧型号与 GPT 协议收到 output_config 会 400。
+func TestPelicanEffortPayload(t *testing.T) {
+	cases := []struct {
+		name, model, protocol, effort, want string
+	}{
+		{"opus 5.5 high", "claude-opus-5-5", "messages", "high", "high"},
+		{"opus 5.5 max", "claude-opus-5-5", "messages", "max", "max"},
+		{"unset effort", "claude-opus-5-5", "messages", "", ""},
+		{"opus 4.6 has no xhigh", "claude-opus-4-6", "messages", "xhigh", "high"},
+		{"opus 4.7 keeps xhigh", "claude-opus-4-7", "messages", "xhigh", "xhigh"},
+		{"budget model skipped", "claude-opus-4-5", "messages", "high", ""},
+		{"haiku 4.5 skipped", "claude-haiku-4-5", "messages", "high", ""},
+		{"unknown model skipped", "my-alias", "messages", "high", ""},
+		{"responses ignored", "claude-opus-5-5", "responses", "high", ""},
+		{"chat ignored", "claude-opus-5-5", "chat", "high", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, body, err := pelicanPayload(&repository.PelicanResult{Model: tc.model, PelicanMetadata: repository.PelicanMetadata{Protocol: tc.protocol, Prompt: "p", MaxTokens: 100, Effort: tc.effort}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := ""
+			if cfg, ok := body["output_config"].(map[string]any); ok {
+				got, _ = cfg["effort"].(string)
+			} else if body["output_config"] != nil {
+				t.Fatalf("unexpected output_config: %v", body["output_config"])
+			}
+			if got != tc.want {
+				t.Fatalf("effort=%q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPelicanResponsesFinalOutput(t *testing.T) {
 	const html = "<!DOCTYPE html><html><body><svg></svg></body></html>"
 	for _, tc := range []struct {
@@ -237,8 +272,8 @@ func TestPelicanGatewayCancellationAndHTTPFailure(t *testing.T) {
 }
 func TestPelicanManualBaseURLNormalization(t *testing.T) {
 	for input, want := range map[string]string{
-		"https://api.example.com/":                  "https://api.example.com",
-		"https://api.example.com/v1/messages":       "https://api.example.com",
+		"https://api.example.com/":                    "https://api.example.com",
+		"https://api.example.com/v1/messages":         "https://api.example.com",
 		"https://api.example.com/v1/chat/completions": "https://api.example.com",
 	} {
 		got, err := normalizePelicanBaseURL(input)

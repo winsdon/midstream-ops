@@ -4,6 +4,8 @@ export const pelicanZh = {
   startTest: '发起测试',
   prompt: '本次提示词', resetPrompt: '恢复默认提示词', advanced: '高级选项', concurrency: '并发数', maxTokens: '最大输出 tokens', timeout: '单项超时（秒）',
   deliveryHint: '提示词原样发送，另附统一交付要求：直接返回完整 HTML 代码，不依赖外部资源，不以文件链接或完成说明代替作品。',
+  effort: '思考强度', effortUnset: '上游默认', effortHint: '思考强度只对 Claude（Messages 协议）生效，按 output_config.effort 发送；不支持的旧型号自动不发，Opus / Sonnet 4.6 的超高按高发送。强度越高越慢，注意单项超时。',
+  efforts: { low: '低 low', medium: '中 medium', high: '高 high', xhigh: '超高 xhigh', max: '最高 max' },
   group: '归属分组', groupEmpty: '没有可选的归属分组', selectGroup: '选择分组',
   model: '模型', modelHint: '选择或输入模型名', protocol: '接口协议', selectProtocol: '选择接口协议',
   source: '凭据来源', sourceAccount: '本站账号', sourceManual: '手填地址 + Key', sourceManualShort: '手填',
@@ -34,7 +36,7 @@ export const pelicanZh = {
   reply: '模型原始回复', usage: '接口返回用量', parameters: '请求参数',
   previous: '上一页', next: '下一页', page: '第 {page} / {pages} 页 · 共 {total} 项',
   statuses: { queued: '等待中', running: '生成中', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '服务重启中断' },
-  errors: { invalid: '参数无效，请检查分组、账号 / 地址、模型、协议和高级选项。', conflict: '状态已变更、记录不可发布，或提交标识已用于其他参数，请刷新后重试。', notFound: '作品不存在或尚未公开。', failed: '操作失败，请稍后重试。', noDocument: '未取得完整的 HTML / SVG 作品。', accountUnavailable: '账号不存在、已停用或缺少可用密钥 / 地址。', credentialsUnavailable: '本次凭据已失效（进程内密钥不落库），请重新发起测试。', keyRequired: '手填来源的 Key 不会保存，重新测试需要再填一次。', legacyRetry: '旧版分组 Key 记录不支持重新测试。', unavailable: '服务暂不可用。' }
+  errors: { invalid: '参数无效，请检查分组、账号 / 地址、模型、协议和高级选项。', conflict: '状态已变更、记录不可发布，或提交标识已用于其他参数，请刷新后重试。', notFound: '作品不存在或尚未公开。', failed: '操作失败，请稍后重试。', noDocument: '未取得完整的 HTML / SVG 作品。', persistFailed: '作品已生成但保存失败（详见服务日志），请重新测试。', accountUnavailable: '账号不存在、已停用或缺少可用密钥 / 地址。', credentialsUnavailable: '本次凭据已失效（进程内密钥不落库），请重新发起测试。', keyRequired: '手填来源的 Key 不会保存，重新测试需要再填一次。', legacyRetry: '旧版分组 Key 记录不支持重新测试。', unavailable: '服务暂不可用。' }
 }
 export const pelicanEn = {
   title: 'Pelican test', intro: 'See animated artwork generated through each group. Each piece represents one generation at the stated time.',
@@ -42,6 +44,8 @@ export const pelicanEn = {
   startTest: 'Start test',
   prompt: 'Prompt', resetPrompt: 'Restore default prompt', advanced: 'Advanced options', concurrency: 'Concurrency', maxTokens: 'Maximum output tokens', timeout: 'Timeout per target (seconds)',
   deliveryHint: 'Your prompt is sent unchanged, with a separate delivery instruction to return complete HTML source without external dependencies, file links, or completion reports.',
+  effort: 'Thinking effort', effortUnset: 'Upstream default', effortHint: 'Effort only applies to Claude (Messages) and is sent as output_config.effort. Older models that do not support it get no effort; xhigh is sent as high on Opus / Sonnet 4.6. Higher effort is slower — mind the per-target timeout.',
+  efforts: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
   group: 'Owning group', groupEmpty: 'No owning group available', selectGroup: 'Select group',
   model: 'Model', modelHint: 'Select or enter a model', protocol: 'API protocol', selectProtocol: 'Select API protocol',
   source: 'Credential source', sourceAccount: 'Local account', sourceManual: 'URL + key', sourceManualShort: 'Manual',
@@ -72,5 +76,5 @@ export const pelicanEn = {
   reply: 'Original model reply', usage: 'Reported usage', parameters: 'Request parameters',
   previous: 'Previous', next: 'Next', page: 'Page {page} / {pages} · {total} items',
   statuses: { queued: 'Queued', running: 'Generating', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted by restart' },
-  errors: { invalid: 'Invalid parameters. Check the group, account or URL, model, protocol and advanced options.', conflict: 'The state changed, this result cannot be published, or the request ID belongs to different parameters. Refresh and retry.', notFound: 'Artwork is unavailable or unpublished.', failed: 'Operation failed. Please try again.', noDocument: 'No complete HTML / SVG artwork was returned.', accountUnavailable: 'The account is missing, disabled, or has no usable key / URL.', credentialsUnavailable: 'The in-memory credential for this batch is gone; start the test again.', keyRequired: 'Hand-entered keys are never stored — re-enter the key to run again.', legacyRetry: 'Records from the retired group-key flow cannot be re-run.', unavailable: 'Service unavailable.' }
+  errors: { invalid: 'Invalid parameters. Check the group, account or URL, model, protocol and advanced options.', conflict: 'The state changed, this result cannot be published, or the request ID belongs to different parameters. Refresh and retry.', notFound: 'Artwork is unavailable or unpublished.', failed: 'Operation failed. Please try again.', noDocument: 'No complete HTML / SVG artwork was returned.', persistFailed: 'The artwork was generated but could not be saved (see server log). Run the test again.', accountUnavailable: 'The account is missing, disabled, or has no usable key / URL.', credentialsUnavailable: 'The in-memory credential for this batch is gone; start the test again.', keyRequired: 'Hand-entered keys are never stored — re-enter the key to run again.', legacyRetry: 'Records from the retired group-key flow cannot be re-run.', unavailable: 'Service unavailable.' }
 }

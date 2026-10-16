@@ -307,6 +307,23 @@ func ThinkingParamFor(p ThinkingProfile) map[string]any {
 	return p.ThinkingParam("summarized")
 }
 
+// EffortLevels 官方 output_config.effort 的取值，由低到高。
+var EffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+
+// EffortFor 按型号收敛思考强度：只给 adaptive 型号发（旧型号、Haiku 4.5 收到 effort 会 400），
+// 型号不认识时同样不发；Opus / Sonnet 4.6 没有 xhigh，降为 high。返回空串表示不发。
+func EffortFor(model, effort string) string {
+	if effort == "" || !ResolveProfile(model).Adaptive {
+		return ""
+	}
+	if effort == "xhigh" {
+		if v, ok := parseModelVersion(model); ok && (v.family == "opus" || v.family == "sonnet") && !v.atLeast(4, 7) {
+			return "high"
+		}
+	}
+	return effort
+}
+
 // OfficialCutoff 官方公布的知识截止（reliable = 最可靠知识，training = 训练数据结束）。
 type OfficialCutoff struct {
 	Name     string

@@ -30,7 +30,7 @@
         <p class="text-gray-500">{{ t('pelican.testedAt') }}: <time :datetime="detail.tested_at">{{ fullDate(detail.tested_at) }}</time></p>
         <p class="text-gray-500">{{ t('pelican.duration') }}: {{ fmtMs(detail.duration_ms) }}</p>
         <p v-if="detail.published_at" class="text-gray-500">{{ t('pelican.publishedAt') }}: {{ fullDate(detail.published_at) }}</p>
-        <p class="text-gray-500">{{ t('pelican.parameters') }}: {{ pelicanProtocolLabel(detail.protocol) }} · max_tokens={{ detail.max_tokens }}<span v-if="detail.source"> · {{ detail.source === 'manual' ? t('pelican.sourceManual') : t('pelican.sourceAccount') }}</span></p>
+        <p class="text-gray-500">{{ t('pelican.parameters') }}: {{ pelicanProtocolLabel(detail.protocol) }} · max_tokens={{ detail.max_tokens }}<span v-if="detail.effort"> · effort={{ detail.effort }}</span><span v-if="detail.source"> · {{ detail.source === 'manual' ? t('pelican.sourceManual') : t('pelican.sourceAccount') }}</span></p>
         <p v-if="accountLabel" class="text-gray-500">{{ t('pelican.accountName') }}: {{ accountLabel }}</p>
         <p v-if="admin && detail.error" class="text-red-600">{{ t(detail.error) }}</p>
         <h4 class="font-semibold text-gray-900 dark:text-white">{{ t('pelican.prompt') }}</h4>

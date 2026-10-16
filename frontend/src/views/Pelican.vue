@@ -20,6 +20,7 @@
       :error="composerError"
       :run-count="runCount"
       :replayed="replayed"
+      :default-prompt="defaultPrompt"
       @submit="submit"
       @discard="clearPending"
       @close="closeComposer"
@@ -28,7 +29,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { pelicanAPI } from '@/api/pelican'
 import { errorMessage } from '@/api/client'
@@ -38,10 +39,12 @@ import PelicanGallery from '@/components/pelican/PelicanGallery.vue'
 import type { PelicanAccount, PelicanGroup, PelicanRequest } from '@/types/pelican'
 import {
   pelicanAccountsForGroup,
+  pelicanDefaultPrompt,
   pelicanDraftFingerprint,
   pelicanDraftFromRequest,
   pelicanDraftTargets,
   pelicanEmptyDraft,
+  pelicanIsDefaultPrompt,
   pelicanPruneAccountIDs,
   pelicanRequestID,
   type PelicanDraft
@@ -65,6 +68,16 @@ const gallery = ref<InstanceType<typeof PelicanGallery>>()
 /** 所选分组下可选的本站账号：后端按 account_groups 给出归属，前端只做匹配。 */
 const available = computed(() => pelicanAccountsForGroup(accounts.value, draft.value.group_id))
 const targets = computed(() => pelicanDraftTargets(draft.value, available.value))
+/** 当前目标对应的默认题目：全部 Claude（Messages）用初音未来，否则用考拉。 */
+const defaultPrompt = computed(() => pelicanDefaultPrompt(targets.value))
+/**
+ * 提示词还是默认题目时跟着目标协议切换；管理员改过的不动。
+ * 有待确认提交时不切：提示词变了指纹就对不上，原样重放会变成新测试。
+ */
+watch(defaultPrompt, next => {
+  if (pending.value || !pelicanIsDefaultPrompt(draft.value.prompt) || draft.value.prompt === next) return
+  draft.value = { ...draft.value, prompt: next }
+})
 /** 待确认提交里不带 Key，写 sessionStorage 前必须再剥一次。 */
 function sanitize(request: PelicanRequest): PelicanRequest {
   return { ...request, targets: request.targets.map(({ api_key: _apiKey, ...target }) => target) }
@@ -120,6 +133,7 @@ async function submit() {
     concurrency: draft.value.concurrency,
     max_tokens: draft.value.max_tokens,
     timeout_seconds: draft.value.timeout_seconds,
+    ...(draft.value.effort ? { effort: draft.value.effort } : {}),
     targets: targets.value
   }
   const payload = replayable()

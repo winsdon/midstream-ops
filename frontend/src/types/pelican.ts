@@ -17,12 +17,14 @@ export interface PelicanTarget {
 export interface PelicanRequest {
   request_id: string; prompt: string; targets: PelicanTarget[]
   concurrency: number; max_tokens: number; timeout_seconds: number
+  /** 思考强度，只对 Messages 协议生效；不传表示上游默认。 */
+  effort?: string
 }
 export interface PelicanResult {
   id: number; group_id: number; group_name: string; model: string
   tested_at: string; published_at: string | null; duration_ms: number
   prompt: string; protocol: PelicanProtocol; max_tokens: number; has_document: boolean
-  batch_id?: number; retry_of?: number; timeout_seconds?: number
+  batch_id?: number; retry_of?: number; timeout_seconds?: number; effort?: string
   /** account / manual；旧的分组 Key 记录为空且不可重新测试 */
   source?: string; account_id?: number; base_url?: string
   /** 发起测试时的账号名称快照（仅管理端接口返回，客户接口不下发） */

@@ -4,7 +4,7 @@
       <div class="space-y-2">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <label for="pelican-prompt" class="text-sm font-medium text-gray-900 dark:text-white">{{ t('pelican.prompt') }}</label>
-          <button type="button" class="text-sm text-primary-600 dark:text-primary-400" @click="patch({ prompt: DEFAULT_PELICAN_PROMPT })">{{ t('pelican.resetPrompt') }}</button>
+          <button type="button" class="text-sm text-primary-600 dark:text-primary-400" @click="patch({ prompt: defaultPrompt })">{{ t('pelican.resetPrompt') }}</button>
         </div>
         <textarea id="pelican-prompt" v-model="promptText" rows="2" class="input w-full resize-y" required :disabled="submitting" />
         <p class="text-xs text-gray-500 dark:text-dark-400">{{ t('pelican.deliveryHint') }}</p>
@@ -79,7 +79,7 @@
         <button type="button" class="text-sm text-primary-600 dark:text-primary-400" :aria-expanded="advanced" @click="advanced = !advanced">
           {{ t('pelican.advanced') }}
         </button>
-        <div v-if="advanced" class="mt-2 grid gap-3 sm:grid-cols-3">
+        <div v-if="advanced" class="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <label class="text-xs text-gray-500 dark:text-dark-400">{{ t('pelican.concurrency') }}
             <input :value="draft.concurrency" class="input mt-1 w-full !py-1.5 text-center" type="number" min="1" max="10" :disabled="submitting" @input="onNumber('concurrency', $event, 10)" @blur="syncNumber('concurrency', $event)" />
           </label>
@@ -89,6 +89,11 @@
           <label class="text-xs text-gray-500 dark:text-dark-400">{{ t('pelican.timeout') }}
             <input :value="draft.timeout_seconds" class="input mt-1 w-full !py-1.5 text-center" type="number" min="1" max="3600" :disabled="submitting" @input="onNumber('timeout_seconds', $event, 3600)" @blur="syncNumber('timeout_seconds', $event)" />
           </label>
+          <div class="min-w-0 text-xs text-gray-500 dark:text-dark-400">
+            <span class="mb-1 block">{{ t('pelican.effort') }}</span>
+            <Select :model-value="draft.effort || null" class="w-full" :options="effortOptions" :placeholder="t('pelican.effortUnset')" :searchable="false" :disabled="submitting" :aria-label="t('pelican.effort')" @update:model-value="value => patch({ effort: (value || '') as PelicanEffort | '' })" />
+          </div>
+          <p class="text-xs text-gray-500 dark:text-dark-400 sm:col-span-2 lg:col-span-4">{{ t('pelican.effortHint') }}</p>
         </div>
       </div>
 
@@ -117,14 +122,15 @@ import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
 import type { PelicanAccount, PelicanGroup, PelicanProtocol, PelicanSource } from '@/types/pelican'
 import {
-  DEFAULT_PELICAN_PROMPT,
+  PELICAN_EFFORTS,
   PELICAN_MAX_TARGETS,
   pelicanAccountProtocolChoices,
   pelicanAccountsForGroup,
   pelicanPruneAccountIDs,
   pelicanProtocolLabel,
   pelicanProtocolOptions,
-  type PelicanDraft
+  type PelicanDraft,
+  type PelicanEffort
 } from '@/utils/pelican'
 import PelicanAccountPicker from './PelicanAccountPicker.vue'
 
@@ -139,6 +145,8 @@ const props = defineProps<{
   runCount: number
   /** 参数没改动，本次提交是把待确认的那份原样重放。 */
   replayed: boolean
+  /** 当前目标对应的默认题目（Claude / 其他），「恢复默认提示词」用它。 */
+  defaultPrompt: string
   error?: string
 }>()
 const draft = defineModel<PelicanDraft>('draft', { required: true })
@@ -160,6 +168,7 @@ const accountProtocol = computed<PelicanProtocol>(() => (draft.value.protocol ==
 const mixedPlatforms = computed(() => protocolChoices.value.length > 1 && selectedAccounts.value.some(account => account.platform === 'anthropic'))
 const manualProtocolOptions = computed(() => pelicanProtocolOptions().map(value => ({ value, label: pelicanProtocolLabel(value) })))
 const accountProtocolOptions = computed(() => protocolChoices.value.map(value => ({ value, label: pelicanProtocolLabel(value) })))
+const effortOptions = computed(() => PELICAN_EFFORTS.map(value => ({ value, label: t(`pelican.efforts.${value}`) })))
 const promptText = computed({ get: () => draft.value.prompt, set: (value: string) => patch({ prompt: value }) })
 
 function patch(partial: Partial<PelicanDraft>) {
