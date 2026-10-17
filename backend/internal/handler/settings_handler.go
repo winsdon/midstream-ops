@@ -2,6 +2,9 @@ package handler
 
 import (
 	"context"
+	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"sub2api-account-monitor/internal/notify"
@@ -11,15 +14,18 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// SettingsHandler 系统设置处理器（策略 + 通知渠道）。
+// SettingsHandler 系统设置处理器（策略 + 通知渠道 + 渠道状态推送）。
 type SettingsHandler struct {
-	svc      *service.SettingsService
+	svc *service.SettingsService
+	// notifier 提供「当前启用渠道」给策略页做多选；未启用时也能读配置。
 	notifier *notify.Manager
+	// statusPush 渠道状态图的组装/推送服务（渲染预览与立即推送都要它）。
+	statusPush *service.StatusPushService
 }
 
 // NewSettingsHandler 创建 SettingsHandler。
-func NewSettingsHandler(svc *service.SettingsService, notifier *notify.Manager) *SettingsHandler {
-	return &SettingsHandler{svc: svc, notifier: notifier}
+func NewSettingsHandler(svc *service.SettingsService, notifier *notify.Manager, statusPush *service.StatusPushService) *SettingsHandler {
+	return &SettingsHandler{svc: svc, notifier: notifier, statusPush: statusPush}
 }
 
 // GetStrategy GET /settings/strategy
@@ -172,4 +178,161 @@ func (h *SettingsHandler) TestChannel(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"ok": true})
+}
+
+// statusPushGroupDTO 分组排除勾选项。
+type statusPushGroupDTO struct {
+	ID             int64   `json:"id"`
+	Name           string  `json:"name"`
+	RateMultiplier float64 `json:"rate_multiplier"`
+	Status         string  `json:"status"`
+}
+
+// statusPushDTO GET /settings/status-push 的响应体。
+//
+// 一次返回设置 + 可排除分组 + 上次推送结果：设置页只需要一个请求就能画完，
+// 三个数据源都在同一个服务里，拆成三个接口只会多两次往返和三个 loading 态。
+type statusPushDTO struct {
+	Settings service.StatusPushSettings `json:"settings"`
+	// TargetChatIDs 与 settings.chat_ids 同值，单独给一份是因为前端表单直接用它渲染。
+	TargetChatIDs []string `json:"target_chat_ids"`
+	// AvailableGroups 可推送的公开分组（active 且非专属，按后台 sort_order 排）。
+	// 刻意不滤掉「已排除」的组，否则运营取消勾选的入口就消失了。
+	AvailableGroups []statusPushGroupDTO `json:"available_groups"`
+	// ExcludedGroupIDs 当前排除集（与 settings 同值，前端直接用）。
+	ExcludedGroupIDs []int64 `json:"excluded_group_ids"`
+	// TelegramBotTokenSet 报告 Bot Token 是否已配置（不下发 token 本身）。
+	TelegramBotTokenSet bool                      `json:"telegram_bot_token_set"`
+	LastPush            *service.StatusPushResult `json:"last_push"`
+	IntervalOptions     []int                     `json:"interval_options"`
+	WindowOptions       []int                     `json:"window_options"`
+}
+
+// GetStatusPush GET /settings/status-push
+func (h *SettingsHandler) GetStatusPush(c *gin.Context) {
+	st := h.svc.StatusPush()
+	dto := statusPushDTO{
+		Settings:            st,
+		TargetChatIDs:       st.ChatIDs,
+		ExcludedGroupIDs:    st.ExcludedGroupIDs,
+		TelegramBotTokenSet: h.svc.Channels().Telegram.BotToken != "",
+		IntervalOptions:     service.StatusPushIntervalOptions,
+		WindowOptions:       service.StatusPushWindowOptions,
+	}
+	if h.statusPush != nil {
+		dto.LastPush = h.statusPush.LastPush()
+		// 分组列表来自远端库。不可用时返回 503（可重试）而不是 500：设置本身
+		// 存在本地 monitor 库、仍然读得到，把整个设置页判成「服务端出错」
+		// 会让运营以为配置坏了。与 /stability/passive 等只读页的降级语义一致。
+		if !h.pgAvailable() {
+			response.ServiceUnavailable(c, "线上数据库暂不可用，无法列出分组")
+			return
+		}
+		groups, err := h.statusPush.PublicGroups(c.Request.Context())
+		if err != nil {
+			response.InternalError(c, "读取分组失败: "+err.Error())
+			return
+		}
+		dto.AvailableGroups = make([]statusPushGroupDTO, 0, len(groups))
+		for _, g := range groups {
+			dto.AvailableGroups = append(dto.AvailableGroups, statusPushGroupDTO{
+				ID:             g.ID,
+				Name:           g.Name,
+				RateMultiplier: g.RateMultiplier,
+				Status:         g.Status,
+			})
+		}
+	}
+	// 前端下拉要能直接 map（顺序即档位顺序），这里不再做 nil 兜底：
+	// 两个选项列表都是包级非 nil 变量，判空是永远不会命中的死代码。
+	response.Success(c, dto)
+}
+
+// SaveStatusPush PUT /settings/status-push
+// chat_id 格式在保存时就校验：等整点推送失败可能要半小时后才发现。
+func (h *SettingsHandler) SaveStatusPush(c *gin.Context) {
+	var req service.StatusPushSettings
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "参数格式错误")
+		return
+	}
+	if err := service.ValidateStatusPushChatIDs(req.ChatIDs); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	st, err := h.svc.SaveStatusPush(c.Request.Context(), req)
+	if err != nil {
+		response.InternalError(c, "保存失败: "+err.Error())
+		return
+	}
+	response.Success(c, st)
+}
+
+// PreviewStatusPush GET /settings/status-push/preview?window_minutes=&excluded_group_ids=
+//
+// 直接输出 image/png 而不是 JSON envelope：前端把它塞进 <img> / createObjectURL，
+// 包一层 base64 会白白多 33% 体积和一次解码。
+//
+// 两个可选参数用于「预览还没保存的改动」：运营把窗口从 90 改成 180 后点预览，
+// 看到的必须是他刚选的窗口 —— 只按已保存设置渲染会让人以为改的没生效。
+// 参数缺省或非法时回落到已保存的设置。
+func (h *SettingsHandler) PreviewStatusPush(c *gin.Context) {
+	if h.statusPush == nil {
+		response.ServiceUnavailable(c, "渠道推送服务未启用")
+		return
+	}
+	// 与其它只读页一致：远端库不可用是 503（可重试），不是 500（本站出错）。
+	if !h.pgAvailable() {
+		response.ServiceUnavailable(c, "线上数据库暂不可用")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	override := service.StatusPushPreviewOverride{}
+	if v := c.Query("window_minutes"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			override.WindowMinutes = &n
+		}
+	}
+	// 空串是合法的「本次预览不排除任何分组」，因此用 GetQuery 区分「没传」与「传空」。
+	if raw, ok := c.GetQuery("excluded_group_ids"); ok {
+		ids := []int64{}
+		for _, part := range strings.Split(raw, ",") {
+			if v, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64); err == nil {
+				ids = append(ids, v)
+			}
+		}
+		override.ExcludedGroupIDs = &ids
+	}
+
+	png, err := h.statusPush.Preview(ctx, override)
+	if err != nil {
+		response.InternalError(c, "渲染失败: "+err.Error())
+		return
+	}
+	c.Data(http.StatusOK, "image/png", png)
+}
+
+// TestStatusPush POST /settings/status-push/test
+// 立即推送一次；单个群失败不影响其它群，结果逐群返回。
+func (h *SettingsHandler) TestStatusPush(c *gin.Context) {
+	if h.statusPush == nil {
+		response.ServiceUnavailable(c, "渠道推送服务未启用")
+		return
+	}
+	if !h.pgAvailable() {
+		response.ServiceUnavailable(c, "线上数据库暂不可用")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
+	defer cancel()
+	res := h.statusPush.PushNow(ctx)
+	response.Success(c, res)
+}
+
+// pgAvailable 报告远端库是否可用，用于把「库不可用」判成 503（可重试）而不是 500。
+// 调用点都在 `h.statusPush == nil` 分支之后，因此这里假定 statusPush 非 nil。
+func (h *SettingsHandler) pgAvailable() bool {
+	return h.statusPush.PGAvailable()
 }

@@ -35,6 +35,9 @@ import type {
   StatsGroupRow,
   StatsProviderRow,
   StatsUserRow,
+  StatusPushInfo,
+  StatusPushResultItem,
+  StatusPushSettings,
   StrategySettings,
   StrategySettingsResult,
   TrendPoint
@@ -320,6 +323,33 @@ export const settingsApi = {
   testNotify: (channel: string) =>
     unwrap<{ ok: boolean; error?: string }>(
       http.post<ApiResponse<{ ok: boolean; error?: string }>>('/settings/notify/test', { channel })
+    ),
+  getStatusPush: () =>
+    unwrap<StatusPushInfo>(http.get<ApiResponse<StatusPushInfo>>('/settings/status-push')),
+  // 后端会对 settings 做 normalize（去重、排序、补默认值），前端必须用返回值覆盖本地态
+  saveStatusPush: (payload: StatusPushSettings) =>
+    unwrap<StatusPushSettings>(http.put<ApiResponse<StatusPushSettings>>('/settings/status-push', payload)),
+  // 预览接口直接吐 image/png，没有 {code,message,data} envelope，因此不走 unwrap；
+  // Authorization 由 client.ts 的请求拦截器加在同一个 http 实例上。
+  //
+  // windowMinutes / excludedGroupIds 传的是**表单当前值**（可能还没保存）：
+  // 改了窗口不保存就点预览，看到的必须是刚选的那个窗口，否则会被当成「改了没生效」。
+  statusPushPreview: async (params?: { windowMinutes?: number; excludedGroupIds?: number[] }): Promise<Blob> => {
+    const resp = await http.get<Blob>('/settings/status-push/preview', {
+      responseType: 'blob',
+      params: {
+        window_minutes: params?.windowMinutes,
+        // 空数组要传成空串（「本次不排除任何分组」），不能省成 undefined，
+        // 否则后端会回落到已保存的排除集，预览与表单又不一致
+        excluded_group_ids: params?.excludedGroupIds?.join(',')
+      }
+    })
+    return resp.data
+  },
+  // 单个 chat 失败不影响 HTTP 状态码，成功与否看 results[].ok
+  testStatusPush: () =>
+    unwrap<{ results: StatusPushResultItem[] }>(
+      http.post<ApiResponse<{ results: StatusPushResultItem[] }>>('/settings/status-push/test')
     )
 }
 

@@ -28,6 +28,7 @@ import (
 	"sub2api-account-monitor/internal/repository"
 	"sub2api-account-monitor/internal/server"
 	"sub2api-account-monitor/internal/service"
+	"sub2api-account-monitor/internal/statusimg"
 )
 
 func main() {
@@ -153,6 +154,21 @@ func main() {
 	}
 	settingsSvc.OnNotifyChanged = notifier.Reload
 
+	// 渠道状态图定时推送：取数 → 组装 → 画图 → 发 Telegram 群。
+	// 自带 cron 实例（间隔对齐整点），设置热更新时重注册任务。
+	//
+	// 字体默认走 statusimg 内嵌的 Noto Sans SC 子集；配了 status_push.font_path
+	// 就换外部字体。**校验失败直接退出启动**而不是打日志继续：字体是出图的前提，
+	// 带着坏配置跑起来只会在整点推送时才暴露，那时图上已经是豆腐块了。
+	if err := statusimg.SetFontPath(cfg.StatusPush.FontPath); err != nil {
+		log.Fatalf("加载渠道状态图字体失败: %v", err)
+	}
+	if cfg.StatusPush.FontPath != "" {
+		log.Printf("[status-push] 使用外部字体: %s", cfg.StatusPush.FontPath)
+	}
+	statusPushSvc := service.NewStatusPushService(cfg, pg, settingsSvc)
+	settingsSvc.OnStatusPushChanged = statusPushSvc.Reload
+
 	// 全局 cron（rate 轮询 / probe / 每日清理）
 	scheduler := service.NewScheduler(cfg, pg, rateSvc, probeSvc, costSvc, balanceRepo, rateRepo, probeRepo, healthRepo)
 
@@ -251,7 +267,7 @@ func main() {
 		Detect:           detectHandler,
 		Pelican:          pelicanHandler,
 		EmbedPelican:     embedPelicanHandler,
-		Settings:         handler.NewSettingsHandler(settingsSvc, notifier),
+		Settings:         handler.NewSettingsHandler(settingsSvc, notifier, statusPushSvc),
 		Pricing:          handler.NewPricingHandler(pricingSvc, rateRepo, pg),
 		Provision:        handler.NewProvisionHandler(provisionSvc),
 		Plaza:            plazaHandler,
@@ -285,6 +301,10 @@ func main() {
 	if err := scheduler.Start(); err != nil {
 		log.Fatalf("启动调度器失败: %v", err)
 	}
+	// 渠道状态推送的定时器：按已保存的设置注册（未启用时只就绪不排程）
+	if err := statusPushSvc.Start(); err != nil {
+		log.Fatalf("启动渠道推送失败: %v", err)
+	}
 	// 供应商 sync 调度：按持久化的策略设置启动（默认关闭）
 	st := settingsSvc.Strategy()
 	syncScheduler.Configure(st.RefreshEnabled, time.Duration(st.RefreshIntervalSeconds)*time.Second)
@@ -303,6 +323,7 @@ func main() {
 
 	syncScheduler.Stop()
 	scheduler.Stop()
+	statusPushSvc.Stop()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {

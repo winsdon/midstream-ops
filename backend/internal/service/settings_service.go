@@ -12,8 +12,9 @@ import (
 
 // 设置域 key。
 const (
-	settingsKeyStrategy = "strategy"
-	settingsKeyNotify   = "notify"
+	settingsKeyStrategy   = "strategy"
+	settingsKeyNotify     = "notify"
+	settingsKeyStatusPush = "status_push"
 )
 
 // minRefreshIntervalSeconds 数据刷新频率下限（防打爆上游）。
@@ -114,23 +115,27 @@ type SettingsService struct {
 	mu       sync.RWMutex
 	strategy StrategySettings
 	channels notify.ChannelConfig
+	// statusPush 渠道状态图定时推送（第三个设置域）。
+	statusPush StatusPushSettings
 
 	// OnStrategyChanged 策略变化回调（调度器重建定时器）；装配层注入。
 	OnStrategyChanged func(StrategySettings)
 	// OnNotifyChanged 通知配置变化回调（Manager 重建渠道）；装配层注入。
 	OnNotifyChanged func(notify.ChannelConfig)
+	// OnStatusPushChanged 渠道推送配置变化回调（StatusPushService 重注册定时任务）。
+	OnStatusPushChanged func(StatusPushSettings)
 }
 
 // NewSettingsService 创建并从库加载当前设置。
 func NewSettingsService(repo *repository.SettingsRepo) (*SettingsService, error) {
-	s := &SettingsService{repo: repo, strategy: defaultStrategy()}
+	s := &SettingsService{repo: repo, strategy: defaultStrategy(), statusPush: defaultStatusPush()}
 	if err := s.load(context.Background()); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
-// load 从 monitor 库加载两域设置（缺失时用默认值）。
+// load 从 monitor 库加载三域设置（缺失时用默认值）。
 func (s *SettingsService) load(ctx context.Context) error {
 	raw, err := s.repo.Get(ctx, settingsKeyStrategy)
 	if err != nil {
@@ -156,6 +161,19 @@ func (s *SettingsService) load(ctx context.Context) error {
 		}
 		s.channels = ch
 	}
+
+	raw, err = s.repo.Get(ctx, settingsKeyStatusPush)
+	if err != nil {
+		return fmt.Errorf("读取渠道推送设置失败: %w", err)
+	}
+	if raw != "" {
+		var sp StatusPushSettings
+		if err := json.Unmarshal([]byte(raw), &sp); err != nil {
+			return fmt.Errorf("解析渠道推送设置失败: %w", err)
+		}
+		sp.normalize()
+		s.statusPush = sp
+	}
 	return nil
 }
 
@@ -171,6 +189,13 @@ func (s *SettingsService) Channels() notify.ChannelConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.channels
+}
+
+// StatusPush 返回当前渠道状态推送配置。
+func (s *SettingsService) StatusPush() StatusPushSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.statusPush
 }
 
 // SaveStrategy 保存策略并触发热更新回调。
@@ -210,4 +235,24 @@ func (s *SettingsService) SaveChannels(ctx context.Context, ch notify.ChannelCon
 		cb(ch)
 	}
 	return nil
+}
+
+// SaveStatusPush 保存渠道推送配置并触发热更新回调（重注册定时任务）。
+func (s *SettingsService) SaveStatusPush(ctx context.Context, sp StatusPushSettings) (StatusPushSettings, error) {
+	sp.normalize()
+	raw, err := json.Marshal(sp)
+	if err != nil {
+		return sp, err
+	}
+	if err := s.repo.Set(ctx, settingsKeyStatusPush, string(raw)); err != nil {
+		return sp, fmt.Errorf("保存渠道推送设置失败: %w", err)
+	}
+	s.mu.Lock()
+	s.statusPush = sp
+	cb := s.OnStatusPushChanged
+	s.mu.Unlock()
+	if cb != nil {
+		cb(sp)
+	}
+	return sp, nil
 }

@@ -30,6 +30,10 @@ type PGGroup struct {
 	// 默认 0）。本站所有列出分组的界面都跟随它，别再按 id 或名字排 ——
 	// 运营把常看的组拖到前面，本站顺序必须和后台一致。
 	SortOrder int
+	// IsExclusive 是「专属分组」标记：管理员授权给特定用户，分组名与倍率属于
+	// 内部定价策略，不该出现在面向全体用户的地方（模型广场、渠道状态图）。
+	// 过滤放在调用方：同一个线上分组表，广场与状态图对「公开」的定义可能分化。
+	IsExclusive bool
 }
 
 // ListActiveAccounts 返回所有未删除账号（聚合/前缀扫描用，不含 api_key）。
@@ -157,13 +161,20 @@ func (p *PG) ListAccountKeyFingerprints(ctx context.Context) ([]AccountKeyFinger
 // sort_order 走 to_jsonb 而非直接取列：它是 sub2api 后加的列，老 schema 没有。
 // 直接 SELECT 会让整个分组下拉 500，而排序只是显示问题 —— 老 schema 应退化成
 // 「顺序不保证」，不该升级成「列不出分组」。同 pg_media_keys.go 的 models_list_config。
+// is_exclusive 走同一个写法，理由相同（也是后加的列）。
+//
+// 【必须用 ->> 而不是 ->】这两列的取值都可能为 NULL（未拖拽排序过的分组、
+// 老数据的 is_exclusive）。to_jsonb(row) 会把 NULL 列编码成 JSON null，而
+// `(jsonb null)::int` 直接抛 SQLSTATE 22023；`->>` 对「键不存在」和「JSON null」
+// 都返回 SQL NULL，COALESCE 才能按文档所说的那样折成 0 / false。
 func (p *PG) ListGroups(ctx context.Context) ([]PGGroup, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT g.id, COALESCE(g.name,''), COALESCE(g.platform,''), COALESCE(g.status,''),
 		       COALESCE(g.rate_multiplier,1),
-		       COALESCE((to_jsonb(g) -> 'sort_order')::int, 0)
+		       COALESCE((to_jsonb(g) ->> 'sort_order')::int, 0),
+		       COALESCE((to_jsonb(g) ->> 'is_exclusive')::boolean, false)
 		FROM groups g WHERE g.deleted_at IS NULL
-		ORDER BY COALESCE((to_jsonb(g) -> 'sort_order')::int, 0) ASC, g.id ASC`)
+		ORDER BY COALESCE((to_jsonb(g) ->> 'sort_order')::int, 0) ASC, g.id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +182,7 @@ func (p *PG) ListGroups(ctx context.Context) ([]PGGroup, error) {
 	var out []PGGroup
 	for rows.Next() {
 		var g PGGroup
-		if err := rows.Scan(&g.ID, &g.Name, &g.Platform, &g.Status, &g.RateMultiplier, &g.SortOrder); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.Platform, &g.Status, &g.RateMultiplier, &g.SortOrder, &g.IsExclusive); err != nil {
 			return nil, err
 		}
 		out = append(out, g)

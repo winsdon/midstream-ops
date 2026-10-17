@@ -235,6 +235,53 @@ export interface NotifyChannelsPayload {
   telegram: { enabled: boolean; bot_token?: string | null; chat_id: string }
 }
 
+// ---- 渠道状态图定时推送（Telegram）----
+
+export interface StatusPushSettings {
+  enabled: boolean
+  interval_minutes: number
+  window_minutes: number
+  chat_ids: string[]
+  excluded_group_ids: number[]
+  title: string
+}
+
+/** 可推送的分组选项；后端已按 sort_order 排好，前端不再重排 */
+export interface StatusPushGroupOption {
+  id: number
+  name: string
+  rate_multiplier: number
+  status: string
+}
+
+export interface StatusPushResultItem {
+  chat_id: string
+  ok: boolean
+  error?: string | null
+}
+
+/** 最近一次推送留痕；at 为 RFC3339，可能为空（还没推过） */
+export interface StatusPushLastPush {
+  at?: string | null
+  ok: boolean
+  error?: string | null
+  sent: number
+  failed: number
+  results?: StatusPushResultItem[] | null
+}
+
+/** GET /settings/status-push 的响应：设置本体 + 渲染/推送所需的派生信息 */
+export interface StatusPushInfo {
+  settings: StatusPushSettings
+  target_chat_ids: string[]
+  available_groups: StatusPushGroupOption[]
+  excluded_group_ids: number[]
+  telegram_bot_token_set: boolean
+  last_push: StatusPushLastPush | null
+  interval_options: number[]
+  window_options: number[]
+}
+
 export interface ProviderAccount {
   id: number
   name: string

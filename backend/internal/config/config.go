@@ -24,7 +24,10 @@ type Config struct {
 	Rates    RatesConfig   `mapstructure:"rates"`
 	Plaza    PlazaConfig   `mapstructure:"plaza"`
 	Media    MediaConfig   `mapstructure:"media"`
-	Log      LogConfig     `mapstructure:"log"`
+	// StatusPush 渠道状态图的部署级配置。业务开关（启用/间隔/目标群）在
+	// monitor 库的设置域里热更新，这里只放「跟机器绑定的东西」。
+	StatusPush StatusPushConfig `mapstructure:"status_push"`
+	Log        LogConfig        `mapstructure:"log"`
 
 	// Location 由 Timezone 解析得到，用于「今日」边界计算。
 	Location *time.Location `mapstructure:"-"`
@@ -180,6 +183,17 @@ type PlazaConfig struct {
 
 type LogConfig struct {
 	Level string `mapstructure:"level"`
+}
+
+// StatusPushConfig 渠道状态图推送的部署级配置。
+//
+// 只放「跟机器绑定的东西」：业务开关（启用 / 间隔 / 目标群 / 排除分组）在
+// monitor 库的 status_push 设置域里热更新，改完不用重启；字体路径指向的是
+// 这台机器上的一个文件，塞进设置页只会让「改了配置但文件不在」变成运行时错误。
+type StatusPushConfig struct {
+	// FontPath 覆盖内嵌的 Noto Sans SC 子集字体（.ttf/.otf）。
+	// 空 = 用内嵌字体，单二进制开箱可用。需要更全的字形（生僻字、异体字）时才配它。
+	FontPath string `mapstructure:"font_path"`
 }
 
 // MediaConfig 生图 / 生视频嵌入页配置。
@@ -360,6 +374,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("media.task_retention_days", 30)
 	v.SetDefault("media.r2.enabled", false)
 
+	v.SetDefault("status_push.font_path", "")
+
 	v.SetDefault("log.level", "info")
 }
 
@@ -409,6 +425,8 @@ func bindEnvs(v *viper.Viper) {
 		"media.r2.enabled", "media.r2.account_id", "media.r2.bucket",
 		"media.r2.access_key_id", "media.r2.secret_access_key",
 		"media.r2.public_base_url",
+
+		"status_push.font_path",
 
 		"log.level",
 	}

@@ -349,7 +349,7 @@
     </template>
 
     <!-- ===== 通知与渠道 ===== -->
-    <template v-else>
+    <template v-else-if="activeTab === 'notify'">
       <p class="text-sm text-gray-500 dark:text-dark-400">{{ t('settings.notifyDesc') }}</p>
 
       <!-- 钉钉 -->
@@ -433,6 +433,10 @@
         </div>
       </div>
     </template>
+
+    <!-- ===== 渠道推送 ===== -->
+    <!-- 数据自持在面板里，父级只在保存按钮处按 activeTab 调一次 save() -->
+    <StatusPushPanel v-else-if="activeTab === 'statusPush'" ref="statusPushRef" />
   </div>
 </template>
 
@@ -446,19 +450,24 @@ import type { NotifyChannels, StrategySettings } from '@/types'
 import Icon from '@/components/icons/Icon.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue'
+import StatusPushPanel from '@/components/settings/StatusPushPanel.vue'
 
 const { t } = useI18n()
 const app = useAppStore()
 
 const tabs = [
   { key: 'strategy', label: 'settings.tabStrategy', icon: 'clock' },
-  { key: 'notify', label: 'settings.tabNotify', icon: 'chat' }
+  { key: 'notify', label: 'settings.tabNotify', icon: 'chat' },
+  { key: 'statusPush', label: 'settings.statusPush.tab', icon: 'chart' }
 ] as const
 
-const activeTab = ref<'strategy' | 'notify'>('strategy')
+const activeTab = ref<(typeof tabs)[number]['key']>('strategy')
 const loading = ref(true)
 const saving = ref(false)
 const testing = ref('')
+
+// 子面板暴露 save()/reload()；只在渠道推送 tab 下渲染，因此切到该 tab 才会拉它的数据
+const statusPushRef = ref<InstanceType<typeof StatusPushPanel>>()
 
 // 策略
 const strategy = ref<StrategySettings>({
@@ -625,6 +634,15 @@ async function load(): Promise<void> {
 async function save(): Promise<void> {
   saving.value = true
   try {
+    // 渠道推送的字段与策略/通知零重叠：只提交当前 tab，避免在别的 tab 点保存时
+    // 用未加载的默认值覆盖远端配置（面板内部负责 PUT、覆盖本地值并重新加载）
+    if (activeTab.value === 'statusPush') {
+      const panel = statusPushRef.value
+      if (!panel) return
+      await panel.save()
+      app.showSuccess(t('settings.saved'))
+      return
+    }
     await settingsApi.saveStrategy(strategy.value)
     await settingsApi.saveNotify({
       dingtalk: {

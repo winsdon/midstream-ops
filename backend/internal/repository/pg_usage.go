@@ -374,3 +374,86 @@ func (p *PG) PassiveStabilityTimeline(ctx context.Context, since time.Time, buck
 	}
 	return out, rows.Err()
 }
+
+// GroupStatusTimelinePoint 单分组单时间桶的成败 + 首字/缓存量（空桶不返回）。
+//
+// 只保留渠道状态图需要的字段：色块分数只看 SLA 与首字 P50，底部两个数看
+// SLA 与缓存率，所以不取耗时分位数、TPS 那些用不上的列。
+type GroupStatusTimelinePoint struct {
+	GroupID         int64
+	Bucket          time.Time
+	Ok              int64
+	Err             int64
+	FirstTokP50     *float64
+	InputTokens     int64
+	CacheReadTokens int64
+}
+
+// GroupStatusTimeline 按分组 + date_bin 分桶。
+//
+// 口径与 PassiveStabilityTimeline 完全一致，只是把 account_id 换成 group_id：
+// 成功来自 usage_logs（只记成功请求），失败来自 ops_error_logs 且排除业务限制与
+// 忽略状态码，首字分位数只来自成功请求。origin 取 since。
+//
+// 【为什么要 FULL OUTER JOIN】窗口内只有失败的分组也必须在图上出现，
+// 否则「整组挂掉」的表现是从看板上消失，比标红更糟。
+//
+// usage_logs.group_id 可能为 NULL（老数据 / 无分组请求），这类行不进结果：
+// 看板按分组出卡，没有分组就没有归属，硬塞进某个桶只会让数字对不上。
+func (p *PG) GroupStatusTimeline(ctx context.Context, since time.Time, bucket time.Duration, ignoredStatusCodes []int32) ([]GroupStatusTimelinePoint, error) {
+	if bucket <= 0 {
+		bucket = time.Minute
+	}
+	rows, err := p.pool.Query(ctx, `
+		WITH usage_b AS (
+		    SELECT group_id,
+		           date_bin(($2 * INTERVAL '1 millisecond'), created_at, $1) AS bucket,
+		           COUNT(*) AS ok,
+		           percentile_cont(0.5) WITHIN GROUP (ORDER BY first_token_ms)
+		               FILTER (WHERE first_token_ms IS NOT NULL) AS first_tok_p50,
+		           COALESCE(SUM(input_tokens), 0) AS input_tokens,
+		           COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens
+		    FROM usage_logs
+		    WHERE created_at >= $1 AND group_id IS NOT NULL
+		    GROUP BY 1, 2
+		),
+		error_b AS (
+		    SELECT group_id,
+		           date_bin(($2 * INTERVAL '1 millisecond'), created_at, $1) AS bucket,
+		           COUNT(*) AS err
+		    FROM ops_error_logs
+		    WHERE created_at >= $1
+		      AND is_business_limited = FALSE
+		      AND COALESCE(status_code, 0) >= 400
+		      AND COALESCE(status_code, 0) <> ALL($3::int[])
+		      AND group_id IS NOT NULL
+		    GROUP BY 1, 2
+		)
+		SELECT COALESCE(u.group_id, e.group_id),
+		       COALESCE(u.bucket, e.bucket),
+		       COALESCE(u.ok, 0),
+		       COALESCE(e.err, 0),
+		       u.first_tok_p50,
+		       COALESCE(u.input_tokens, 0),
+		       COALESCE(u.cache_read_tokens, 0)
+		FROM usage_b u
+		FULL OUTER JOIN error_b e
+		  ON e.group_id = u.group_id AND e.bucket = u.bucket
+		ORDER BY 1, 2`, since, bucket.Milliseconds(), normalizeIgnoredStatusCodes(ignoredStatusCodes))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GroupStatusTimelinePoint
+	for rows.Next() {
+		var r GroupStatusTimelinePoint
+		if err := rows.Scan(
+			&r.GroupID, &r.Bucket, &r.Ok, &r.Err,
+			&r.FirstTokP50, &r.InputTokens, &r.CacheReadTokens,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

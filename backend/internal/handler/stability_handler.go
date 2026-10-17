@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"sub2api-account-monitor/internal/config"
+	"sub2api-account-monitor/internal/pkg/metrics"
 	"sub2api-account-monitor/internal/pkg/response"
 	"sub2api-account-monitor/internal/repository"
 	"sub2api-account-monitor/internal/service"
@@ -153,15 +154,15 @@ func (h *StabilityHandler) Passive(c *gin.Context) {
 			"requests":          r.Requests,
 			"success_count":     r.Requests,
 			"error_count":       r.ErrorCount,
-			"sla":               slaPercent(r.Requests, r.ErrorCount),
+			"sla":               metrics.SLAPercent(r.Requests, r.ErrorCount),
 			"duration_avg":      r.DurationAvg,
 			"duration_p50":      r.DurationP50,
 			"duration_p90":      r.DurationP90,
 			"first_token_avg":   r.FirstTokAvg,
 			"first_token_p50":   r.FirstTokP50,
 			"first_token_p90":   r.FirstTokP90,
-			"tokens_per_second": tokensPerSecond(r.OutputTokens, r.DurationMsSum),
-			"cache_rate":        cacheHitRate(r.CacheReadTokens, r.InputTokens),
+			"tokens_per_second": metrics.TokensPerSecond(r.OutputTokens, r.DurationMsSum),
+			"cache_rate":        metrics.CacheHitRate(r.CacheReadTokens, r.InputTokens),
 		}
 		attachProvider(item, r.AccountID, linkMap, nameByID)
 		attachGroups(item, r.AccountID, groups)
@@ -384,7 +385,10 @@ func attachGroups(item gin.H, accountID int64, groups map[int64][]string) {
 // 这四类要么由调用方触发、要么是配额与瞬时过载，和「上游账号能不能干活」关系很弱；
 // 计进 SLA 会让高频账号长期挂着一条与服务质量无关的失败尾巴，把真正该看的
 // 5xx 故障淹没。默认开启，可在页面上关掉回看旧口径。
-var defaultIgnoredStatusCodes = []int32{400, 403, 429, 529}
+//
+// 【只此一份】渠道状态图按同一集合算 SLA，定义在 service.DefaultIgnoredStatusCodes，
+// 这里直接引用而不是复制：两处列表一旦分叉，群里那张图和稳定性页就会给出不同结论。
+var defaultIgnoredStatusCodes = service.DefaultIgnoredStatusCodes
 
 // parseIgnoredStatusCodes 解析 ?exclude_status=400,403。
 //
@@ -424,32 +428,10 @@ func parseIgnoredStatusCodes(c *gin.Context) []int32 {
 	return out
 }
 
-// slaPercent 流量 SLA（0–100）。成功+失败均为 0 时返回 nil，前端渲染成「-」。
-func slaPercent(success, errCount int64) any {
-	total := success + errCount
-	if total <= 0 {
-		return nil
-	}
-	return float64(success) / float64(total) * 100
-}
-
-// tokensPerSecond 输出吞吐：Σ output_tokens / Σ duration_s。与广场模型指标同一公式。
-func tokensPerSecond(outputTokens int64, durationMsSum float64) any {
-	if durationMsSum <= 0 {
-		return nil
-	}
-	return float64(outputTokens) / (durationMsSum / 1000.0)
-}
-
-// cacheHitRate 缓存命中率（0–100）：cache_read / (input + cache_read)。
-// 两边都 0 返回 nil（没走 token 的请求，不是命中率 0）。
-func cacheHitRate(cacheRead, input int64) any {
-	total := cacheRead + input
-	if total <= 0 {
-		return nil
-	}
-	return float64(cacheRead) / float64(total) * 100
-}
+// slaPercent / tokensPerSecond / cacheHitRate 已迁到 internal/pkg/metrics：
+// 渠道状态图（service/status_board.go）要用同一口径，留在 handler 里会逼出
+// service → handler 的反向依赖。调用点直接写 metrics.Xxx 并返回 *float64，
+// gin.H 可以直接装 nil。
 
 func probeDTO(pr *repository.ProbeResult) gin.H {
 	return gin.H{

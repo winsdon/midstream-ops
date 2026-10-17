@@ -326,6 +326,9 @@ midstream-ops/
 | GET/PUT         | `/api/v1/settings/strategy`                               | 自动化与策略（刷新频率 / 预警开关，热更新）                        |
 | GET/PUT         | `/api/v1/settings/notify`                                 | 通知渠道（钉钉 / 飞书 / Telegram，凭据脱敏回显）                |
 | POST            | `/api/v1/settings/notify/test`                            | 渠道测试发送                                         |
+| GET/PUT         | `/api/v1/settings/status-push`                            | 渠道状态图定时推送（含可排除分组与上次推送结果）                        |
+| GET             | `/api/v1/settings/status-push/preview`                    | 按当前设置渲染一张状态图（直接返回 `image/png`，不发送）             |
+| POST            | `/api/v1/settings/status-push/test`                       | 立即推送一次，逐群返回成功或 Telegram 报错原因                    |
 | GET             | `/api/v1/credit/summary`                                  | 授信总览（客户数 / 授信总额 / 敞口合计 / 超额与预警客户数）             |
 | POST            | `/api/v1/credit/recalc`                                   | 全量重算敞口与告警闩锁（幂等兜底）                              |
 | GET             | `/api/v1/credit/sub2api-users`                            | 建档下拉数据源（读线上 users 表，标记已建档；PG 不可用时 503，前端降级为手填） |
@@ -457,6 +460,44 @@ curl -s -D - -o /dev/null -X GET https://your-monitor.com/embed/plaza | grep -i 
 
 > `curl -I` 发的是 HEAD 请求，中间件只处理 GET，用 HEAD 探测**永远看不到这个头**，会误判成「头没下发」。
 
+## Telegram 渠道状态推送
+
+运营定时把各公开分组的状态推到 Telegram 客户群：一张「渠道状态」卡片图，每个分组一张卡（名称 + 倍率、右上角状态、8 个色块、成功率、缓存率）。色块与状态全部用**真实流量**算，不做主动探测。
+
+配置入口：**设置 → 渠道推送**。填好 chat_id 后先点「预览」核对样式，再点「立即推送测试」确认群里收到，最后打开启用开关。
+
+### Telegram 设置指引
+
+1. Telegram 里找 **@BotFather** → `/newbot`，按提示设好名称和用户名，拿到 Bot Token（形如 `123456:ABC...`）。把 Token 填进本站「设置 → 通知渠道 → Telegram → Bot Token」。**只用来推状态图的话，「启用」可以不勾** —— 状态图推送读的是已保存的 Bot Token，与「启用」开关无关。
+2. 把机器人拉进目标群。群开了「禁止发送媒体」的话，要给机器人发图权限，或者设成管理员。**频道必须把机器人设为管理员。**
+3. 获取 chat_id：在群里发一条 `/start@你的bot用户名`，然后浏览器打开 `https://api.telegram.org/bot<Token>/getUpdates`，在 `message.chat.id` 里找。
+   - 超级群 id 形如 `-100xxxxxxxxxx`；公开频道可以直接填 `@频道用户名`。
+   - 如果 getUpdates 是空的：BotFather 默认开着隐私模式，机器人只收命令。确认发的是带 @ 的命令；或者用 `/setprivacy` → Disable 后，把机器人移出再重新拉进群。
+   - 群从普通群升级成超级群后 chat_id 会变。推送失败时页面会提示新 id，直接复制替换即可。
+4. 网络：服务器要能访问 `api.telegram.org`。部署在大陆的机器要设置 `HTTPS_PROXY` 环境变量，Go 默认 Transport 会读它。
+
+### 配置项
+
+```yaml
+# 可选：改用完整字体（默认用内嵌的 Noto Sans SC 子集，单二进制直接可用）
+status_push:
+  font_path: ""
+```
+
+其余配置（启用、间隔、窗口、目标群、排除分组、标题）都在「设置 → 渠道推送」页面维护，存 monitor 库并**热更新**，改完不需要重启。
+
+| 项 | 可选值 | 说明 |
+| --- | --- | --- |
+| 间隔 | 30 / 60 / 120 / 180 / 240 / 360 / 720 分钟 | 换算成对齐整点的 cron 表达式（如 30 → `*/30 * * * *`）；非法值夹到 60 |
+| 窗口 | 60 / 90 / 180 / 360 分钟 | 默认 90 分钟，固定 8 块，每块 = 窗口 ÷ 8 |
+| 目标群 | 任意个 `-?\d+` 或 `@channel` | 支持多个群/频道；格式在保存时就校验 |
+| 排除分组 | 勾选 | 只列 `active` 且非专属的分组，按 sub2api 后台 `sort_order` 排 |
+| 标题 | 任意文本（自动截断到 32 字） | 默认「渠道状态」，图上左上角大标题 |
+
+两个上限值得知道：**标题最长 32 字**（Telegram caption 硬限制所致，超长会让所有群一起发送失败），**单图卡片数有上限**（图片「宽+高 ≤ 10000」所致；上限由渲染层按布局反推，当前 62 张）。公开分组超过上限时，图上的独立一行与消息正文都会写明「共 N 个、仅显示前 M 个」。公开分组很多时请用排除列表收窄范围，而不是放任图被 Telegram 拒收。
+
+「预览」按**表单当前值**渲染（不含未保存的窗口/排除改动也一样生效），「立即推送测试」则用**已保存**的设置 —— 前者用来核对改动，后者用来验证真实链路。
+
 ## 安全说明
 
 - 上游 sub2api PG 只读双保险：只读账号 + DSN 强制 `default_transaction_read_only=on`；自身数据写在独立的 monitor 库
@@ -472,7 +513,7 @@ curl -s -D - -o /dev/null -X GET https://your-monitor.com/embed/plaza | grep -i 
 
 | 文档                                                   | 内容                                         |
 | ---------------------------------------------------- | ------------------------------------------ |
-| [docs/DESIGN\_NOTES.md](docs/DESIGN_NOTES.md)        | 口径与设计说明 —— 收益成本利润口径、稳定性可视化取舍、授信台账约束、渠道检测判据 |
+| [docs/DESIGN\_NOTES.md](docs/DESIGN_NOTES.md)        | 口径与设计说明 —— 收益成本利润口径、稳定性可视化取舍、渠道状态图口径、授信台账约束、渠道检测判据 |
 | [deploy/DOCKER.md](deploy/DOCKER.md)                 | Docker 部署详解（网络、两套库账号、密钥、备份）                |
 | [deploy/UPGRADE\_TO\_PG.md](deploy/UPGRADE_TO_PG.md) | 从 0.1.x SQLite 版升级到 PostgreSQL             |
 | [PLAN.md](PLAN.md)                                   | 实施计划与架构决策记录                                |

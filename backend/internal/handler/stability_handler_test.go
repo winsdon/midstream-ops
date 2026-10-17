@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"sub2api-account-monitor/internal/pkg/metrics"
 	"sub2api-account-monitor/internal/repository"
 
 	"github.com/gin-gonic/gin"
@@ -113,20 +114,8 @@ func TestDefaultIgnoredStatusCodes(t *testing.T) {
 	}
 }
 
-func TestSlaPercent(t *testing.T) {
-	if got := slaPercent(99, 1); got != float64(99) {
-		t.Errorf("99/100 = %v, want 99", got)
-	}
-	if got := slaPercent(100, 0); got != float64(100) {
-		t.Errorf("100/0err = %v, want 100", got)
-	}
-	if got := slaPercent(0, 5); got != float64(0) {
-		t.Errorf("0/5 = %v, want 0", got)
-	}
-	if got := slaPercent(0, 0); got != nil {
-		t.Errorf("0/0 = %v, want nil", got)
-	}
-}
+// 三个指标函数（SLA / 吞吐 / 缓存率）的用例已随实现迁到
+// internal/pkg/metrics/metrics_test.go —— 口径只有一处，测试也只有一个来源。
 
 func TestAttachGroupsEmptyBucketIsEmptySlice(t *testing.T) {
 	item := gin.H{}
@@ -271,32 +260,16 @@ func TestAttachProviderToleratesNilLookup(t *testing.T) {
 	}
 }
 
-func TestTokensPerSecond(t *testing.T) {
-	got := tokensPerSecond(1_200_000, 1000)
-	f, ok := got.(float64)
-	if !ok || f != 1_200_000 {
-		t.Errorf("1.2M tokens in 1s = %v, want 1200000", got)
-	}
-	if tokensPerSecond(100, 0) != nil {
-		t.Errorf("duration 0 should be nil")
-	}
-	if tokensPerSecond(100, -1) != nil {
-		t.Errorf("negative duration should be nil")
+func TestTokensPerSecondMovedToMetrics(t *testing.T) {
+	// 保留一个指向新位置的空壳断言，避免后来者在 handler 里重新长出第二份公式。
+	if metrics.TokensPerSecond(100, 0) != nil {
+		t.Error("duration 0 should be nil")
 	}
 }
 
-func TestCacheHitRate(t *testing.T) {
-	got := cacheHitRate(912, 88)
-	f, ok := got.(float64)
-	if !ok || f < 91.19 || f > 91.21 {
+func TestCacheHitRateMovedToMetrics(t *testing.T) {
+	got := metrics.CacheHitRate(912, 88)
+	if got == nil || *got < 91.19 || *got > 91.21 {
 		t.Errorf("912/(912+88) = %v, want 91.2", got)
-	}
-	if cacheHitRate(0, 0) != nil {
-		t.Errorf("empty sample should be nil")
-	}
-	zero := cacheHitRate(0, 100)
-	zf, ok := zero.(float64)
-	if !ok || zf != 0 {
-		t.Errorf("no cache reads = %v, want 0", zero)
 	}
 }

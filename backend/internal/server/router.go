@@ -269,6 +269,11 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 				auth.GET("/settings/notify", h.Settings.GetChannels)
 				auth.PUT("/settings/notify", h.Settings.SaveChannels)
 				auth.POST("/settings/notify/test", h.Settings.TestChannel)
+				// 渠道状态图定时推送：设置 / 预览（直接回 PNG）/ 立即推送测试
+				auth.GET("/settings/status-push", h.Settings.GetStatusPush)
+				auth.PUT("/settings/status-push", h.Settings.SaveStatusPush)
+				auth.GET("/settings/status-push/preview", h.Settings.PreviewStatusPush)
+				auth.POST("/settings/status-push/test", h.Settings.TestStatusPush)
 			}
 
 			if h.Pricing != nil {
