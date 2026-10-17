@@ -79,11 +79,27 @@ $tags | ForEach-Object { Write-Host "    $_" }
 # flag, so this is podman-only too.
 $formatArgs = if ($IsPodman) { @('--format', 'docker', '--http-proxy=false') } else { @() }
 
-& $Engine build @formatArgs --platform linux/amd64 @tagArgs -f "$RepoRoot\Dockerfile" $RepoRoot
+# BuildKit writes its progress ("#0 building with ...", "#5 [stage 1/3] ...") to
+# stderr. Under $ErrorActionPreference = 'Stop' (set at the top of this script)
+# Windows PowerShell turns the FIRST such line into a terminating
+# NativeCommandError, so the build looks failed before it even starts and
+# $LASTEXITCODE is never consulted. Same trap as the push block below; fix it the
+# same way: relax the preference around the native call and judge by exit code
+# alone. Do NOT "fix" it with 2>&1 -- that wraps every line in an ErrorRecord and
+# makes it worse.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    & $Engine build @formatArgs --platform linux/amd64 @tagArgs -f "$RepoRoot\Dockerfile" $RepoRoot
+} finally {
+    $ErrorActionPreference = $prevEap
+}
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
 
 Write-Host "==> Build complete" -ForegroundColor Green
+$ErrorActionPreference = 'Continue'
 & $Engine images --filter reference=*midstream-ops --format "table {{.Repository}}:{{.Tag}}`t{{.Size}}"
+$ErrorActionPreference = 'Stop'
 
 if ($Push) {
     # podman push runs inside the machine VM, whose proxy env is baked in at VM
