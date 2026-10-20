@@ -173,8 +173,9 @@ type MediaSubmitResult struct {
 	Task *repository.MediaTask
 	// Artifacts 已转存的产物（对象存储 URL，长期有效）。
 	Artifacts []repository.MediaArtifact
-	// InlineImages 仅在转存未启用或失败时有值：data URI 列表，
-	// 前端直接塞进 <img src> 渲染，刷新页面即丢失。
+	// InlineImages 仅在转存未启用或失败时有值：data URI，或上游直链 URL
+	// （上游偶尔只回 url 不回 b64_json）。前端直接塞进 <img src> 渲染，
+	// 刷新页面即丢失。
 	InlineImages []string
 }
 
@@ -298,10 +299,15 @@ func (s *MediaService) submitImage(ctx context.Context, apiKey string,
 	if !archived {
 		images := make([]string, 0, len(results))
 		for _, r := range results {
-			if r.B64 == "" {
-				continue
+			// 上游可能只回 b64、只回 url，或两者都给。inline 兜底两种都认：
+			// 只认 b64 时，URL-only 响应会变成「任务成功但页面上什么都没有」，
+			// 用户只能看到「本次图片未能转存」——图其实就在上游直链上。
+			switch {
+			case r.B64 != "":
+				images = append(images, "data:"+r.MimeType+";base64,"+r.B64)
+			case r.URL != "":
+				images = append(images, r.URL)
 			}
-			images = append(images, "data:"+r.MimeType+";base64,"+r.B64)
 		}
 		res.InlineImages = images
 	} else if arts, e := s.artifacts.ListByTasks(ctx, []int64{task.ID}); e == nil {

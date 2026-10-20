@@ -680,6 +680,9 @@ sub2api 的 `NormalizeGrokMediaModelForEndpoint` 会替换模型且不留任何�
 - **`inflight` 去重 + 信号量限并发（2）。** 列表每 5 秒刷新一次而 `storage_status` 在转存完成前一直是 `pending`，不去重的话同一个视频会被重复下载上传好几遍
 - **后台 goroutine 自己兜 panic，`enabled()` 校验全部依赖。** 那里没有 gin 的 recover 中间件，一次 nil 解引用就会带走整个进程——而转存失败本该只是一条日志。这条是被单测逼出来的：最初 `enabled()` 只查 `uploader`，装配漏了 repo 时后台直接崩
 - **重启补扫。** 转存中途重启会留下一批 `storage_status='pending'` 的孤儿，它们既不自愈也不会被任何用户操作触发，启动时捞一遍是唯一出路
+- **b64 缺失就回源下载 `url`。** `response_format=b64_json` 只是请求，不是上游的承诺：同一个账号、同一个模型，有时回 b64、有时只回一个产物直链。2026-10-20 的线上事故（任务 551，gpt-image-2 图生图）高度可能就是后者——库里 `result_url` 指向一个生成完成同秒才写入的 PNG 直链、却没有产物字节可转存。旧实现只认 b64，把「上游把图给全了」判成「没有字节可转存」，用户看到「本次图片未能转存」。现在缺 b64 时下载那条直链再走同一条上传路径；下载客户端复用参考图那套 SSRF 防护（拨号时固定公网 IP、逐跳校验重定向），单张上限 32MB。严格区分「响应缺 b64」与「R2 上传瞬时失败」只能看当时的进程日志，两种失败都会落 `storage_status='failed'`
+- **单张图片上传限时 60 秒、失败重试一次；产物记录落库同样重试一次。** R2 客户端那个 10 分钟总超时是给几十 MB 视频留的，套在同步生图路径上会卡住整个提交请求；而对象存储偶发断连、数据库偶发连接抖动都是可重试的，转存失败却意味着用户刷新后永久丢图——重试的成本远低于一次误判。落库用 `(task_id, idx)` UPSERT，重试幂等
+- **inline 兜底同时认 data URI 与直链。** 转存失败时 `submitImage` 把 b64 拼成 data URI、把 URL 原样返回，前端 `<img src>` 两种都能显示。只认 b64 的话，URL-only 响应会变成「任务成功但页面上什么都没有」——图其实就在直链上
 
 产物单独一张 `media_artifacts` 表而非给任务加列：一个图片任务最多 4 张图，塞进任务行会逼出 `result_url_2/3/4`。外键带 `ON DELETE CASCADE`，但 R2 上的对象不同步删——让「删记录」这个高频操作依赖一次跨境网络调用不划算，对象清理交给桶的生命周期规则。
 
@@ -717,7 +720,7 @@ sub2api 的 `NormalizeGrokMediaModelForEndpoint` 会替换模型且不留任何�
 
 ### 代理端点只剩兜底作用
 
-转存启用后，前端渲染产物的优先级是：**R2 URL → 本次会话的 data URI → 后端代理**。第一项覆盖绝大多数情况，后两项只在转存未启用或失败时才走到。
+转存启用后，前端渲染产物的优先级是：**R2 URL → 本次会话的 data URI / 上游直链 → 后端代理**。第一项覆盖绝大多数情况，后两项只在转存未启用或失败时才走到。
 
 代理端点仍然保留，因为视频转存是异步的：产物完成到转存完成之间有一段窗口期，此时只能靠代理播放。它也是 R2 未配置时的唯一出路。
 
@@ -733,14 +736,16 @@ sub2api 的 `NormalizeGrokMediaModelForEndpoint` 会替换模型且不留任何�
 
 ### 图生图的参考图：Grok 与 gpt-image 字段不同
 
-两端共用 `/v1/images/edits`，但 JSON 契约按模型族分叉：
+两端共用 `/v1/images/edits`，但请求格式按模型族分叉：
 
 | 模型族 | 字段 | 单张示例 |
 |---|---|---|
 | Grok | 嵌套 `image.url` | `{"image":{"url":"https://…"}}` |
-| `gpt-image-*` | OpenAI JSON：`images[].image_url` | `{"images":[{"image_url":"https://…"}]}` |
+| `gpt-image-*` | multipart/form-data | 重复 `image` 文件字段，包含图片字节和 MIME |
 
-把 Grok 的 `image.url` 原样转给 gpt-image 会立刻 400：`images[].image_url is required`。装配点在 `applyEditImages`，按 `MediaSizeMode` 分流——那已经是「OpenAI 格式 vs Grok 格式」的分界。
+2026-10-19 线上确认：walkcoding 通道对 JSON 编辑请求返回 400「参数解析失败」，multipart 能正常进入参数校验。旧的 `images[].image_url` 虽能被部分上游接受，但不能作为所有 OpenAI 通道的共同契约。
+
+前端仍提交参考图 URL。GPT 路径由 `editImageMultipart` 下载图片，按文件头检查 JPEG / PNG / WebP，每张上限 20 MB。独立下载客户端不携带网关 Key，连接时解析并固定公网 IP，重定向也受同样限制。multipart 写入临时文件，全部下载成功后才提交一次上游，结束后删除临时文件。保留尺寸、质量、张数和 `b64_json`，生成请求不自动重试。
 
 ### 图生视频的参考图
 

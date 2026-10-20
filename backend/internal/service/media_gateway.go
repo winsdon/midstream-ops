@@ -46,14 +46,16 @@ func (e *MediaGatewayError) Error() string {
 // 客户端本身不持有任何凭据——避免出现「客户端实例持有某个用户的 key」
 // 这种容易在并发下串用户的状态。
 type MediaGateway struct {
-	baseURL string
-	client  *http.Client
+	baseURL   string
+	client    *http.Client
+	refClient *http.Client
 }
 
 // NewMediaGateway 创建网关客户端。baseURL 形如 https://api.example.com（无尾斜杠）。
 func NewMediaGateway(baseURL string) *MediaGateway {
 	return &MediaGateway{
-		baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		baseURL:   strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		refClient: newMediaRefClient(),
 		// 不设 Client.Timeout：产物下载是流式的，整体超时会在传输中途掐断大文件。
 		// 各方法用 context.WithTimeout 单独控制。
 		client: &http.Client{
@@ -158,17 +160,20 @@ func (g *MediaGateway) GenerateImage(ctx context.Context, apiKey string, p Media
 	return parseImagesResponse(resp)
 }
 
-// EditImage 图生图（同步，JSON）。
+// EditImage 图生图（同步）。
 //
 // 参考图必须是公网可达的 http(s) URL。本地文件先上传到对象存储，再把
 // 公开地址填进 ImageURL——sub2api 把 multipart 文件转成 data URL 后，
 // xAI 会回 400 Invalid base64-encoded image。
 //
-// 参考图字段形状按模型族分叉：Grok 用嵌套 image.url；gpt-image-* 用
-// OpenAI JSON 契约 images[].image_url。两套绝不能混用。
+// Grok 用 JSON image.url；GPT 下载参考图后用 multipart image 文件上传，
+// 兼容只支持 multipart 的 OpenAI 上游。
 func (g *MediaGateway) EditImage(ctx context.Context, apiKey string, p MediaGenerateParams) ([]ImageResult, error) {
 	if len(allImageURLs(p)) == 0 {
 		return nil, fmt.Errorf("缺少参考图")
+	}
+	if MediaSizeModeOf(p.Model) == SizeModePixelSize {
+		return g.editImageMultipart(ctx, apiKey, p)
 	}
 
 	payload := map[string]any{
@@ -200,28 +205,10 @@ func (g *MediaGateway) EditImage(ctx context.Context, apiKey string, p MediaGene
 	return parseImagesResponse(resp)
 }
 
-// applyEditImages 按模型族写入图生图参考图字段。
-//
-// gpt-image-*（SizeModePixelSize）走 OpenAI /v1/images/edits 的 JSON 契约：
-//
-//	{"images":[{"image_url":"https://..."}]}
-//
-// 发 Grok 的 image.url 会触发上游 400：images[].image_url is required。
+// applyEditImages 写入 Grok 图生图参考图字段。
 //
 // Grok 仍用嵌套 image.url；多张时再带 images[{url}]。
 func applyEditImages(payload map[string]any, p MediaGenerateParams) {
-	urls := allImageURLs(p)
-	if len(urls) == 0 {
-		return
-	}
-	if MediaSizeModeOf(p.Model) == SizeModePixelSize {
-		items := make([]map[string]any, 0, len(urls))
-		for _, u := range urls {
-			items = append(items, map[string]any{"image_url": u})
-		}
-		payload["images"] = items
-		return
-	}
 	img, extras := refImageJSON(p)
 	if img != nil {
 		payload["image"] = img

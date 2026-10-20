@@ -101,8 +101,9 @@ export interface MediaTask {
 /**
  * 提交响应：任务元数据 + 本次生成的图片。
  *
- * images 是 data URI，只在本次响应里存在一次。图片走 b64 从网关取回后不落库
- * （xAI CDN 直链国内不可达，存链接等于存一个打不开的地址），刷新页面即丢失。
+ * images 只在转存未启用或失败时才有值（正常情况下产物已落 R2，任务里带长期
+ * URL）。元素可能是 data URI，也可能是上游直链 URL —— 上游偶尔只回 url 不回
+ * b64_json。两者都能直接塞进 <img src>，但直链可能过期且只在本次会话内可见。
  */
 export interface MediaSubmitResult {
   task: MediaTask

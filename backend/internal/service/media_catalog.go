@@ -613,8 +613,8 @@ func containsString(list []string, v string) bool {
 
 // isPublicHTTPURL 判断参考图地址是否为可接受的公网 http(s) 地址。
 //
-// 只做形态校验，不做 DNS 解析或内网段判断——这个 URL 是交给上游去取的，
-// 本站不会主动请求它，因此不构成本站的 SSRF 面。
+// 这里只做形态校验。GPT 图生图由本站下载，下载客户端另做公网 IP 校验；
+// Grok 图片及视频的 URL 交给上游读取。
 func isPublicHTTPURL(raw string) bool {
 	u := strings.TrimSpace(strings.ToLower(raw))
 	return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")

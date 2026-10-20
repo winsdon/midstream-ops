@@ -395,7 +395,8 @@ func parseFormBool(raw string) bool {
 // 任务里的 artifacts 带着长期可用的 URL，刷新页面照样能看。
 type mediaSubmitDTO struct {
 	Task mediaTaskDTO `json:"task"`
-	// Images 是 data URI 列表，兜底路径用，前端直接塞进 <img src>。
+	// Images 兜底路径用，前端直接塞进 <img src>：data URI，或上游直链 URL
+	// （上游偶尔只回 url、不回 b64_json）。
 	Images []string `json:"images"`
 }
 

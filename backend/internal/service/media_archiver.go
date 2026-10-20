@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +29,30 @@ const mediaArchiveConcurrency = 2
 // 超过就说明网络已经不可用，重试比干等划算。
 const mediaArchiveTimeout = 15 * time.Minute
 
+// 图片产物的「回源」参数：上游偶尔只回 URL、不回 b64_json（见 imageBytes）。
+//
+// 下载在同步提交路径上，必须有时限——挂死的连接会把用户在生成页上锁到
+// 浏览器自己超时。32MB 上限是为了不把「上游给了一个非图片的大文件」这种
+// 异常当成正常产物整个读进内存；gpt-image 的 4K PNG 实测 10MB 量级，
+// 留足余量。
+const (
+	mediaImageDownloadTimeout  = 2 * time.Minute
+	mediaImageDownloadMaxBytes = 32 << 20
+
+	// mediaImagePutTimeout 单张图片单次上传对象存储的上限。
+	//
+	// 图片只有几百 KB ~ 十几 MB，跨境一分钟足够；R2 客户端整体超时是 10 分钟，
+	// 那是给几十 MB 的视频留的。把那个值套在同步生图路径上，一次挂死的上传
+	// 会让用户一直等到浏览器自己超时。
+	mediaImagePutTimeout = 60 * time.Second
+
+	// mediaArchiveAttempts 单张图片「上传」与「产物记录落库」各自的尝试次数（含首次）。
+	//
+	// 转存失败 = 用户刷新后永久丢图，而对象存储偶发 5xx/断连、数据库偶发连接抖动
+	// 都是可重试的；多传一次的成本远低于一次误判。落库用 UPSERT，重试幂等。
+	mediaArchiveAttempts = 2
+)
+
 // mediaArchiver 视频产物转存器。
 //
 // 【为什么视频要异步而图片同步】图片单张几百 KB，转存耗时相对生成本身
@@ -42,6 +68,13 @@ type mediaArchiver struct {
 	gateway   *MediaGateway
 	uploader  objectstore.Uploader
 
+	// imageFetch 回源下载上游图片 URL 的客户端。
+	//
+	// 【为什么不能直接用 http.DefaultClient】产物流地址来自上游响应体，属于
+	// 不可信输入。这里复用参考图下载客户端：它在拨号时解析并固定公网 IP、
+	// 重定向逐跳复用同一校验，避免把上游给的内网地址变成一条 SSRF 通路。
+	imageFetch *http.Client
+
 	// sem 并发信号量。带缓冲 channel 是 Go 里最直接的做法，
 	// 超出上限的投递在这里排队而不是并发挤爆上游。
 	sem chan struct{}
@@ -56,12 +89,24 @@ type mediaArchiver struct {
 func newMediaArchiver(tasks *repository.MediaTaskRepo, artifacts *repository.MediaArtifactRepo,
 	gateway *MediaGateway, uploader objectstore.Uploader) *mediaArchiver {
 	return &mediaArchiver{
-		tasks:     tasks,
-		artifacts: artifacts,
-		gateway:   gateway,
-		uploader:  uploader,
-		sem:       make(chan struct{}, mediaArchiveConcurrency),
+		tasks:      tasks,
+		artifacts:  artifacts,
+		gateway:    gateway,
+		uploader:   uploader,
+		imageFetch: newMediaProductClient(),
+		sem:        make(chan struct{}, mediaArchiveConcurrency),
 	}
+}
+
+// newMediaProductClient 回源下载产物用的客户端。
+//
+// 复用参考图那套 SSRF 防护（拨号时解析并固定公网 IP、重定向逐跳校验），但把
+// 整体超时从参考图的 60 秒放宽到 mediaImageDownloadTimeout —— 产物单张可达
+// 十几 MB，跨境慢链接需要更多时间。
+func newMediaProductClient() *http.Client {
+	c := newMediaRefClient()
+	c.Timeout = mediaImageDownloadTimeout
+	return c
 }
 
 // enabled 报告转存是否可用。
@@ -162,7 +207,13 @@ func (a *mediaArchiver) archiveVideo(ctx context.Context, taskID int64, apiKey, 
 //
 // 【失败不让任务失败】钱已经扣了、图也拿到了，转存失败只该降级成「本次会话内
 // 可见但刷新后丢失」，而不是把一次成功的生成标成失败。调用方据返回值决定是否
-// 把 b64 仍旧 inline 返回给前端。
+// 把字节仍旧 inline 返回给前端。
+//
+// 【b64 与 URL 都要认】上游并不保证按 response_format=b64_json 回图：实测同
+// 一把 key、同一个模型，有时回 b64_json，有时只回一个直链 url（2026-10-20 的
+// 线上任务 551 就是后者）。只认 b64 会把「上游其实把图给全了」误判成「没有
+// 字节可转存」——用户付了钱、图也生成好了，刷新后却看不到。b64 缺失时回源
+// 下载那个 url，再走同一条上传路径。
 func (a *mediaArchiver) ArchiveImages(ctx context.Context, taskID int64, results []ImageResult) bool {
 	if !a.enabled() {
 		return false
@@ -170,25 +221,26 @@ func (a *mediaArchiver) ArchiveImages(ctx context.Context, taskID int64, results
 
 	saved := 0
 	for i, r := range results {
-		if r.B64 == "" {
+		if r.B64 == "" && r.URL == "" {
 			continue
 		}
-		data, err := base64.StdEncoding.DecodeString(r.B64)
+		data, mimeType, err := a.imageBytes(ctx, r)
 		if err != nil {
-			log.Printf("[media] 任务 %d 第 %d 张图 base64 解码失败: %v", taskID, i, err)
+			log.Printf("[media] 任务 %d 第 %d 张图取字节失败: %v", taskID, i, err)
 			continue
 		}
-		key := mediaObjectKey(taskID, i, extensionFor(r.MimeType, ".jpg"))
-		reader, size := objectstore.BytesBody(data)
-		url, err := a.uploader.Put(ctx, key, reader, size, r.MimeType)
+		key := mediaObjectKey(taskID, i, extensionFor(mimeType, ".jpg"))
+		url, err := a.putImage(ctx, key, data, mimeType)
 		if err != nil {
 			log.Printf("[media] 任务 %d 第 %d 张图转存失败: %v", taskID, i, err)
 			continue
 		}
-		if err := a.artifacts.Save(ctx, repository.MediaArtifact{
+		if err := a.saveArtifact(ctx, repository.MediaArtifact{
 			TaskID: taskID, Index: i, URL: url, ObjectKey: key,
-			MimeType: r.MimeType, Bytes: size,
+			MimeType: mimeType, Bytes: int64(len(data)),
 		}); err != nil {
+			// 对象已传上去但记录没落库：重试也没救回来时只能标 failed，
+			// 代价是一个待桶生命周期清理的孤儿对象 + 本次会话 inline 兜底。
 			log.Printf("[media] 任务 %d 第 %d 张图记录落库失败: %v", taskID, i, err)
 			continue
 		}
@@ -196,17 +248,193 @@ func (a *mediaArchiver) ArchiveImages(ctx context.Context, taskID int64, results
 	}
 
 	status := repository.MediaStorageStored
-	if saved == 0 {
-		status = repository.MediaStorageFailed
-	} else if saved < countB64Images(results) {
+	if saved == 0 || saved < countArchivableImages(results) {
 		// 部分成功也标 failed：前端据此保留 inline 兜底，让缺的那几张仍然可见。
-		// 标 stored 会让前端只显示已转存的部分，用户以为少生成了几张。
+		// 标 stored 会让前端只显示已转存的那部分，用户以为少生成了几张。
 		status = repository.MediaStorageFailed
 	}
 	if err := a.tasks.SetStorageStatus(ctx, taskID, status); err != nil {
 		log.Printf("[media] 任务 %d 转存状态落库失败: %v", taskID, err)
 	}
 	return status == repository.MediaStorageStored
+}
+
+// putImage 上传一张图片产物，瞬时失败重试一次。
+//
+// 每次尝试单独限时（mediaImagePutTimeout）：共享 r2 客户端那个 10 分钟总超时
+// 是给视频留的，挂在一张几百 KB 的图上只会拖住整个同步提交请求。
+func (a *mediaArchiver) putImage(ctx context.Context, key string, data []byte, mimeType string) (string, error) {
+	var lastErr error
+	for attempt := 1; attempt <= mediaArchiveAttempts; attempt++ {
+		putCtx, cancel := context.WithTimeout(ctx, mediaImagePutTimeout)
+		reader, size := objectstore.BytesBody(data)
+		url, err := a.uploader.Put(putCtx, key, reader, size, mimeType)
+		cancel()
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("[media] 对象 %s 第 %d 次上传成功", key, attempt)
+			}
+			return url, nil
+		}
+		lastErr = err
+		if attempt < mediaArchiveAttempts {
+			select {
+			case <-ctx.Done():
+				return "", lastErr
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
+	}
+	return "", lastErr
+}
+
+// saveArtifact 落产物记录，瞬时失败重试一次。
+//
+// Save 是 (task_id, idx) UPSERT，重试幂等。不重试的话，「对象传上去了但记录
+// 没落库」会留下一个孤儿对象，而用户看到的仍是「未能转存」。
+func (a *mediaArchiver) saveArtifact(ctx context.Context, art repository.MediaArtifact) error {
+	var lastErr error
+	for attempt := 1; attempt <= mediaArchiveAttempts; attempt++ {
+		if err := a.artifacts.Save(ctx, art); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if attempt < mediaArchiveAttempts {
+			select {
+			case <-ctx.Done():
+				return lastErr
+			case <-time.After(300 * time.Millisecond):
+			}
+		}
+	}
+	return lastErr
+}
+
+// imageBytes 取一张产物的字节与 MIME：优先用响应内联的 b64，缺失时回源下载 url。
+func (a *mediaArchiver) imageBytes(ctx context.Context, r ImageResult) ([]byte, string, error) {
+	if r.B64 != "" {
+		data, err := base64.StdEncoding.DecodeString(r.B64)
+		if err == nil && len(data) > 0 {
+			// 以文件头为准判定类型：上游多半不带 mime_type，parseImagesResponse
+			// 的缺省值是 image/jpeg，而 gpt-image 实际出的是 PNG。标错会让 R2
+			// 返回错误的 Content-Type。判不出来时回落到上游声明值。
+			mimeType := r.MimeType
+			if sniffed, ok := normalizeImageType(http.DetectContentType(data)); ok {
+				mimeType = sniffed
+			}
+			if mimeType == "" {
+				mimeType = "image/jpeg"
+			}
+			return data, mimeType, nil
+		}
+		// b64 损坏但上游还给了直链时，直链仍能把图救回来——解码失败不该直接
+		// 判失败。两者都不可用才报错，且把 b64 侧的原因一并带进日志。
+		if r.URL == "" {
+			if err != nil {
+				return nil, "", fmt.Errorf("base64 解码失败: %w", err)
+			}
+			return nil, "", fmt.Errorf("base64 内容为空")
+		}
+		data, mimeType, dlErr := a.downloadProductImage(ctx, r.URL)
+		if dlErr != nil {
+			reason := "base64 内容为空"
+			if err != nil {
+				reason = "base64 解码失败: " + err.Error()
+			}
+			return nil, "", fmt.Errorf("%s；回源直链也失败: %w", reason, dlErr)
+		}
+		return data, mimeType, nil
+	}
+	if r.URL == "" {
+		return nil, "", fmt.Errorf("上游既未返回 b64_json 也未返回 url")
+	}
+	return a.downloadProductImage(ctx, r.URL)
+}
+
+// downloadProductImage 回源下载上游图片直链。
+//
+// 【为什么能信任这个 URL 去下载】它是网关响应体里的产物地址，不是用户输入；
+// 但仍按不可信处理（SSRF）：先做形态校验，真正的公网 IP 约束由 imageFetch
+// 的拨号钩子兜底（见 newMediaRefClient）。
+func (a *mediaArchiver) downloadProductImage(ctx context.Context, rawURL string) ([]byte, string, error) {
+	if a.imageFetch == nil {
+		return nil, "", fmt.Errorf("未配置产物下载客户端")
+	}
+	rawURL = strings.TrimSpace(rawURL)
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("产物 url 无效")
+	}
+	if err := validateMediaRefURL(u); err != nil {
+		return nil, "", fmt.Errorf("产物 url 不可下载: %w", err)
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, mediaImageDownloadTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("产物 url 无效")
+	}
+	// 部分直链前置 WAF 会拦非浏览器 UA（与参考图下载同一纪律）。
+	// 绝不带网关 Authorization：产物直链不该拿到用户的 key。
+	req.Header.Set("User-Agent", browserUA)
+
+	resp, err := a.imageFetch.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("下载上游产物失败: %s", redactProductURL(err.Error(), rawURL))
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("下载上游产物失败（HTTP %d）", resp.StatusCode)
+	}
+	if resp.ContentLength > mediaImageDownloadMaxBytes {
+		return nil, "", fmt.Errorf("上游产物超过 %dMB", mediaImageDownloadMaxBytes>>20)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, mediaImageDownloadMaxBytes+1))
+	if err != nil {
+		return nil, "", fmt.Errorf("读取上游产物失败: %s", redactProductURL(err.Error(), rawURL))
+	}
+	if len(data) == 0 {
+		return nil, "", fmt.Errorf("上游产物为空")
+	}
+	if len(data) > mediaImageDownloadMaxBytes {
+		return nil, "", fmt.Errorf("上游产物超过 %dMB", mediaImageDownloadMaxBytes>>20)
+	}
+
+	// 以文件头为准：Content-Type 可能缺省或标错，而落 R2 后浏览器按它渲染，
+	// 标错会得到一个「下载」而不是可预览的图。
+	mimeType, ok := normalizeImageType(http.DetectContentType(data))
+	if !ok {
+		return nil, "", fmt.Errorf("上游产物不是受支持的图片类型（%s）", http.DetectContentType(data))
+	}
+	return data, mimeType, nil
+}
+
+// redactProductURL 把日志里的产物直链抹成占位符。
+//
+// 直链可能带签名查询串，进日志等于把取图凭据留在日志里。错误信息里只需要
+// 知道「下载失败」，不需要知道具体是哪个地址。
+func redactProductURL(msg, rawURL string) string {
+	if rawURL != "" {
+		msg = strings.ReplaceAll(msg, rawURL, "<产物url>")
+	}
+	return truncate(msg, 300)
+}
+
+// countArchivableImages 统计「有字节可取」的结果数。
+//
+// 有 b64 或有 url 都算可取：后者由 downloadProductImage 回源。它是判断
+// 「是否全部转存成功」的分母，算错会让部分失败被当成全成功。
+func countArchivableImages(results []ImageResult) int {
+	n := 0
+	for _, r := range results {
+		if r.B64 != "" || r.URL != "" {
+			n++
+		}
+	}
+	return n
 }
 
 // ResumePending 补投进程重启时遗留的在途转存。
@@ -283,15 +511,4 @@ func extensionFor(mimeType, fallback string) string {
 	default:
 		return fallback
 	}
-}
-
-// countB64Images 统计有 base64 内容的结果数（分母，用于判定是否全部转存成功）。
-func countB64Images(results []ImageResult) int {
-	n := 0
-	for _, r := range results {
-		if r.B64 != "" {
-			n++
-		}
-	}
-	return n
 }

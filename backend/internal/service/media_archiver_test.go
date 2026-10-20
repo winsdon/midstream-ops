@@ -20,8 +20,14 @@ import (
 type fakeUploader struct {
 	mu    sync.Mutex
 	calls []fakeUpload
-	// failKeys 指定要失败的对象键（子串匹配）。
+	// failKeys 指定要失败的对象键（子串匹配），每次都会失败。
 	failKeys []string
+	// transientFailKeys 指定「首次失败、重试成功」的对象键（子串匹配），
+	// 用于验证瞬时故障的重试。
+	transientFailKeys []string
+	transientSeen     map[string]bool
+	// attempts 上传尝试次数（含失败），用于验证重试确实发生。
+	attempts int32
 	// maxSeen 观测到的最大并发，用于验证信号量生效。
 	inFlight int32
 	maxSeen  int32
@@ -37,6 +43,7 @@ type fakeUpload struct {
 }
 
 func (f *fakeUploader) Put(ctx context.Context, key string, body io.Reader, size int64, contentType string) (string, error) {
+	atomic.AddInt32(&f.attempts, 1)
 	cur := atomic.AddInt32(&f.inFlight, 1)
 	for {
 		old := atomic.LoadInt32(&f.maxSeen)
@@ -52,6 +59,20 @@ func (f *fakeUploader) Put(ctx context.Context, key string, body io.Reader, size
 	for _, bad := range f.failKeys {
 		if strings.Contains(key, bad) {
 			return "", fmt.Errorf("模拟上传失败")
+		}
+	}
+	for _, bad := range f.transientFailKeys {
+		if strings.Contains(key, bad) {
+			f.mu.Lock()
+			if f.transientSeen == nil {
+				f.transientSeen = make(map[string]bool)
+			}
+			first := !f.transientSeen[key]
+			f.transientSeen[key] = true
+			f.mu.Unlock()
+			if first {
+				return "", fmt.Errorf("模拟瞬时上传失败")
+			}
 		}
 	}
 
@@ -148,17 +169,20 @@ func TestExtensionFor(t *testing.T) {
 	}
 }
 
-// countB64Images 是「是否全部转存成功」的分母，算错会让部分失败被当成全成功。
-func TestCountB64Images(t *testing.T) {
+// countArchivableImages 是「是否全部转存成功」的分母，算错会让部分失败被当成全成功。
+//
+// 有 b64 或 url 都算「可取」：后者由 downloadProductImage 回源下载。
+func TestCountArchivableImages(t *testing.T) {
 	results := []ImageResult{
 		{B64: b64("a")},
-		{B64: ""}, // 上游只给了 URL，没有字节
-		{B64: b64("c")},
+		{URL: "https://cdn.example.com/a.png"}, // 上游只给了 URL，没有字节
+		{B64: b64("c"), URL: "https://cdn.example.com/c.png"},
+		{}, // 两者皆空：不可取，也不该拖累成功率
 	}
-	if got := countB64Images(results); got != 2 {
-		t.Fatalf("应为 2，实得 %d", got)
+	if got := countArchivableImages(results); got != 3 {
+		t.Fatalf("应为 3，实得 %d", got)
 	}
-	if got := countB64Images(nil); got != 0 {
+	if got := countArchivableImages(nil); got != 0 {
 		t.Fatalf("空列表应为 0，实得 %d", got)
 	}
 }
@@ -418,6 +442,137 @@ func TestArchiveImagesPartialFailureKeepsInlineFallback(t *testing.T) {
 	}
 }
 
+// 上游只回 URL、不回 b64_json 时也必须转存：回源下载 → 上传 → 落产物。
+//
+// 【线上事故回归】2026-10-20 的 gpt-image-2 图生图任务 551 只拿到了一个产物
+// 直链。旧实现只认 B64，判成「没有字节可转存」，用户看到「本次图片未能转存」
+// ——而图其实一直挂在那条直链上，本可以原样存进本站 R2。
+func TestArchiveImagesDownloadsURLOnlyResults(t *testing.T) {
+	up := &fakeUploader{}
+	a, tasks, artifacts, taskID := newArchiveFixture(t, up)
+	ctx := context.Background()
+
+	// 测试里用公网形态的主机名 + 自定义 RoundTripper：产物 URL 会先过
+	// validateMediaRefURL（内网 IP 一律拒绝），真实下载客户端在拨号时还会
+	// 再校验一次公网 IP —— 这两层都不能为了测试方便绕开。
+	var gotUA, gotAuth string
+	a.imageFetch = &http.Client{Transport: mediaRefRoundTripper(func(r *http.Request) (*http.Response, error) {
+		gotUA = r.Header.Get("User-Agent")
+		gotAuth = r.Header.Get("Authorization")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(string(pngHeader))),
+			Header:     http.Header{"Content-Type": []string{"image/png"}},
+		}, nil
+	})}
+
+	if !a.ArchiveImages(ctx, taskID, []ImageResult{{URL: "https://media.example.com/out.png"}}) {
+		t.Fatal("URL-only 响应应能转存成功")
+	}
+	if gotAuth != "" {
+		t.Error("产物直链不该携带网关 API key")
+	}
+	if gotUA == "" {
+		t.Error("下载应带上浏览器 UA（部分直链前置 WAF 会拦非浏览器 UA）")
+	}
+
+	calls := up.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("应上传 1 张，实得 %d", len(calls))
+	}
+	if !strings.HasSuffix(calls[0].Key, "/0.png") {
+		t.Fatalf("扩展名应按文件头判定为 png: %s", calls[0].Key)
+	}
+	if calls[0].ContentType != "image/png" {
+		t.Fatalf("Content-Type 应按文件头判定: %s", calls[0].ContentType)
+	}
+	if calls[0].Data != string(pngHeader) {
+		t.Fatalf("上传内容应是回源下载到的字节")
+	}
+
+	task, _ := tasks.GetByID(context.Background(), taskID)
+	if task.StorageStatus != repository.MediaStorageStored {
+		t.Fatalf("转存状态应为 stored，实得 %q", task.StorageStatus)
+	}
+	saved, _ := artifacts.ListByTasks(ctx, []int64{taskID})
+	if len(saved[taskID]) != 1 || saved[taskID][0].Bytes != int64(len(pngHeader)) {
+		t.Fatalf("应落 1 条产物记录，实得 %+v", saved[taskID])
+	}
+}
+
+// b64 与 URL 混在一批里时各自都要转存。
+func TestArchiveImagesMixedSources(t *testing.T) {
+	up := &fakeUploader{}
+	a, _, artifacts, taskID := newArchiveFixture(t, up)
+	ctx := context.Background()
+
+	a.imageFetch = &http.Client{Transport: mediaRefRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(string(pngHeader))),
+			Header:     http.Header{"Content-Type": []string{"image/png"}},
+		}, nil
+	})}
+
+	ok := a.ArchiveImages(ctx, taskID, []ImageResult{
+		{B64: b64("B64-BYTES"), MimeType: "image/jpeg"},
+		{URL: "https://media.example.com/second.png"},
+	})
+	if !ok {
+		t.Fatal("两张都有可取来源时应全部成功")
+	}
+	if n := len(up.snapshot()); n != 2 {
+		t.Fatalf("应上传 2 张，实得 %d", n)
+	}
+	saved, _ := artifacts.ListByTasks(ctx, []int64{taskID})
+	if len(saved[taskID]) != 2 {
+		t.Fatalf("应落 2 条产物记录，实得 %d", len(saved[taskID]))
+	}
+}
+
+// 回源下载失败时状态必须是 failed，调用方据此保留 inline 兜底（直链本身还能
+// 在本会话里直接显示），而不是假装转存成功。
+func TestArchiveImagesURLDownloadFailureMarksFailed(t *testing.T) {
+	up := &fakeUploader{}
+	a, tasks, artifacts, taskID := newArchiveFixture(t, up)
+	a.imageFetch = &http.Client{Transport: mediaRefRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+	})}
+
+	if a.ArchiveImages(context.Background(), taskID, []ImageResult{{URL: "https://media.example.com/gone.png"}}) {
+		t.Fatal("下载失败时应返回 false")
+	}
+	if n := len(up.snapshot()); n != 0 {
+		t.Fatalf("下载失败不该上传，实得上传 %d 次", n)
+	}
+	task, _ := tasks.GetByID(context.Background(), taskID)
+	if task.StorageStatus != repository.MediaStorageFailed {
+		t.Fatalf("应标 failed，实得 %q", task.StorageStatus)
+	}
+	saved, _ := artifacts.ListByTasks(context.Background(), []int64{taskID})
+	if len(saved[taskID]) != 0 {
+		t.Fatalf("失败时不应有产物记录，实得 %d", len(saved[taskID]))
+	}
+}
+
+// 上游响应里的产物 URL 也按不可信输入处理：内网地址一律拒绝下载。
+func TestArchiveImagesRejectsPrivateURL(t *testing.T) {
+	up := &fakeUploader{}
+	a, tasks, _, taskID := newArchiveFixture(t, up)
+	a.imageFetch = &http.Client{Transport: mediaRefRoundTripper(func(*http.Request) (*http.Response, error) {
+		t.Error("内网地址不该发起请求")
+		return nil, fmt.Errorf("unexpected request")
+	})}
+
+	if a.ArchiveImages(context.Background(), taskID, []ImageResult{{URL: "http://127.0.0.1/out.png"}}) {
+		t.Fatal("内网地址应拒绝转存")
+	}
+	task, _ := tasks.GetByID(context.Background(), taskID)
+	if task.StorageStatus != repository.MediaStorageFailed {
+		t.Fatalf("应标 failed，实得 %q", task.StorageStatus)
+	}
+}
+
 // 全部失败：状态 failed，无产物记录。
 func TestArchiveImagesAllFail(t *testing.T) {
 	up := &fakeUploader{failKeys: []string{"media/"}}
@@ -434,6 +589,59 @@ func TestArchiveImagesAllFail(t *testing.T) {
 	saved, _ := artifacts.ListByTasks(ctx, []int64{taskID})
 	if len(saved[taskID]) != 0 {
 		t.Fatalf("失败时不应有产物记录，实得 %d", len(saved[taskID]))
+	}
+}
+
+// b64 损坏但上游还给了直链时，应回退直链而不是直接判失败。
+func TestArchiveImagesFallsBackToURLWhenB64Corrupt(t *testing.T) {
+	up := &fakeUploader{}
+	a, tasks, _, taskID := newArchiveFixture(t, up)
+	ctx := context.Background()
+
+	a.imageFetch = &http.Client{Transport: mediaRefRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(string(pngHeader))),
+			Header:     http.Header{"Content-Type": []string{"image/png"}},
+		}, nil
+	})}
+
+	if !a.ArchiveImages(ctx, taskID, []ImageResult{{
+		B64: "!!!not-base64!!!", URL: "https://media.example.com/fallback.png",
+	}}) {
+		t.Fatal("b64 损坏时应回退直链转存成功")
+	}
+	if n := len(up.snapshot()); n != 1 {
+		t.Fatalf("应上传 1 张，实得 %d", n)
+	}
+	task, _ := tasks.GetByID(ctx, taskID)
+	if task.StorageStatus != repository.MediaStorageStored {
+		t.Fatalf("转存状态应为 stored，实得 %q", task.StorageStatus)
+	}
+}
+
+// 对象存储偶发失败要重试：一次瞬时断连不该让用户付过钱的图刷新后就消失。
+func TestArchiveImagesRetriesTransientUploadFailure(t *testing.T) {
+	up := &fakeUploader{transientFailKeys: []string{"media/"}}
+	a, tasks, artifacts, taskID := newArchiveFixture(t, up)
+	ctx := context.Background()
+
+	if !a.ArchiveImages(ctx, taskID, []ImageResult{{B64: b64("IMG-A"), MimeType: "image/png"}}) {
+		t.Fatal("首次失败、重试成功时应返回 true")
+	}
+	if got := atomic.LoadInt32(&up.attempts); got != 2 {
+		t.Fatalf("应尝试 2 次，实得 %d", got)
+	}
+	if n := len(up.snapshot()); n != 1 {
+		t.Fatalf("最终应成功上传 1 次，实得 %d", n)
+	}
+	task, _ := tasks.GetByID(ctx, taskID)
+	if task.StorageStatus != repository.MediaStorageStored {
+		t.Fatalf("转存状态应为 stored，实得 %q", task.StorageStatus)
+	}
+	saved, _ := artifacts.ListByTasks(ctx, []int64{taskID})
+	if len(saved[taskID]) != 1 {
+		t.Fatalf("应落 1 条产物记录，实得 %d", len(saved[taskID]))
 	}
 }
 
