@@ -19,11 +19,7 @@
         icon="dollar"
         icon-variant="success"
         class="animate-fade-in"
-      >
-        <template #footer>
-          <DeltaHint v-if="!privacyMode" :delta="revenueDelta" :formatter="fmtMoney" />
-        </template>
-      </StatCard>
+      />
       <StatCard
         :title="t('dash.cost')"
         :value="displayMoney(summary?.cost)"
@@ -43,8 +39,6 @@
           >
             + {{ t('opcost.title') }} {{ displayMoney(summary?.operating_cost) }}
           </p>
-          <!-- 成本上涨是坏消息，配色反转 -->
-          <DeltaHint v-if="!privacyMode" :delta="costDelta" :formatter="fmtMoney" negative-when-up />
         </template>
       </StatCard>
       <StatCard
@@ -62,21 +56,23 @@
           <p v-if="!privacyMode && !costComplete" class="mt-0.5 text-xs text-amber-600 dark:text-amber-400">
             {{ t('cost.upperBound') }}
           </p>
-          <div v-else-if="!privacyMode" class="flex items-center gap-2">
-            <DeltaHint :delta="profitDelta" :formatter="fmtMoney" />
-            <span v-if="margin !== null" class="text-xs text-gray-400">
-              {{ t('dash.margin') }} {{ fmtPct(margin) }}
-            </span>
-          </div>
+          <p v-else-if="!privacyMode && margin !== null" class="text-xs text-gray-400">
+            {{ t('dash.margin') }} {{ fmtPct(margin) }}
+          </p>
         </template>
       </StatCard>
       <StatCard :title="t('dash.requests')" :value="fmtNum(summary?.requests)" icon="bolt" class="animate-fade-in" />
-      <StatCard :title="t('dash.providers')" :value="fmtNum(summary?.provider_count)" icon="server" class="animate-fade-in" />
-      <StatCard :title="t('dash.accounts')" :value="fmtNum(summary?.account_count)" icon="users" class="animate-fade-in" />
+      <StatCard :title="t('dash.newUsers')" :value="fmtNum(summary?.new_users)" icon="userPlus" class="animate-fade-in">
+        <template #title-suffix>
+          <span class="cursor-help text-gray-400" :title="t('dash.newUsersHint')">ⓘ</span>
+        </template>
+      </StatCard>
+      <StatCard :title="t('dash.activeUsers')" :value="fmtNum(summary?.active_users)" icon="users" class="animate-fade-in">
+        <template #title-suffix>
+          <span class="cursor-help text-gray-400" :title="t('dash.activeUsersHint')">ⓘ</span>
+        </template>
+      </StatCard>
     </div>
-
-    <!-- 成本来源与新鲜度 -->
-    <CostSyncBar v-if="!privacyMode" :sync="summary?.cost_sync" :complete="costComplete" :accounts-missing="summary?.accounts_missing || 0" />
 
     <div class="grid gap-6 xl:grid-cols-5">
       <!-- 趋势图 -->
@@ -133,8 +129,6 @@ import Icon from '@/components/icons/Icon.vue'
 import LineChart from '@/components/LineChart.vue'
 import BarChart from '@/components/BarChart.vue'
 import DateRangePicker, { type DateRange } from '@/components/DateRangePicker.vue'
-import DeltaHint from '@/components/common/DeltaHint.vue'
-import CostSyncBar from '@/components/CostSyncBar.vue'
 import StatCard from '@/components/common/StatCard.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -158,18 +152,6 @@ const concentration = computed(() =>
 )
 
 const margin = computed(() => profitMargin(summary.value?.revenue, summary.value?.profit))
-
-// 环比：趋势序列末两点之差（区间内最后一天 vs 前一天）
-function deltaOf(pick: (p: TrendPoint) => number): number | null {
-  const v = trend.value
-  if (v.length < 2) return null
-  return pick(v[v.length - 1]) - pick(v[v.length - 2])
-}
-const revenueDelta = computed(() => deltaOf((p) => p.revenue))
-// 成本环比含运营成本：与趋势图的成本线同口径，也才和利润环比自洽
-// （否则「成本涨了 10、利润跌了 60」会让人以为算错）
-const costDelta = computed(() => deltaOf((p) => p.cost + (p.operating_cost || 0)))
-const profitDelta = computed(() => deltaOf((p) => p.profit))
 
 const trendLabels = computed(() => trend.value.map((p) => p.day.slice(5)))
 // 成本线取「实扣 + 运营成本」而非单画实扣：利润线已扣掉运营成本，

@@ -69,79 +69,12 @@ export interface ProviderSyncState {
   next_eligible_at?: string | null
 }
 
-// ---- 调价映射 ----
+// ---- 本站连接（自动建号用）----
 
 export interface SelfInfo {
   configured: boolean
   base_url: string
   login_email: string
-}
-
-// ---- 调价规则（多上游聚合）----
-
-export interface PricingSourceRef {
-  id?: number
-  pricing_id?: number
-  provider_id: number
-  upstream_group: string
-}
-
-// 本站分组的调价规则：参考价按 price_source 聚合多个上游后加价
-export interface LocalGroupPricing {
-  id: number
-  local_group_id: number
-  local_group_name: string
-  auto_enabled: boolean
-  /** primary(指定主上游) | lowest | highest | average */
-  price_source: string
-  primary_provider_id?: number | null
-  primary_group?: string | null
-  /** fixed(参考价+markup) | percentage(参考价×(1+markup/100)) */
-  markup_mode: string
-  markup_value: number
-  /** 跟随阈值(%)：上游变化 ≤ 阈值才自动跟随，超过则不动 */
-  follow_threshold: number
-  min_rate?: number | null
-  max_rate?: number | null
-  last_applied_rate?: number | null
-  conflict: boolean
-  created_at: string
-  updated_at: string
-  sources: PricingSourceRef[]
-}
-
-export interface PricingPreviewRow {
-  pricing: LocalGroupPricing
-  reference_rate?: number | null
-  current_rate?: number | null
-  target_rate?: number | null
-  needs_apply: boolean
-  source_rates: Record<string, number>
-}
-
-export interface PricingRulePayload {
-  local_group_id: number
-  local_group_name?: string
-  auto_enabled?: boolean
-  price_source?: string
-  primary_provider_id?: number | null
-  primary_group?: string | null
-  markup_mode?: string
-  markup_value?: number
-  follow_threshold?: number
-  min_rate?: number | null
-  max_rate?: number | null
-  sources: PricingSourceRef[]
-}
-
-export interface RateActionItem {
-  id: number
-  trigger_by: string
-  old_rate?: number | null
-  new_rate: number
-  status: string
-  error?: string | null
-  created_at: string
 }
 
 export interface LocalGroupOption {
@@ -350,18 +283,6 @@ export interface ImportItem {
   account_ids?: number[]
 }
 
-// CostSyncStatus 上游成本同步状态（数据新鲜度）。
-// 后端按「最落后的供应商」取 last_synced_at，故它代表最保守的新鲜度。
-export interface CostSyncStatus {
-  last_synced_at?: string | null
-  providers_total: number
-  providers_ok: number
-  keys_total: number
-  keys_matched: number
-  interval_minutes: number
-  last_error: string
-}
-
 // cost = 上游实扣（倍率折后，真实付出）。
 // cost_complete=false 表示有账号有流量但没匹配到上游 key，此时成本偏低、利润偏高。
 export interface DashboardSummary {
@@ -374,11 +295,12 @@ export interface DashboardSummary {
   operating_cost: number
   profit: number
   requests: number
-  provider_count: number
-  account_count: number
+  /** 区间内注册的用户数（含已软删）；统计失败为 null */
+  new_users: number | null
+  /** 区间内有请求的去重用户数；统计失败为 null */
+  active_users: number | null
   cost_complete: boolean
   accounts_missing: number
-  cost_sync?: CostSyncStatus | null
   // 分组贡献：Top6 分组与 Top3 集中度（%）
   groups?: DashboardGroupRow[] | null
   group_total?: number

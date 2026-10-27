@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 )
 
@@ -40,7 +41,7 @@ type UpstreamConnection struct {
 
 // CanDeleteRemote 是否允许删除远端资源（只有本系统建的才可以）。
 func (c *UpstreamConnection) CanDeleteRemote() bool {
-	return c.Mode == ConnModeManaged && c.UpstreamKeyID > 0
+	return c.Mode == ConnModeManaged
 }
 
 // ConnectionRepo 对接记录存储。
@@ -140,6 +141,7 @@ type ConnectionParams struct {
 	LocalGroupIDs   []int64
 	Mode            string
 	OperationID     string
+	UpstreamKeyName string
 }
 
 // CreatePending 先落 pending 记录再打 API —— 补偿失败后仍可对账。
@@ -154,35 +156,60 @@ func (r *ConnectionRepo) CreatePending(ctx context.Context, p ConnectionParams) 
 	var id int64
 	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO upstream_connections (provider_id, upstream_group, upstream_group_id, group_platform,
-			local_group_ids, mode, operation_id, status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,'pending',?,?) RETURNING id`,
+			local_group_ids, mode, operation_id, upstream_key_name, status, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,'pending',?,?) RETURNING id`,
 		p.ProviderID, p.UpstreamGroup, p.UpstreamGroupID, p.GroupPlatform,
-		string(idsJSON), p.Mode, p.OperationID, nowUTC(), nowUTC()).Scan(&id)
+		string(idsJSON), p.Mode, p.OperationID, p.UpstreamKeyName, nowUTC(), nowUTC()).Scan(&id)
 	return id, err
+}
+
+// SetLocalAccount records progress before activation, also allowing deletion retries.
+func (r *ConnectionRepo) SetLocalAccount(ctx context.Context, id, accountID int64, name string) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE upstream_connections SET local_account_id=?, local_account_name=?, updated_at=? WHERE id=?`, accountID, name, nowUTC(), id)
+	return connectionUpdated(result, err)
+}
+
+func (r *ConnectionRepo) SetPendingError(ctx context.Context, id int64, message string) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE upstream_connections SET status='pending', error=?, updated_at=? WHERE id=?`, message, nowUTC(), id)
+	return connectionUpdated(result, err)
 }
 
 // SetKeyCreated 记录上游 key 建成（第一步成功）。
 func (r *ConnectionRepo) SetKeyCreated(ctx context.Context, id, keyID int64, keyName string) error {
-	_, err := r.db.ExecContext(ctx,
+	result, err := r.db.ExecContext(ctx,
 		`UPDATE upstream_connections SET upstream_key_id=?, upstream_key_name=?, updated_at=? WHERE id=?`,
 		keyID, keyName, nowUTC(), id)
-	return err
+	return connectionUpdated(result, err)
 }
 
 // SetActive 两步都成功：转 active。
 func (r *ConnectionRepo) SetActive(ctx context.Context, id, accountID int64, accountName string) error {
-	_, err := r.db.ExecContext(ctx,
+	result, err := r.db.ExecContext(ctx,
 		`UPDATE upstream_connections SET local_account_id=?, local_account_name=?, status='active', error=NULL, updated_at=? WHERE id=?`,
 		accountID, accountName, nowUTC(), id)
-	return err
+	return connectionUpdated(result, err)
 }
 
 // SetFailed 标记失败并记录原因（补偿是否成功另记日志）。
 func (r *ConnectionRepo) SetFailed(ctx context.Context, id int64, errMsg string) error {
-	_, err := r.db.ExecContext(ctx,
+	result, err := r.db.ExecContext(ctx,
 		`UPDATE upstream_connections SET status='failed', error=?, updated_at=? WHERE id=?`,
 		errMsg, nowUTC(), id)
-	return err
+	return connectionUpdated(result, err)
+}
+
+func connectionUpdated(result sql.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // BindExisting 直接落一条 existing 模式的 active 记录（不创建任何远端资源）。
@@ -238,4 +265,9 @@ func (r *ConnectionRepo) ConnectedUpstreams(ctx context.Context) (map[string]boo
 		out[SourceKey(pid, g)] = true
 	}
 	return out, rows.Err()
+}
+
+// SourceKey 构造「供应商 × 上游分组」的 map 键。
+func SourceKey(providerID int64, group string) string {
+	return strconv.FormatInt(providerID, 10) + ":" + group
 }

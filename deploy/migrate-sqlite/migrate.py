@@ -55,12 +55,6 @@ SCHEMA = {
         "ts": ["first_seen_at", "last_seen_at"],
         "bool": ["deleted"],
     },
-    "local_group_pricing": {
-        "ts": ["created_at", "updated_at"],
-        "bool": ["auto_enabled", "conflict"],
-    },
-    "pricing_sources": {},
-    "rate_actions": {"ts": ["created_at"]},
     "upstream_connections": {"ts": ["created_at", "updated_at"]},
     "media_tasks": {"ts": ["created_at", "updated_at"]},
     "credit_ledger": {"ts": ["occurred_at", "created_at"]},
@@ -77,13 +71,12 @@ SCHEMA = {
     },
 }
 
-# 搬运顺序：父表在前。credit_ledger.customer_id 与 pricing_sources.pricing_id
+# 搬运顺序：父表在前。credit_ledger.customer_id
 # 在 SQLite 侧就没建外键（跨库引用的刻意设计），PG 侧同样没建，顺序无所谓，
-# 但仍按逻辑归组以便阅读。
+# 但仍按逻辑归组以便阅读。调价映射三表已下线（PG 迁移 011 删除），不再搬运。
 ORDER = [
     "providers", "customers", "settings", "collector_state", "probe_budget",
     "probe_results", "health_states", "health_events", "rate_snapshots",
-    "local_group_pricing", "pricing_sources", "rate_actions",
     "upstream_connections", "media_tasks", "credit_ledger",
     # 子表
     "balance_snapshots", "upstream_key_costs", "upstream_key_map",

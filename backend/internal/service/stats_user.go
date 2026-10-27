@@ -191,7 +191,7 @@ func assembleUserStats(
 // 成本由账号实扣按该账号内各用户×分组的裸用量占比分摊，合计与按供应商口径的实扣一致。
 // 运营成本按同一权重摊到用户。
 func (s *StatsService) ByUser(ctx context.Context, start, end time.Time) ([]UserStat, error) {
-	rows, err := s.pg.AggregateUsageByUserGroupAccount(ctx, start, end)
+	rows, err := s.usageByUserGroupAccount(ctx, start, end)
 	if err != nil {
 		return nil, fmt.Errorf("按用户×分组×账号聚合用量失败: %w", err)
 	}

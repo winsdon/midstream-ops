@@ -117,12 +117,11 @@ func renderRateTemplate(tpl, entityName string, oldRate, newRate float64) string
 
 // RateChangeEvent 一次倍率变化（RateService 检出变化时发出）。
 type RateChangeEvent struct {
-	EntityType    string // group | account
-	EntityID      string // 原始实体 id（upstream scope 为分组名，自动调价按此匹配）
-	EntityName    string // 展示名（通知里可能带供应商前缀）
-	UpstreamGroup string // upstream scope 的分组名（= EntityID，语义别名）
-	OldRate       float64
-	NewRate       float64
+	EntityType string // group | account
+	EntityID   string // 原始实体 id（upstream scope 为分组名）
+	EntityName string // 展示名（通知里可能带供应商前缀）
+	OldRate    float64
+	NewRate    float64
 }
 
 // HandleRateChanges 倍率变更钩子：合并同轮变化为一条通知。

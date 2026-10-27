@@ -17,6 +17,7 @@ import (
 // 由 CostSyncService 定时同步到本地库，查询只读本地库（不实时打上游）。
 type StatsService struct {
 	pg           *repository.PG
+	usageDaily   *repository.UsageDailyRepo // 收入日结汇总；nil 时整段实时查
 	costRepo     *repository.UpstreamCostRepo
 	opCostRepo   *repository.OperatingCostRepo
 	linkRepo     *repository.ProviderAccountRepo
@@ -25,12 +26,13 @@ type StatsService struct {
 }
 
 // NewStatsService 创建 StatsService。
-func NewStatsService(pg *repository.PG, costRepo *repository.UpstreamCostRepo,
+func NewStatsService(pg *repository.PG, usageDaily *repository.UsageDailyRepo,
+	costRepo *repository.UpstreamCostRepo,
 	opCostRepo *repository.OperatingCostRepo,
 	linkRepo *repository.ProviderAccountRepo, providerRepo *repository.ProviderRepo,
 	cfg *config.Config) *StatsService {
 	return &StatsService{
-		pg: pg, costRepo: costRepo, opCostRepo: opCostRepo, linkRepo: linkRepo,
+		pg: pg, usageDaily: usageDaily, costRepo: costRepo, opCostRepo: opCostRepo, linkRepo: linkRepo,
 		providerRepo: providerRepo, cfg: cfg,
 	}
 }
@@ -106,10 +108,10 @@ type ProviderStat struct {
 // unassignedBucket 未归属（无前缀）账号桶名。
 const unassignedBucket = "(未归属)"
 
-// ByProvider 按供应商归并收益/成本/利润（PG 按账号聚合 → Go 按关联表归并）。
-// 成本来自本地库的上游实扣，按账号 join。
+// ByProvider 按供应商归并收益/成本/利润（按账号聚合收益 → Go 按关联表归并）。
+// 收益读日结汇总 + 未结算日实时，见 stats_usage_source.go；成本来自本地库的上游实扣，按账号 join。
 func (s *StatsService) ByProvider(ctx context.Context, start, end time.Time) ([]ProviderStat, error) {
-	rows, err := s.pg.AggregateUsageByAccount(ctx, start, end)
+	rows, err := s.usageByAccount(ctx, start, end)
 	if err != nil {
 		return nil, fmt.Errorf("按账号聚合用量失败: %w", err)
 	}
@@ -322,7 +324,7 @@ func apportionSharesN(n int, weight func(int) float64, requests func(int) int64)
 
 // ByGroup 按分组统计收益/成本/利润，成本由账号实扣按用量占比分摊而来。
 func (s *StatsService) ByGroup(ctx context.Context, start, end time.Time) ([]GroupStat, error) {
-	rows, err := s.pg.AggregateUsageByGroupAccount(ctx, start, end)
+	rows, err := s.usageByGroupAccount(ctx, start, end)
 	if err != nil {
 		return nil, fmt.Errorf("按分组×账号聚合用量失败: %w", err)
 	}
@@ -442,7 +444,7 @@ func (s *StatsService) Trend(ctx context.Context, days int) ([]TrendPoint, error
 
 // TrendRange 返回指定区间（左闭右开）的日趋势，供仪表盘时间范围选择器使用。
 func (s *StatsService) TrendRange(ctx context.Context, start, end time.Time) ([]TrendPoint, error) {
-	rows, err := s.pg.AggregateUsageDaily(ctx, s.cfg.Timezone, start, end)
+	rows, err := s.usageDailyTrend(ctx, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -498,45 +500,6 @@ func (s *StatsService) TrendRange(ctx context.Context, start, end time.Time) ([]
 	// AggregateUsageDaily 按日升序返回，补点后须重排以维持该契约
 	sort.Slice(out, func(i, j int) bool { return out[i].Day < out[j].Day })
 	return out, nil
-}
-
-// SyncStatus 成本数据的同步状态（前端展示「同步时间」）。
-type SyncStatus struct {
-	LastSyncedAt   *time.Time `json:"last_synced_at"`   // 所有供应商中最早的一次同步时间（最保守）
-	ProvidersTotal int        `json:"providers_total"`  // 参与成本同步的供应商数
-	ProvidersOK    int        `json:"providers_ok"`     // 本轮同步成功的供应商数
-	KeysTotal      int64      `json:"keys_total"`       // 上游 key 总数
-	KeysMatched    int64      `json:"keys_matched"`     // 成功匹配到本站账号的 key 数
-	IntervalMin    int        `json:"interval_minutes"` // 同步间隔
-	LastError      string     `json:"last_error"`       // 任一供应商的最近错误（截断）
-}
-
-// CostSyncStatus 汇总各供应商的成本同步状态。
-func (s *StatsService) CostSyncStatus(ctx context.Context) (*SyncStatus, error) {
-	states, err := s.costRepo.SyncStates(ctx)
-	if err != nil {
-		return nil, err
-	}
-	st := &SyncStatus{
-		ProvidersTotal: len(states),
-		IntervalMin:    s.cfg.Cost.IntervalMinutes,
-	}
-	for _, v := range states {
-		st.KeysTotal += v.KeysTotal
-		st.KeysMatched += v.KeysMatched
-		if v.LastError != nil && st.LastError == "" {
-			st.LastError = *v.LastError
-		}
-		if v.LastSyncedAt == nil {
-			continue
-		}
-		st.ProvidersOK++
-		// 取最早的同步时间：数据新鲜度以最落后的供应商为准
-		if st.LastSyncedAt == nil || v.LastSyncedAt.Before(*st.LastSyncedAt) {
-			st.LastSyncedAt = v.LastSyncedAt
-		}
-	}
-	return st, nil
 }
 
 // accountCosts 读取区间内按账号的上游实扣；失败时降级为空（成本记 0 并由 CostMatched 标记）。

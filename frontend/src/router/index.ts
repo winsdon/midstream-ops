@@ -77,12 +77,6 @@ const router = createRouter({
           meta: { titleKey: 'nav.rates', descriptionKey: 'page.ratesDesc' }
         },
         {
-          path: 'pricing',
-          name: 'pricing',
-          component: () => import('@/views/Pricing.vue'),
-          meta: { titleKey: 'nav.pricing', descriptionKey: 'page.pricingDesc' }
-        },
-        {
           path: 'stability',
           name: 'stability',
           component: () => import('@/views/Stability.vue'),

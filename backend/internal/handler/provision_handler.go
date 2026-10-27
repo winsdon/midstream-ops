@@ -43,6 +43,7 @@ func (h *ProvisionHandler) Connected(c *gin.Context) {
 }
 
 type connectRequest struct {
+	Platform      string  `json:"platform"`
 	ProviderID    int64   `json:"provider_id" binding:"required"`
 	UpstreamGroup string  `json:"upstream_group" binding:"required"`
 	LocalGroupIDs []int64 `json:"local_group_ids" binding:"required"`
@@ -60,6 +61,7 @@ func (h *ProvisionHandler) Connect(c *gin.Context) {
 		return
 	}
 	conn, err := h.svc.Connect(c.Request.Context(), service.ConnectRequest{
+		Platform:      req.Platform,
 		ProviderID:    req.ProviderID,
 		UpstreamGroup: req.UpstreamGroup,
 		LocalGroupIDs: req.LocalGroupIDs,

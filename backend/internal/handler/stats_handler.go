@@ -34,16 +34,10 @@ func (h *StatsHandler) ByProvider(c *gin.Context) {
 		return
 	}
 	startDate, endDate := dateBounds(h.cfg, start, end)
-	// 成本口径与同步时间随数据一起返回，避免前端把「未同步」误读为「零成本」
-	syncStatus, err := h.statsSvc.CostSyncStatus(c.Request.Context())
-	if err != nil {
-		syncStatus = nil
-	}
 	response.Success(c, gin.H{
-		"start":     startDate,
-		"end":       endDate,
-		"items":     stats,
-		"cost_sync": syncStatus,
+		"start": startDate,
+		"end":   endDate,
+		"items": stats,
 	})
 }
 
@@ -60,16 +54,10 @@ func (h *StatsHandler) ByGroup(c *gin.Context) {
 		return
 	}
 	startDate, endDate := dateBounds(h.cfg, start, end)
-	// 分组成本由账号实扣按用量占比分摊而来，同样依赖成本同步，故一并返回同步状态
-	syncStatus, err := h.statsSvc.CostSyncStatus(c.Request.Context())
-	if err != nil {
-		syncStatus = nil
-	}
 	response.Success(c, gin.H{
-		"start":     startDate,
-		"end":       endDate,
-		"items":     stats,
-		"cost_sync": syncStatus,
+		"start": startDate,
+		"end":   endDate,
+		"items": stats,
 	})
 }
 
@@ -86,14 +74,9 @@ func (h *StatsHandler) ByUser(c *gin.Context) {
 		return
 	}
 	startDate, endDate := dateBounds(h.cfg, start, end)
-	syncStatus, err := h.statsSvc.CostSyncStatus(c.Request.Context())
-	if err != nil {
-		syncStatus = nil
-	}
 	response.Success(c, gin.H{
-		"start":     startDate,
-		"end":       endDate,
-		"items":     stats,
-		"cost_sync": syncStatus,
+		"start": startDate,
+		"end":   endDate,
+		"items": stats,
 	})
 }

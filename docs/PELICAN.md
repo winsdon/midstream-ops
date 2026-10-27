@@ -26,6 +26,7 @@
 - 默认提示词按目标协议取：全部目标都走 Messages（Claude）时为 `做个初音未来.html带人物`，含 GPT 协议（或混选）时为 `生成一张考拉骑自行车的 SVG 图像并添加动画效果`。弹窗里提示词仍是默认题目时会随所选账号自动切换，改写过的不动；实际使用的提示词随记录留痕。
 - Messages 请求与模型检测的智商题共用一套 thinking 口径（`modeldetect.ThinkingParamFor`）：adaptive 型号发 `{"type":"adaptive"}`，旧型号带 `budget_tokens`，型号不认识或本来不支持 thinking（如 Haiku 3.5）时不发；Messages 同时复用同一套 `claude-cli` User-Agent。Opus / Sonnet 5 起不传也会思考且关不掉，思考量与正文共用 `max_tokens` 上限，输出上限给小了会在写完前被截断。
 - 「高级选项」的**思考强度**（默认 low：Claude 不限强度时思考量远大于 GPT，一单可多出上万 token、耗时翻几倍；可选 low / medium / high / xhigh / max）只对 Messages 生效，按 `output_config.effort` 发送（`modeldetect.EffortFor`）：只发给 adaptive 型号，旧型号、Haiku 4.5、不认识的型号不发；Opus / Sonnet 4.6 没有 xhigh，按 high 发送。GPT 协议忽略该选项。强度随记录留痕（详情参数行 `effort=`），「重新测试」沿用原强度；该字段出现之前的旧记录与旧提交视为未指定（不发，上游默认）。强度越高耗时越长，注意单项超时。
+- 「高级选项」的**禁止思考（提示词引导）**不是请求参数：勾选后只在提示词末尾追加固定后缀 `直接输出完整 HTML，不要思考，不要解释。`，提示词本身随记录留痕，「重新测试」沿用。实测 Claude Opus 5.5（thinking adaptive + effort low）同一道初音题：加后缀前思考 6,785 / 12,315 token、耗时 333.7s / 389.8s；加后缀后思考 0、耗时 186.8s / 184.9s，作品仍完整。**注意**：这是模型层的引导而非 API 关闭——`thinking.type=disabled` 会被上游拒绝，省略 thinking 也会默认思考；复杂推理题上可能仍思考，也可能因“不要思考”掉质量，重要题目建议复测确认。提示词仍为默认题目时，该后缀会跟着 Claude / GPT 切换保留。
 - 管理员填写的提示词作为用户消息原样发送；另附统一交付指令，要求在回复正文中直接返回完整独立 HTML，不依赖外部资源，不用文件路径或“已创建文件”的说明代替代码。Messages 使用 `system`，Responses 使用 `instructions`，Chat Completions 使用 system 消息。完整请求（含交付指令，不含 Key）保存在结果详情的请求参数中。不提供文件写入或工作区工具。
 - Responses 流优先读取 `response.completed` 中的最终正文；完成事件没有正文时才使用累计文本增量，避免只收到前言增量而漏掉最终 HTML。
 - 流式响应必须正常结束；截断、异常断流、无完整 HTML/SVG 都不允许发布。可在详情查看已收到的原始回复。

@@ -22,7 +22,7 @@ type Provider struct {
 	BalanceType         string // sub2api | manual | none（sub2api 泛指「API 自动采集」）
 	Platform            string // sub2api | new-api
 	AuthMode            string // password | token | user_key
-	Role                string // upstream（被监控的上游站）| self（自己站点，调价用）
+	Role                string // upstream（被监控的上游站）| self（自己站点，自动建号用）
 	BaseURL             string
 	LoginEmail          string
 	LoginPassword       string
@@ -158,13 +158,6 @@ func (r *ProviderRepo) GetByName(ctx context.Context, name string) (*Provider, e
 		return nil, ErrNotFound
 	}
 	return p, err
-}
-
-// Count 返回供应商总数。
-func (r *ProviderRepo) Count(ctx context.Context) int {
-	var n int
-	_ = r.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM providers`).Scan(&n)
-	return n
 }
 
 // ListNames 返回所有供应商名集合。
@@ -555,7 +548,7 @@ func (r *ProviderRepo) UpsertSelf(ctx context.Context, baseURL, email string, pa
 		var id int64
 		if insErr := r.db.QueryRowContext(ctx, `
 			INSERT INTO providers (name, note, balance_type, platform, auth_mode, role, base_url, login_email, login_password, created_at, updated_at)
-			VALUES ('__self__', '本站（调价用）', 'none', 'sub2api', 'password', 'self', ?, ?, ?, ?, ?) RETURNING id`,
+			VALUES ('__self__', '本站', 'none', 'sub2api', 'password', 'self', ?, ?, ?, ?, ?) RETURNING id`,
 			baseURL, email, r.box.Seal(pwd), nowUTC(), nowUTC()).Scan(&id); insErr != nil {
 			return nil, insErr
 		}

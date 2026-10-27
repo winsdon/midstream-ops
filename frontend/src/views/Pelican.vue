@@ -42,6 +42,7 @@ import {
   pelicanDefaultPrompt,
   pelicanDraftFingerprint,
   pelicanDraftFromRequest,
+  pelicanDefaultPromptWithNoThinking,
   pelicanDraftTargets,
   pelicanEmptyDraft,
   pelicanIsDefaultPrompt,
@@ -72,11 +73,14 @@ const targets = computed(() => pelicanDraftTargets(draft.value, available.value)
 const defaultPrompt = computed(() => pelicanDefaultPrompt(targets.value))
 /**
  * 提示词还是默认题目时跟着目标协议切换；管理员改过的不动。
+ * 带着「禁止思考」后缀的默认题目也要跟着切，并保留后缀。
  * 有待确认提交时不切：提示词变了指纹就对不上，原样重放会变成新测试。
  */
 watch(defaultPrompt, next => {
-  if (pending.value || !pelicanIsDefaultPrompt(draft.value.prompt) || draft.value.prompt === next) return
-  draft.value = { ...draft.value, prompt: next }
+  if (pending.value || !pelicanIsDefaultPrompt(draft.value.prompt)) return
+  const desired = pelicanDefaultPromptWithNoThinking(next, draft.value.prompt)
+  if (desired === draft.value.prompt) return
+  draft.value = { ...draft.value, prompt: desired }
 })
 /** 待确认提交里不带 Key，写 sessionStorage 前必须再剥一次。 */
 function sanitize(request: PelicanRequest): PelicanRequest {

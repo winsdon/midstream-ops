@@ -72,14 +72,13 @@ export function defaultLocalGroupIds(
   upstreamRate: number,
   upstreamPlatform?: string
 ): number[] {
-  const exact = localGroups.filter((g) => g.name === upstreamGroupName)
-  if (exact.length > 0) return [exact[0].id]
-
   const platform = (upstreamPlatform || '').trim()
   if (!platform) return []
 
   const same = localGroups.filter((g) => (g.platform || '') === platform)
   if (same.length === 0) return []
+  const exact = same.find((g) => g.name === upstreamGroupName)
+  if (exact) return [exact.id]
 
   let best = same[0]
   let bestDist = Math.abs(best.rate - upstreamRate)

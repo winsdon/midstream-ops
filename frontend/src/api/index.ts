@@ -3,7 +3,6 @@ import type {
   ApiResponse,
   BalanceHistoryItem,
   CostSyncState,
-  CostSyncStatus,
   DashboardSummary,
   HealthEventItem,
   HealthStateItem,
@@ -16,14 +15,10 @@ import type {
   NotifyChannelsPayload,
   PaginatedData,
   PassiveRow,
-  PricingPreviewRow,
-  PricingRulePayload,
   ProbeResult,
   ProbeSummaryRow,
   Provider,
   ProviderAccount,
-  RateActionItem,
-  LocalGroupPricing,
   RateSnapshotItem,
   ScanItem,
   URLGroupItem,
@@ -265,22 +260,22 @@ export interface RefreshAllFailure {
 // ---- Stats ----
 export const statsApi = {
   byProvider: (start?: string, end?: string) =>
-    unwrap<{ start: string; end: string; items: StatsProviderRow[]; cost_sync?: CostSyncStatus | null }>(
-      http.get<ApiResponse<{ start: string; end: string; items: StatsProviderRow[]; cost_sync?: CostSyncStatus | null }>>(
+    unwrap<{ start: string; end: string; items: StatsProviderRow[] }>(
+      http.get<ApiResponse<{ start: string; end: string; items: StatsProviderRow[] }>>(
         '/stats/providers',
         { params: { start, end } }
       )
     ),
   byGroup: (start?: string, end?: string) =>
-    unwrap<{ start: string; end: string; items: StatsGroupRow[]; cost_sync?: CostSyncStatus | null }>(
-      http.get<ApiResponse<{ start: string; end: string; items: StatsGroupRow[]; cost_sync?: CostSyncStatus | null }>>(
+    unwrap<{ start: string; end: string; items: StatsGroupRow[] }>(
+      http.get<ApiResponse<{ start: string; end: string; items: StatsGroupRow[] }>>(
         '/stats/groups',
         { params: { start, end } }
       )
     ),
   byUser: (start?: string, end?: string) =>
-    unwrap<{ start: string; end: string; items: StatsUserRow[]; cost_sync?: CostSyncStatus | null }>(
-      http.get<ApiResponse<{ start: string; end: string; items: StatsUserRow[]; cost_sync?: CostSyncStatus | null }>>(
+    unwrap<{ start: string; end: string; items: StatsUserRow[] }>(
+      http.get<ApiResponse<{ start: string; end: string; items: StatsUserRow[] }>>(
         '/stats/users',
         { params: { start, end } }
       )
@@ -353,41 +348,19 @@ export const settingsApi = {
     )
 }
 
-// ---- Pricing（调价规则）----
-export const pricingApi = {
-  getSelf: () => unwrap<SelfInfo>(http.get<ApiResponse<SelfInfo>>('/pricing/self')),
-  saveSelf: (base_url: string, email: string, password?: string | null) =>
+// ---- 本站连接（自动建号经由本站 admin API）----
+export const selfApi = {
+  get: () => unwrap<SelfInfo>(http.get<ApiResponse<SelfInfo>>('/self')),
+  save: (base_url: string, email: string, password?: string | null) =>
     unwrap<{ ok: boolean; error?: string }>(
-      http.put<ApiResponse<{ ok: boolean; error?: string }>>('/pricing/self', { base_url, email, password })
+      http.put<ApiResponse<{ ok: boolean; error?: string }>>('/self', { base_url, email, password })
     ),
   localGroups: () =>
-    unwrap<{ items: LocalGroupOption[] }>(http.get<ApiResponse<{ items: LocalGroupOption[] }>>('/pricing/local-groups')),
-  // 全部调价规则 + 应用预览
-  rules: () =>
-    unwrap<{ items: PricingPreviewRow[]; total: number }>(
-      http.get<ApiResponse<{ items: PricingPreviewRow[]; total: number }>>('/pricing/rules')
-    ),
-  // 按本站分组 upsert 规则
-  saveRule: (payload: PricingRulePayload) =>
-    unwrap<LocalGroupPricing>(http.post<ApiResponse<LocalGroupPricing>>('/pricing/rules', payload)),
-  deleteRule: (id: number) => unwrap<null>(http.delete<ApiResponse<null>>(`/pricing/rules/${id}`)),
-  applyRule: (id: number, force = false) =>
-    unwrap<{ ok: boolean; error?: string }>(
-      http.post<ApiResponse<{ ok: boolean; error?: string }>>(`/pricing/rules/${id}/apply`, { force })
-    ),
-  resolveConflict: (id: number) =>
-    unwrap<{ ok: boolean }>(http.post<ApiResponse<{ ok: boolean }>>(`/pricing/rules/${id}/resolve-conflict`)),
-  actions: (id: number, limit = 50) =>
-    unwrap<{ items: RateActionItem[]; total: number }>(
-      http.get<ApiResponse<{ items: RateActionItem[]; total: number }>>(`/pricing/rules/${id}/actions`, {
-        params: { limit }
-      })
-    ),
-  // 已对接的上游分组集合（key = "providerID:group"）
-  mapped: () => unwrap<{ keys: string[] }>(http.get<ApiResponse<{ keys: string[] }>>('/pricing/mapped'))
+    unwrap<{ items: LocalGroupOption[] }>(http.get<ApiResponse<{ items: LocalGroupOption[] }>>('/self/local-groups'))
 }
 
 export interface ProvisionConnectPayload {
+  platform?: string
   provider_id: number
   upstream_group: string
   local_group_ids: number[]

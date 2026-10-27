@@ -112,7 +112,6 @@ const navItems = [
   { name: 'providers', label: 'nav.providers', icon: 'server' },
   { name: 'stats', label: 'nav.stats', icon: 'dollar' },
   { name: 'rates', label: 'nav.rates', icon: 'sort' },
-  { name: 'pricing', label: 'nav.pricing', icon: 'arrowsUpDown' },
   { name: 'stability', label: 'nav.stability', icon: 'trendingUp' },
   { name: 'detect', label: 'nav.detect', icon: 'shield' },
   { name: 'pelican', label: 'pelican.title', icon: 'play' },

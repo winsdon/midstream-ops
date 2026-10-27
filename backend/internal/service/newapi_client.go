@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // NewAPIClient new-api 平台客户端。
@@ -387,7 +390,7 @@ func (p *newAPITokenPage) UnmarshalJSON(raw []byte) error {
 		return err
 	}
 	p.Items = items
-	p.Total = int64(len(items))
+	p.Total = 0 // A legacy array has no total; a full page requires another request.
 	return nil
 }
 
@@ -405,10 +408,10 @@ func (c *NewAPIClient) ListTokens(ctx context.Context, baseURL string, auth NewA
 		}
 		out = append(out, data.Items...)
 		if len(data.Items) < pageSize || (data.Total > 0 && int64(len(out)) >= data.Total) {
-			break
+			return out, nil
 		}
 	}
-	return out, nil
+	return nil, errors.New("令牌列表超过分页上限，无法确认唯一性")
 }
 
 // GetTokenKey 获取指定 token 的完整 key。调用方只能用于内存指纹匹配。
@@ -429,7 +432,7 @@ func (c *NewAPIClient) GetTokenKey(ctx context.Context, baseURL string, auth New
 // unmaskedTokenKey 列表接口有时仍带明文 key；掩码（含 ... / *）不能当指纹用。
 func unmaskedTokenKey(key string) string {
 	k := strings.TrimSpace(key)
-	if k == "" || strings.Contains(k, "...") || strings.Contains(k, "*") {
+	if k == "" || strings.ContainsAny(k, "*…•") || strings.Contains(k, "...") {
 		return ""
 	}
 	if len(k) < 16 {
@@ -586,11 +589,22 @@ func (c *NewAPIClient) getJSON(ctx context.Context, url string, auth NewAPIAuth,
 
 // requestJSON 发起带认证的请求并把 envelope.data 解到 dst。
 func (c *NewAPIClient) requestJSON(ctx context.Context, method, url string, auth NewAPIAuth, what string, dst any) error {
-	req, err := http.NewRequestWithContext(ctx, method, url, nil)
+	return c.requestBodyJSON(ctx, method, url, auth, nil, what, dst)
+}
+
+type newAPIHTTPError struct{ Status int }
+
+func (e *newAPIHTTPError) Error() string { return fmt.Sprintf("new-api HTTP %d", e.Status) }
+
+func (c *NewAPIClient) requestBodyJSON(ctx context.Context, method, url string, auth NewAPIAuth, body []byte, what string, dst any) error {
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	setCommonHeaders(req)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if auth.Cookie != "" {
 		req.Header.Set("Cookie", auth.Cookie)
 	}
@@ -614,10 +628,10 @@ func (c *NewAPIClient) requestJSON(ctx context.Context, method, url string, auth
 		return errUnauthorized
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return fmt.Errorf("%w: %s请求失败 HTTP %d: %s", ErrRateLimited, what, resp.StatusCode, briefBody(raw))
+		return fmt.Errorf("%w: %s请求失败 HTTP %d", ErrRateLimited, what, resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s请求失败 HTTP %d: %s", what, resp.StatusCode, briefBody(raw))
+		return &newAPIHTTPError{Status: resp.StatusCode}
 	}
 	var env newapiEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -628,7 +642,8 @@ func (c *NewAPIClient) requestJSON(ctx context.Context, method, url string, auth
 		if isNewAPIAuthMessage(env.Message) {
 			return errUnauthorized
 		}
-		return fmt.Errorf("%s请求失败: %s", what, env.Message)
+		// Upstream errors may echo credentials. Never propagate response bodies.
+		return fmt.Errorf("%s请求被上游拒绝", what)
 	}
 	if dst != nil && len(env.Data) > 0 {
 		if err := json.Unmarshal(env.Data, dst); err != nil {
@@ -636,6 +651,103 @@ func (c *NewAPIClient) requestJSON(ctx context.Context, method, url string, auth
 		}
 	}
 	return nil
+}
+
+// NewAPITokenName keeps a readable UTF-8 prefix and a per-attempt random suffix.
+func NewAPITokenName(name string) (string, error) {
+	var random [12]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	suffix := "-" + hex.EncodeToString(random[:])
+	name = strings.TrimSpace(name)
+	for len(name) > 50-len(suffix) {
+		_, size := utf8.DecodeLastRuneInString(name)
+		name = name[:len(name)-size]
+	}
+	return name + suffix, nil
+}
+
+// CreateToken intentionally ignores data: upstream commonly returns only success.
+func (c *NewAPIClient) CreateToken(ctx context.Context, baseURL string, auth NewAPIAuth, name, group string) error {
+	body, err := json.Marshal(map[string]any{
+		"name": name, "group": group, "expired_time": -1,
+		"unlimited_quota": true, "remain_quota": 0,
+		"model_limits_enabled": false, "model_limits": "", "allow_ips": "",
+	})
+	if err != nil {
+		return err
+	}
+	return c.requestBodyJSON(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/token/", auth, body, "创建令牌", nil)
+}
+
+func (c *NewAPIClient) DeleteToken(ctx context.Context, baseURL string, auth NewAPIAuth, id int64) error {
+	return c.requestJSON(ctx, http.MethodDelete, fmt.Sprintf("%s/api/token/%d", strings.TrimRight(baseURL, "/"), id), auth, "删除令牌", nil)
+}
+
+func (c *NewAPIClient) FindToken(ctx context.Context, baseURL string, auth NewAPIAuth, name, group string) (*NewAPIToken, error) {
+	tokens, err := c.ListTokens(ctx, baseURL, auth)
+	if err != nil {
+		return nil, err
+	}
+	var found *NewAPIToken
+	for _, token := range tokens {
+		if token.Name != name || token.Group != group {
+			continue
+		}
+		if found != nil {
+			return nil, errors.New("令牌名称和分组匹配到多个结果，需人工核查")
+		}
+		copy := token
+		found = &copy
+	}
+	if found == nil || found.ID <= 0 {
+		return nil, errors.New("未定位到新令牌，需人工核查；请勿重复创建")
+	}
+	return found, nil
+}
+
+func (c *NewAPIClient) ProvisionTokenKey(ctx context.Context, baseURL string, auth NewAPIAuth, token *NewAPIToken) (string, error) {
+	key, err := c.GetTokenKey(ctx, baseURL, auth, token.ID)
+	if err != nil {
+		var status *newAPIHTTPError
+		if !errors.As(err, &status) || (status.Status != 404 && status.Status != 405) {
+			return "", errors.New("读取完整令牌密钥失败")
+		}
+		key = token.Key
+	}
+	key = unmaskedTokenKey(key)
+	if key == "" {
+		return "", errors.New("上游未提供未掩码的完整令牌密钥")
+	}
+	for strings.HasPrefix(key, "sk-") {
+		key = strings.TrimPrefix(key, "sk-")
+	}
+	if key == "" {
+		return "", errors.New("无效令牌密钥")
+	}
+	return "sk-" + key, nil
+}
+
+// Unlike the display-only pricing fallback, provisioning requires user permissions.
+func (c *NewAPIClient) ProvisionGroup(ctx context.Context, baseURL string, auth NewAPIAuth, name string) (*Sub2apiGroupRate, error) {
+	var groups map[string]json.RawMessage
+	if err := c.getJSON(ctx, strings.TrimRight(baseURL, "/")+"/api/user/self/groups", auth, "可用分组", &groups); err != nil {
+		return nil, err
+	}
+	raw, ok := groups[name]
+	if !ok {
+		return nil, fmt.Errorf("上游分组 %q 不存在或无权使用", name)
+	}
+	var obj struct {
+		Ratio float64 `json:"ratio"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		if err := json.Unmarshal(raw, &obj.Ratio); err != nil {
+			return nil, errors.New("无法解析上游分组倍率")
+		}
+	}
+	return &Sub2apiGroupRate{Name: name, Rate: obj.Ratio}, nil
 }
 
 // isNewAPIAuthMessage 判断 success:false 的 message 是否为鉴权失败语义。

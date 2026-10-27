@@ -4,7 +4,7 @@
       <div class="space-y-2">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <label for="pelican-prompt" class="text-sm font-medium text-gray-900 dark:text-white">{{ t('pelican.prompt') }}</label>
-          <button type="button" class="text-sm text-primary-600 dark:text-primary-400" @click="patch({ prompt: defaultPrompt })">{{ t('pelican.resetPrompt') }}</button>
+          <button type="button" class="text-sm text-primary-600 dark:text-primary-400" @click="resetPrompt">{{ t('pelican.resetPrompt') }}</button>
         </div>
         <textarea id="pelican-prompt" v-model="promptText" rows="2" class="input w-full resize-y" required :disabled="submitting" />
         <p class="text-xs text-gray-500 dark:text-dark-400">{{ t('pelican.deliveryHint') }}</p>
@@ -94,6 +94,13 @@
             <Select :model-value="draft.effort || null" class="w-full" :options="effortOptions" :placeholder="t('pelican.effortUnset')" :searchable="false" :disabled="submitting" :aria-label="t('pelican.effort')" @update:model-value="value => patch({ effort: (value || '') as PelicanEffort | '' })" />
           </div>
           <p class="text-xs text-gray-500 dark:text-dark-400 sm:col-span-2 lg:col-span-4">{{ t('pelican.effortHint') }}</p>
+          <label class="flex cursor-pointer items-start gap-2 text-xs text-gray-500 dark:text-dark-400 sm:col-span-2 lg:col-span-4">
+            <input type="checkbox" class="mt-0.5" :checked="noThinking" :disabled="submitting" @change="onNoThinking(($event.target as HTMLInputElement).checked)" />
+            <span class="min-w-0">
+              <span class="block font-medium text-gray-700 dark:text-gray-200">{{ t('pelican.noThinking') }}</span>
+              <span class="block">{{ t('pelican.noThinkingHint') }}</span>
+            </span>
+          </label>
         </div>
       </div>
 
@@ -126,9 +133,12 @@ import {
   PELICAN_MAX_TARGETS,
   pelicanAccountProtocolChoices,
   pelicanAccountsForGroup,
+  pelicanDefaultPromptWithNoThinking,
+  pelicanHasNoThinking,
   pelicanPruneAccountIDs,
   pelicanProtocolLabel,
   pelicanProtocolOptions,
+  pelicanToggleNoThinking,
   type PelicanDraft,
   type PelicanEffort
 } from '@/utils/pelican'
@@ -170,6 +180,8 @@ const manualProtocolOptions = computed(() => pelicanProtocolOptions().map(value 
 const accountProtocolOptions = computed(() => protocolChoices.value.map(value => ({ value, label: pelicanProtocolLabel(value) })))
 const effortOptions = computed(() => PELICAN_EFFORTS.map(value => ({ value, label: t(`pelican.efforts.${value}`) })))
 const promptText = computed({ get: () => draft.value.prompt, set: (value: string) => patch({ prompt: value }) })
+/** 「禁止思考」是提示词末尾的固定后缀：勾选状态直接从提示词本身推导，回填/重放也能对上。 */
+const noThinking = computed(() => pelicanHasNoThinking(draft.value.prompt))
 
 function patch(partial: Partial<PelicanDraft>) {
   draft.value = { ...draft.value, ...partial }
@@ -210,6 +222,14 @@ function accountsForGroup(groupID: number) {
 function onGroup(value: unknown) {
   const group_id = Number(value) || 0
   patch({ group_id, model: '', account_ids: accountsForGroup(group_id) })
+}
+/** 恢复默认题目：切到 Claude 默认题目时保留「禁止思考」，避免点一下就把开关丢掉。 */
+function resetPrompt() {
+  patch({ prompt: pelicanDefaultPromptWithNoThinking(props.defaultPrompt, draft.value.prompt) })
+}
+/** 勾选/取消「禁止思考」：只在提示词末尾追加或移除固定后缀，不改请求参数。 */
+function onNoThinking(enabled: boolean) {
+  patch({ prompt: pelicanToggleNoThinking(draft.value.prompt, enabled) })
 }
 function onSource(source: PelicanSource) {
   if (draft.value.source === source) return

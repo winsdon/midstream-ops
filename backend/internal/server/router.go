@@ -28,7 +28,7 @@ type Handlers struct {
 	Pelican      *handler.PelicanHandler
 	EmbedPelican *handler.PelicanHandler
 	Settings     *handler.SettingsHandler
-	Pricing      *handler.PricingHandler
+	Self         *handler.SelfHandler
 	Provision    *handler.ProvisionHandler
 	Plaza        *handler.PlazaHandler
 	Credit       *handler.CreditHandler
@@ -276,17 +276,10 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 				auth.POST("/settings/status-push/test", h.Settings.TestStatusPush)
 			}
 
-			if h.Pricing != nil {
-				auth.GET("/pricing/self", h.Pricing.GetSelf)
-				auth.PUT("/pricing/self", h.Pricing.SaveSelf)
-				auth.GET("/pricing/local-groups", h.Pricing.LocalGroups)
-				auth.GET("/pricing/rules", h.Pricing.Preview)
-				auth.POST("/pricing/rules", h.Pricing.SaveRule)
-				auth.DELETE("/pricing/rules/:id", h.Pricing.DeleteRule)
-				auth.POST("/pricing/rules/:id/apply", h.Pricing.ApplyRule)
-				auth.POST("/pricing/rules/:id/resolve-conflict", h.Pricing.ResolveConflict)
-				auth.GET("/pricing/rules/:id/actions", h.Pricing.Actions)
-				auth.GET("/pricing/mapped", h.Pricing.MappedUpstreams)
+			if h.Self != nil {
+				auth.GET("/self", h.Self.GetSelf)
+				auth.PUT("/self", h.Self.SaveSelf)
+				auth.GET("/self/local-groups", h.Self.LocalGroups)
 			}
 
 			if h.Provision != nil {

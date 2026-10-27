@@ -9,6 +9,7 @@ import {
   PELICAN_DEFAULT_TIMEOUT_SECONDS,
   PELICAN_EFFORTS,
   PELICAN_MAX_TARGETS,
+  PELICAN_NO_THINKING_SUFFIX,
   pelicanAccountProtocol,
   pelicanAccountProtocolChoices,
   pelicanAccountsForGroup,
@@ -17,14 +18,18 @@ import {
   pelicanDeletable,
   pelicanDraftFingerprint,
   pelicanDraftFromRequest,
+  pelicanDefaultPromptWithNoThinking,
   pelicanDraftTargets,
   pelicanEmptyDraft,
+  pelicanHasNoThinking,
   pelicanIsDefaultPrompt,
   pelicanPending,
   pelicanPreviewScale,
   pelicanProtocolOptions,
   pelicanPruneAccountIDs,
   pelicanStatusVariant,
+  pelicanToggleNoThinking,
+  pelicanWithoutNoThinking,
   type PelicanDraft
 } from './pelican'
 import type { PelicanAccount, PelicanRequest } from '@/types/pelican'
@@ -48,6 +53,49 @@ describe('pelican default prompt', () => {
     expect(pelicanIsDefaultPrompt(DEFAULT_PELICAN_PROMPT)).toBe(true)
     expect(pelicanIsDefaultPrompt(DEFAULT_PELICAN_CLAUDE_PROMPT)).toBe(true)
     expect(pelicanIsDefaultPrompt(`${DEFAULT_PELICAN_CLAUDE_PROMPT}，加点樱花`)).toBe(false)
+  })
+})
+
+describe('pelican no-thinking prompt suffix', () => {
+  // 与实测用的指令逐字一致：改文案就等于换了一个未验证的提示词。
+  it('appends the measured instruction once and removes it cleanly', () => {
+    expect(PELICAN_NO_THINKING_SUFFIX).toBe('直接输出完整 HTML，不要思考，不要解释。')
+    const prompt = DEFAULT_PELICAN_CLAUDE_PROMPT
+    const on = pelicanToggleNoThinking(prompt, true)
+    expect(on).toBe(`${prompt}\n${PELICAN_NO_THINKING_SUFFIX}`)
+    expect(pelicanHasNoThinking(on)).toBe(true)
+    // 重复勾选不会叠加。
+    expect(pelicanToggleNoThinking(on, true)).toBe(on)
+    expect(pelicanToggleNoThinking(on, false)).toBe(prompt)
+    expect(pelicanWithoutNoThinking(on)).toBe(prompt)
+  })
+  it('leaves a custom prompt alone when turning the suffix off', () => {
+    expect(pelicanToggleNoThinking('自定义题目', false)).toBe('自定义题目')
+    expect(pelicanHasNoThinking('自定义题目')).toBe(false)
+    // 只在末尾匹配，正文里出现同一句话不算。
+    expect(pelicanHasNoThinking(`${PELICAN_NO_THINKING_SUFFIX}\n自定义题目`)).toBe(false)
+  })
+  it('handles an empty prompt and is idempotent', () => {
+    expect(pelicanToggleNoThinking('   ', true)).toBe(PELICAN_NO_THINKING_SUFFIX)
+    expect(pelicanToggleNoThinking(PELICAN_NO_THINKING_SUFFIX, false)).toBe('')
+    expect(pelicanToggleNoThinking('题目\n\n', true)).toBe(`题目\n${PELICAN_NO_THINKING_SUFFIX}`)
+  })
+  it('still recognises the built-in prompt when the suffix is on, so the default can follow the protocol', () => {
+    expect(pelicanIsDefaultPrompt(pelicanToggleNoThinking(DEFAULT_PELICAN_CLAUDE_PROMPT, true))).toBe(true)
+    expect(pelicanIsDefaultPrompt(pelicanToggleNoThinking(DEFAULT_PELICAN_PROMPT, true))).toBe(true)
+    expect(pelicanIsDefaultPrompt(pelicanToggleNoThinking('自定义题目', true))).toBe(false)
+  })
+  // GPT 的默认题目要的是 SVG，后缀里的“输出完整 HTML”会和它打架，切过去时不能保留。
+  it('keeps the suffix across default-prompt switches only for the Claude HTML prompt', () => {
+    const claudeWithSuffix = pelicanToggleNoThinking(DEFAULT_PELICAN_CLAUDE_PROMPT, true)
+    expect(pelicanDefaultPromptWithNoThinking(DEFAULT_PELICAN_CLAUDE_PROMPT, claudeWithSuffix)).toBe(claudeWithSuffix)
+    expect(pelicanDefaultPromptWithNoThinking(DEFAULT_PELICAN_PROMPT, claudeWithSuffix)).toBe(DEFAULT_PELICAN_PROMPT)
+    expect(pelicanDefaultPromptWithNoThinking(DEFAULT_PELICAN_PROMPT, DEFAULT_PELICAN_PROMPT)).toBe(DEFAULT_PELICAN_PROMPT)
+  })
+  it('changes the draft fingerprint so a pending submission is not replayed with different text', () => {
+    const draft: PelicanDraft = { ...pelicanEmptyDraft(), group_id: 1, model: 'm', account_ids: [1] }
+    const withSuffix: PelicanDraft = { ...draft, prompt: pelicanToggleNoThinking(draft.prompt, true) }
+    expect(pelicanDraftFingerprint(withSuffix)).not.toBe(pelicanDraftFingerprint(draft))
   })
 })
 

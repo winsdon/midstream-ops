@@ -82,15 +82,15 @@ func main() {
 	jwtMgr := jwtutil.New(cfg.Auth.JWTSecret, time.Duration(cfg.Auth.TokenTTLHours)*time.Hour)
 	authSvc := service.NewAuthService(&cfg.Auth, jwtMgr, repository.NewRefreshTokenRepo(store))
 	providerSvc := service.NewProviderService(providerRepo, linkRepo, pg)
-	statsSvc := service.NewStatsService(pg, costRepo, opCostRepo, linkRepo, providerRepo, cfg)
+	usageDailyRepo := repository.NewUsageDailyRepo(store)
+	statsSvc := service.NewStatsService(pg, usageDailyRepo, costRepo, opCostRepo, linkRepo, providerRepo, cfg)
 	opCostSvc := service.NewOperatingCostService(opCostRepo, providerRepo, cfg)
 	balanceSvc := service.NewBalanceService(providerRepo, balanceRepo, cfg)
 	rateSvc := service.NewRateService(rateRepo, pg)
 	probeSvc := service.NewProbeService(probeRepo, providerRepo, linkRepo, healthRepo, pg, cfg)
 	costSvc := service.NewCostSyncService(providerRepo, costRepo, pg, cfg)
 	syncSvc := service.NewProviderSyncService(providerRepo, collectorRepo, balanceSvc, costSvc, rateSvc, pg)
-	pricingRepo := repository.NewPricingRepo(store)
-	pricingSvc := service.NewPricingService(providerRepo, pricingRepo, rateRepo, balanceSvc, pg)
+	selfSvc := service.NewSelfService(providerRepo, balanceSvc)
 	connRepo := repository.NewConnectionRepo(store)
 	provisionSvc := service.NewProvisionService(providerRepo, connRepo, linkRepo, pg, balanceSvc)
 	// 上游 Claude 渠道检测：判断某条上游到底是 Max 号池 / Bedrock / Kiro / 伪装
@@ -125,10 +125,6 @@ func main() {
 	syncSvc.AfterSync = alertSvc.HandleSyncOutcome
 	// 倍率变更钩子：倍率预警
 	rateSvc.OnRateChanged = alertSvc.HandleRateChanges
-	// 上游倍率变化 → 自动调价（异步，不阻塞 sync 链路）
-	syncSvc.OnUpstreamRateChanged = func(providerID int64, events []service.RateChangeEvent) {
-		go pricingSvc.HandleUpstreamRateChanges(providerID, events)
-	}
 	// 健康状态转移 → 机器人通知（仅 suspended 与恢复 healthy 两类关键转移）
 	probeSvc.OnStateChanged = func(accountName string, from, to health.State, detail string) {
 		if to != health.StateSuspended && !(to == health.StateHealthy && from != health.StateDegraded) {
@@ -252,13 +248,14 @@ func main() {
 	scheduler.SetMediaService(mediaSvc)
 	scheduler.SetCreditService(creditSvc)
 	scheduler.SetModelDetectService(detectSvc)
+	scheduler.SetUsageRollupService(service.NewUsageRollupService(pg, usageDailyRepo, cfg))
 
 	// 装配处理器
 	detectHandler := handler.NewModelDetectHandler(detectSvc)
 	detectHandler.SetModelStore(service.NewDetectModelStore(settingsRepo))
 	handlers := &server.Handlers{
 		Auth:             handler.NewAuthHandler(authSvc),
-		Dashboard:        handler.NewDashboardHandler(statsSvc, providerSvc, cfg, pg),
+		Dashboard:        handler.NewDashboardHandler(statsSvc, cfg, pg),
 		Provider:         handler.NewProviderHandler(providerSvc, balanceSvc, costSvc, syncSvc, syncScheduler, rateRepo, cfg, pg),
 		OpCost:           handler.NewOperatingCostHandler(opCostSvc, cfg),
 		Stats:            handler.NewStatsHandler(statsSvc, cfg, pg),
@@ -268,7 +265,7 @@ func main() {
 		Pelican:          pelicanHandler,
 		EmbedPelican:     embedPelicanHandler,
 		Settings:         handler.NewSettingsHandler(settingsSvc, notifier, statusPushSvc),
-		Pricing:          handler.NewPricingHandler(pricingSvc, rateRepo, pg),
+		Self:             handler.NewSelfHandler(selfSvc, pg),
 		Provision:        handler.NewProvisionHandler(provisionSvc),
 		Plaza:            plazaHandler,
 		Credit:           handler.NewCreditHandler(creditSvc, pg, settingsSvc),

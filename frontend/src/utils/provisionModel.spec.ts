@@ -105,3 +105,9 @@ describe('account base urls', () => {
     expect(picked).toBe('https://b.com')
   })
 })
+
+ it('does not match a same-name group with a different or missing protocol', () => {
+  const groups = [{ id: 1, name: 'vip', rate: 1, platform: 'anthropic' }, { id: 2, name: 'other', rate: 2, platform: 'openai' }]
+  expect(defaultLocalGroupIds(groups, 'vip', 1, 'openai')).toEqual([2])
+  expect(defaultLocalGroupIds(groups, 'vip', 1, '')).toEqual([])
+ })

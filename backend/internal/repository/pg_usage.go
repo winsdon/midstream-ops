@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// costExpr 本站视角的成本估算表达式，仅供日趋势的官价对照字段使用。
+// costExpr 本站视角的成本估算表达式，仅供日趋势的官价对照字段（及其日结列）使用。
 //
 // 真实成本以上游 actual_cost（倍率折后实扣）为准，见 upstream_key_costs 表。
 // 本表达式在 accounts.rate_multiplier 未维护（全为 1）时等于原始官价，会显著高于真实支出，
@@ -69,7 +69,7 @@ type GroupAccountUsageRow struct {
 // 不滤 deleted_at：已删账号/分组的历史流量仍须归属。
 func (p *PG) AggregateUsageByGroupAccount(ctx context.Context, start, end time.Time) ([]GroupAccountUsageRow, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT ul.group_id, COALESCE(g.name,'(无分组)'), COALESCE(g.rate_multiplier,1),
+		SELECT COALESCE(ul.group_id, 0), COALESCE(g.name,'(无分组)'), COALESCE(g.rate_multiplier,1),
 		       ul.account_id, COALESCE(a.name,''), COUNT(*),
 		       `+revenueExpr+`, COALESCE(SUM(ul.total_cost),0)
 		FROM usage_logs ul
@@ -114,10 +114,8 @@ type UserGroupAccountUsageRow struct {
 // 不滤 deleted_at：已删用户/账号/分组的历史流量仍须归属。
 func (p *PG) AggregateUsageByUserGroupAccount(ctx context.Context, start, end time.Time) ([]UserGroupAccountUsageRow, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT COALESCE(ul.user_id, 0),
-		       COALESCE(NULLIF(u.username, ''), NULLIF(u.email, ''),
-		         CASE WHEN COALESCE(ul.user_id, 0) = 0 THEN '(无用户)' ELSE '#' || COALESCE(ul.user_id, 0)::text END),
-		       ul.group_id, COALESCE(g.name,'(无分组)'), COALESCE(g.rate_multiplier,1),
+		SELECT COALESCE(ul.user_id, 0), `+userNameExpr+`,
+		       COALESCE(ul.group_id, 0), COALESCE(g.name,'(无分组)'), COALESCE(g.rate_multiplier,1),
 		       ul.account_id, COALESCE(a.name,''), COUNT(*),
 		       `+revenueExpr+`, COALESCE(SUM(ul.total_cost),0)
 		FROM usage_logs ul
@@ -173,6 +171,103 @@ func (p *PG) AggregateUsageDaily(ctx context.Context, tz string, start, end time
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// userNameExpr 用户展示名：username → email → #id；无用户记 (无用户)。
+const userNameExpr = `COALESCE(NULLIF(u.username, ''), NULLIF(u.email, ''),
+	CASE WHEN COALESCE(ul.user_id, 0) = 0 THEN '(无用户)' ELSE '#' || COALESCE(ul.user_id, 0)::text END)`
+
+// UsageDailyRow 日结汇总行（日 × 用户 × 分组 × 账号）。usage_daily 表与日结聚合共用。
+type UsageDailyRow struct {
+	UsageDate    string // YYYY-MM-DD（站点时区）
+	UserID       int64
+	UserName     string
+	GroupID      int64 // 0 = 无分组
+	GroupName    string
+	GroupRate    float64
+	AccountID    int64
+	AccountName  string
+	Requests     int64
+	Revenue      float64 // Σ actual_cost
+	CostWeight   float64 // Σ total_cost 裸值（分摊权重，不乘倍率）
+	OfficialCost float64 // Σ total_cost × account_rate_multiplier（官价对照）
+}
+
+// AggregateUsageForRollup 把 [start, end) 的 usage_logs 按「日 × 用户 × 分组 × 账号」聚合，供日结落库。
+//
+// 口径与 AggregateUsage* 四个实时查询逐列一致（收入/权重/官价表达式、名称兜底），
+// 保证同一天读汇总与读实时结果相同。不滤 deleted_at：已删实体的历史流量仍须归属。
+func (p *PG) AggregateUsageForRollup(ctx context.Context, tz string, start, end time.Time) ([]UsageDailyRow, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT (ul.created_at AT TIME ZONE $1)::date,
+		       COALESCE(ul.user_id, 0), `+userNameExpr+`,
+		       COALESCE(ul.group_id, 0), COALESCE(g.name,'(无分组)'), COALESCE(g.rate_multiplier,1),
+		       ul.account_id, COALESCE(a.name,''), COUNT(*),
+		       `+revenueExpr+`, COALESCE(SUM(ul.total_cost),0), `+costExpr+`
+		FROM usage_logs ul
+		LEFT JOIN users u ON u.id = ul.user_id
+		LEFT JOIN groups g ON g.id = ul.group_id
+		LEFT JOIN accounts a ON a.id = ul.account_id
+		WHERE ul.created_at >= $2 AND ul.created_at < $3
+		GROUP BY 1, 2, 3, 4, 5, 6, 7, 8`, tz, start, end)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UsageDailyRow
+	for rows.Next() {
+		var r UsageDailyRow
+		var day time.Time
+		if err := rows.Scan(&day, &r.UserID, &r.UserName, &r.GroupID, &r.GroupName, &r.GroupRate,
+			&r.AccountID, &r.AccountName, &r.Requests, &r.Revenue, &r.CostWeight, &r.OfficialCost); err != nil {
+			return nil, err
+		}
+		r.UsageDate = day.Format("2006-01-02")
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// EarliestUsageAt 返回 usage_logs 最早一条的时间；表为空时 ok=false。
+// 首次日结从这一天开始抢救，更早的已被 sub2api 清掉。
+func (p *PG) EarliestUsageAt(ctx context.Context) (t time.Time, ok bool, err error) {
+	var v *time.Time
+	if err := p.pool.QueryRow(ctx, `SELECT MIN(created_at) FROM usage_logs`).Scan(&v); err != nil {
+		return time.Time{}, false, err
+	}
+	if v == nil {
+		return time.Time{}, false, nil
+	}
+	return *v, true, nil
+}
+
+// ActiveUserIDs 返回 [start, end) 内有请求的去重用户 id（不含无用户的 0）。
+func (p *PG) ActiveUserIDs(ctx context.Context, start, end time.Time) ([]int64, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT DISTINCT ul.user_id FROM usage_logs ul
+		WHERE ul.created_at >= $1 AND ul.created_at < $2 AND COALESCE(ul.user_id, 0) <> 0`, start, end)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// CountUsersCreated 返回 [start, end) 内注册的用户数。
+// 软删的也算：注册确实发生过；users 表不随日志清理，可以实时查任意历史区间。
+func (p *PG) CountUsersCreated(ctx context.Context, start, end time.Time) (int64, error) {
+	var n int64
+	err := p.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM users WHERE created_at >= $1 AND created_at < $2`, start, end).Scan(&n)
+	return n, err
 }
 
 // PassiveStabilityRow 被动稳定性行（真实流量分位数 + SLA 口径失败数）。

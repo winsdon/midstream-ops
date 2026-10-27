@@ -107,7 +107,7 @@ func (s *RateService) Reconcile(ctx context.Context, scope string, providerID in
 				continue
 			}
 			if math.Abs(old.Rate-e.Rate) > rateEpsilon {
-				events = append(events, RateChangeEvent{EntityType: entityType, EntityID: e.ID, EntityName: e.Name, UpstreamGroup: e.ID, OldRate: old.Rate, NewRate: e.Rate})
+				events = append(events, RateChangeEvent{EntityType: entityType, EntityID: e.ID, EntityName: e.Name, OldRate: old.Rate, NewRate: e.Rate})
 			}
 		case math.Abs(old.Rate-e.Rate) > rateEpsilon:
 			// 变化：插新行，旧行自动封存为历史区间
@@ -116,7 +116,7 @@ func (s *RateService) Reconcile(ctx context.Context, scope string, providerID in
 				continue
 			}
 			log.Printf("[rate] %s %s %s 倍率变化: %.4f -> %.4f", scope, entityType, e.Name, old.Rate, e.Rate)
-			events = append(events, RateChangeEvent{EntityType: entityType, EntityID: e.ID, EntityName: e.Name, UpstreamGroup: e.ID, OldRate: old.Rate, NewRate: e.Rate})
+			events = append(events, RateChangeEvent{EntityType: entityType, EntityID: e.ID, EntityName: e.Name, OldRate: old.Rate, NewRate: e.Rate})
 		default:
 			// 未变：touch 延长确认时刻（顺带同步名称与平台）
 			if err := s.rateRepo.Touch(ctx, old.ID, e.Name, e.Platform); err != nil {

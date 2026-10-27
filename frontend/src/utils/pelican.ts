@@ -4,6 +4,15 @@ import type { PelicanAccount, PelicanProtocol, PelicanRequest, PelicanSource, Pe
 export const DEFAULT_PELICAN_PROMPT = '生成一张考拉骑自行车的 SVG 图像并添加动画效果'
 /** 全部目标都走 Messages（Claude）时的默认题目，与后端 DefaultPelicanClaudePrompt 一致。 */
 export const DEFAULT_PELICAN_CLAUDE_PROMPT = '做个初音未来.html带人物'
+/**
+ * 「禁止思考」的提示词后缀：只是提示词层面的引导，不改请求参数。
+ *
+ * 实测（Claude Opus 5.5，thinking adaptive + effort low）：同一道初音题，
+ * 加上这句后思考 token 从 6785 / 12315 降到 0，耗时分别从 333.7s / 389.8s 降到 186.8s / 184.9s，
+ * 作品仍完整返回。它不是 API 层的关闭（`{"type":"disabled"}` 会被上游 400），
+ * 所以复杂推理题上模型仍可能思考，也可能因为“不要思考”掉质量。
+ */
+export const PELICAN_NO_THINKING_SUFFIX = '直接输出完整 HTML，不要思考，不要解释。'
 /** 思考强度（output_config.effort），只对 Messages 协议生效；与后端 modeldetect.EffortLevels 一致。 */
 export const PELICAN_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 export type PelicanEffort = typeof PELICAN_EFFORTS[number]
@@ -123,9 +132,46 @@ export function pelicanDefaultPrompt(targets: readonly Pick<PelicanTarget, 'prot
   return targets.length && targets.every(target => target.protocol === 'messages') ? DEFAULT_PELICAN_CLAUDE_PROMPT : DEFAULT_PELICAN_PROMPT
 }
 
-/** 提示词仍是某一句默认题目（管理员没改过），换目标时可以跟着协议切换。 */
+/** 提示词是否已经带上了「禁止思考」后缀（只看末尾，避免误伤正文里出现的同一句话）。 */
+export function pelicanHasNoThinking(prompt: string): boolean {
+  return prompt.trimEnd().endsWith(PELICAN_NO_THINKING_SUFFIX)
+}
+
+/** 去掉末尾的「禁止思考」后缀，得到管理员原本写的提示词。 */
+export function pelicanWithoutNoThinking(prompt: string): string {
+  const trimmed = prompt.trimEnd()
+  if (!pelicanHasNoThinking(trimmed)) return trimmed
+  return trimmed.slice(0, -PELICAN_NO_THINKING_SUFFIX.length).trimEnd()
+}
+
+/**
+ * 打开/关闭「禁止思考」后缀：重复勾选不会叠加，取消勾选只拿掉末尾那一句，
+ * 不会动管理员自己写的内容。
+ */
+export function pelicanToggleNoThinking(prompt: string, enabled: boolean): string {
+  const trimmed = prompt.trimEnd()
+  const bare = pelicanWithoutNoThinking(trimmed)
+  if (!enabled) return bare
+  if (pelicanHasNoThinking(trimmed)) return trimmed
+  return bare ? `${bare}\n${PELICAN_NO_THINKING_SUFFIX}` : PELICAN_NO_THINKING_SUFFIX
+}
+
+/**
+ * 提示词仍是某一句默认题目（管理员没改过），换目标时可以跟着协议切换。
+ * 「禁止思考」后缀不算改写：带着后缀的默认题目仍然跟随协议切换。
+ */
 export function pelicanIsDefaultPrompt(prompt: string): boolean {
-  return prompt === DEFAULT_PELICAN_PROMPT || prompt === DEFAULT_PELICAN_CLAUDE_PROMPT
+  const bare = pelicanWithoutNoThinking(prompt)
+  return bare === DEFAULT_PELICAN_PROMPT || bare === DEFAULT_PELICAN_CLAUDE_PROMPT
+}
+
+/**
+ * 换默认题目时是否保留「禁止思考」后缀：只在切到 Claude 的 HTML 默认题目时保留。
+ * GPT 默认题目要的是 SVG，后缀里的“直接输出完整 HTML”会和它打架，所以切过去时丢掉后缀。
+ */
+export function pelicanDefaultPromptWithNoThinking(next: string, current: string): string {
+  if (next !== DEFAULT_PELICAN_CLAUDE_PROMPT || !pelicanHasNoThinking(current)) return next
+  return pelicanToggleNoThinking(next, true)
 }
 
 /** 归属分组下的可选账号：后端按 account_groups 给出 group_ids，前端只做匹配。 */

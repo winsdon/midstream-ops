@@ -5,9 +5,28 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestProvisionAccountTimeoutDoesNotRetryPOST(t *testing.T) {
+	var calls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		time.Sleep(100 * time.Millisecond)
+		w.Write([]byte(`{"code":0,"data":{"id":123}}`))
+	}))
+	defer srv.Close()
+	client := NewSub2apiClient(time.Second)
+	client.httpClient.Timeout = 20 * time.Millisecond
+	if _, err := client.CreateAdminAccount(context.Background(), srv.URL, "token", map[string]any{}); err == nil {
+		t.Fatal("expected timeout")
+	}
+	if calls.Load() != 1 {
+		t.Fatal("account POST retried after timeout")
+	}
+}
 
 func TestSub2apiLoginReturnsRefreshToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

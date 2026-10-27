@@ -41,6 +41,9 @@ type CostSyncState struct {
 	KeysTotal    int64      `json:"keys_total"`
 	KeysMatched  int64      `json:"keys_matched"`
 	BackfilledAt *time.Time `json:"backfilled_at"`
+	// FinalizedThrough 成本已用逐日接口终结到哪一天（含，YYYY-MM-DD）；nil = 从未终结。
+	// 只进不退：写入时与库中旧值取较大者。
+	FinalizedThrough *string `json:"finalized_through"`
 }
 
 // UpstreamCostRepo 上游真实成本存储。
@@ -52,7 +55,13 @@ type UpstreamCostRepo struct {
 func NewUpstreamCostRepo(s *Store) *UpstreamCostRepo { return &UpstreamCostRepo{db: s.DB()} }
 
 // UpsertCosts 按 (provider_id, upstream_key_id, usage_date) 幂等写入成本。
-// 同一天重复采集覆写而非追加，使定时同步与历史回补可共用一张表。
+// 同一天重复采集合并而非追加，使定时同步与历史回补可共用一张表。
+//
+// 数值列一律只增不减（GREATEST）：上游的今日实扣、逐日用量都是查日志算出来的，
+// 上游随时可能清日志——当天清了今日值会变小甚至归零，回补一个已清掉的日期会得到 0。
+// 直接覆写会把已经采到的真实成本冲掉，而成本缺失会让利润虚高，比偏高更危险。
+// 代价是上游合法的下调（退款/重算）不会反映，偏差方向是成本偏高，属于保守。
+// 前提：上游与本站同时区（今日值的「今天」与 usage_date 是同一天）。
 func (r *UpstreamCostRepo) UpsertCosts(ctx context.Context, costs []UpstreamKeyCost) error {
 	if len(costs) == 0 {
 		return nil
@@ -70,7 +79,7 @@ func (r *UpstreamCostRepo) UpsertCosts(ctx context.Context, costs []UpstreamKeyC
 		ON CONFLICT(provider_id, upstream_key_id, usage_date) DO UPDATE SET
 			key_name      = excluded.key_name,
 			account_id    = excluded.account_id,
-			actual_cost   = excluded.actual_cost,
+			actual_cost   = GREATEST(excluded.actual_cost, upstream_key_costs.actual_cost),
 			official_cost = GREATEST(excluded.official_cost, upstream_key_costs.official_cost),
 			requests      = GREATEST(excluded.requests, upstream_key_costs.requests),
 			synced_at     = excluded.synced_at`)
@@ -381,25 +390,31 @@ func (r *UpstreamCostRepo) SaveSyncState(ctx context.Context, st CostSyncState) 
 	if st.BackfilledAt != nil {
 		backfilledAt = st.BackfilledAt.UTC().Format(time.RFC3339)
 	}
+	var finalized any
+	if st.FinalizedThrough != nil && *st.FinalizedThrough != "" {
+		finalized = *st.FinalizedThrough
+	}
+	// finalized_through 用 GREATEST 只进不退（PG 的 GREATEST 忽略 NULL）
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO cost_sync_state
-			(provider_id, last_synced_at, last_error, keys_total, keys_matched, backfilled_at, updated_at)
-		VALUES (?,?,?,?,?,?,?)
+			(provider_id, last_synced_at, last_error, keys_total, keys_matched, backfilled_at, finalized_through, updated_at)
+		VALUES (?,?,?,?,?,?,?,?)
 		ON CONFLICT(provider_id) DO UPDATE SET
-			last_synced_at = excluded.last_synced_at,
-			last_error     = excluded.last_error,
-			keys_total     = excluded.keys_total,
-			keys_matched   = excluded.keys_matched,
-			backfilled_at  = COALESCE(excluded.backfilled_at, cost_sync_state.backfilled_at),
-			updated_at     = excluded.updated_at`,
-		st.ProviderID, syncedAt, st.LastError, st.KeysTotal, st.KeysMatched, backfilledAt, nowUTC())
+			last_synced_at    = excluded.last_synced_at,
+			last_error        = excluded.last_error,
+			keys_total        = excluded.keys_total,
+			keys_matched      = excluded.keys_matched,
+			backfilled_at     = COALESCE(excluded.backfilled_at, cost_sync_state.backfilled_at),
+			finalized_through = GREATEST(excluded.finalized_through, cost_sync_state.finalized_through),
+			updated_at        = excluded.updated_at`,
+		st.ProviderID, syncedAt, st.LastError, st.KeysTotal, st.KeysMatched, backfilledAt, finalized, nowUTC())
 	return err
 }
 
 // SyncStates 返回所有供应商的同步状态。
 func (r *UpstreamCostRepo) SyncStates(ctx context.Context) (map[int64]CostSyncState, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT provider_id, last_synced_at, last_error, keys_total, keys_matched, backfilled_at
+		SELECT provider_id, last_synced_at, last_error, keys_total, keys_matched, backfilled_at, finalized_through
 		FROM cost_sync_state`)
 	if err != nil {
 		return nil, err
@@ -408,10 +423,14 @@ func (r *UpstreamCostRepo) SyncStates(ctx context.Context) (map[int64]CostSyncSt
 	out := make(map[int64]CostSyncState)
 	for rows.Next() {
 		var st CostSyncState
-		var syncedAt, backfilledAt sql.NullTime
+		var syncedAt, backfilledAt, finalized sql.NullTime
 		var errStr sql.NullString
-		if err := rows.Scan(&st.ProviderID, &syncedAt, &errStr, &st.KeysTotal, &st.KeysMatched, &backfilledAt); err != nil {
+		if err := rows.Scan(&st.ProviderID, &syncedAt, &errStr, &st.KeysTotal, &st.KeysMatched, &backfilledAt, &finalized); err != nil {
 			return nil, err
+		}
+		if finalized.Valid {
+			d := finalized.Time.Format(dateLayout)
+			st.FinalizedThrough = &d
 		}
 		st.LastSyncedAt = timePtr(syncedAt)
 		if errStr.Valid {

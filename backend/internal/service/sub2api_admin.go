@@ -7,9 +7,7 @@ import (
 	"strings"
 )
 
-// 本文件是 Sub2apiClient 的 admin 扩展：调价映射写自己站点用。
-// 写操作一律 GET + PUT-merge：先取完整对象，只改目标字段回写，
-// 绝不构造部分对象覆盖（transit-hub 同款纪律，防止抹掉其它配置）。
+// 本文件是 Sub2apiClient 的 admin 扩展：读本站管理端分组（保存本站连接时校验 admin 权限）。
 
 // AdminGroup 管理端分组（保留原始字段用于 merge 回写）。
 type AdminGroup struct {
@@ -70,26 +68,4 @@ func decodeAdminGroupPage(raw json.RawMessage) ([]AdminGroup, int64, error) {
 		out = append(out, g)
 	}
 	return out, wrapper.Total, nil
-}
-
-// UpdateAdminGroupRate 修改分组倍率（PUT /api/v1/admin/groups/:id，GET+PUT-merge）。
-// group 须来自 GetAdminGroups（含完整 Raw），只覆盖 rate_multiplier 一个字段。
-func (c *Sub2apiClient) UpdateAdminGroupRate(ctx context.Context, baseURL, accessToken string, group AdminGroup, newRate float64) error {
-	if group.Raw == nil {
-		return fmt.Errorf("缺少分组原始对象，无法安全合并")
-	}
-	// 复制原始对象，仅改目标字段（不修改入参）
-	payload := make(map[string]any, len(group.Raw))
-	for k, v := range group.Raw {
-		payload[k] = v
-	}
-	payload["rate_multiplier"] = newRate
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	url := fmt.Sprintf("%s/api/v1/admin/groups/%d", strings.TrimRight(baseURL, "/"), group.ID)
-	var ignored json.RawMessage
-	return c.requestJSON(ctx, "PUT", url, accessToken, body, "更新分组倍率", &ignored)
 }

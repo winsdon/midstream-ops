@@ -349,7 +349,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("cost.interval_minutes", 10)
 	v.SetDefault("cost.timeout_seconds", 30)
 	v.SetDefault("cost.concurrency", 2)
-	v.SetDefault("cost.retention_days", 180)
+	v.SetDefault("cost.retention_days", 0) // 0 = 永久保留：成本账本不自删
 
 	v.SetDefault("probe.interval_minutes", 15)
 	v.SetDefault("probe.timeout_seconds", 30)

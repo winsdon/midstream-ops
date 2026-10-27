@@ -24,7 +24,6 @@ import psycopg
 TABLES = [
     "providers", "customers", "settings", "collector_state", "probe_budget",
     "probe_results", "health_states", "health_events", "rate_snapshots",
-    "local_group_pricing", "pricing_sources", "rate_actions",
     "upstream_connections", "media_tasks", "credit_ledger",
     "balance_snapshots", "upstream_key_costs", "upstream_key_map",
     "cost_sync_state", "provider_accounts", "provider_operating_costs",
@@ -51,7 +50,6 @@ BOOLS = {
     "providers": ["probe_enabled", "ignore_balance_alert", "self_operated"],
     "probe_results": ["success"],
     "rate_snapshots": ["deleted"],
-    "local_group_pricing": ["auto_enabled", "conflict"],
 }
 
 # 时间列抽样比对：表 -> (主键列, [时间列])

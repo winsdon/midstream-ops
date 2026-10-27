@@ -148,8 +148,6 @@ type ProviderSyncService struct {
 
 	// AfterSync 同步完成钩子（成功或失败都触发）；装配层注入。
 	AfterSync func(SyncOutcome)
-	// OnUpstreamRateChanged 上游倍率变化钩子（自动调价）；装配层注入。
-	OnUpstreamRateChanged func(providerID int64, events []RateChangeEvent)
 }
 
 // NewProviderSyncService 创建 ProviderSyncService。
@@ -283,13 +281,10 @@ func (s *ProviderSyncService) syncUpstreamRates(ctx context.Context, p *reposito
 		return
 	}
 
-	// upstream scope 的变化事件：自动调价 + 倍率预警
+	// upstream scope 的变化事件：倍率预警
 	events := s.rateSvc.Reconcile(ctx, "upstream", p.ID, "group", entities)
 	if len(events) == 0 {
 		return
-	}
-	if s.OnUpstreamRateChanged != nil {
-		s.OnUpstreamRateChanged(p.ID, events)
 	}
 	if s.rateSvc.OnRateChanged != nil {
 		// 预警事件带上供应商名前缀便于识别来源

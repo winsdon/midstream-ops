@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
+	"time"
 
 	"sub2api-account-monitor/internal/repository"
 )
@@ -17,9 +19,11 @@ import (
 //     原版只打日志更稳 —— 那样孤儿资源连线索都不留）；
 //  2. 补偿：本站建号失败时删掉已建的上游 key，避免残留；
 //  3. 幂等：operation_id 防手抖双击建两份；
-//  4. 分组 platform 由上游接口直接返回，无需用户手选，避免建出配置错误的账号；
+//  4. sub2api 协议来自上游；new-api 协议由用户显式选择；
 //  5. 本站分组 id 以 admin API 口径为准，不用 PG 读到的 id。
 type ProvisionService struct {
+	mu           sync.Mutex
+	newapi       *NewAPIClient
 	providerRepo *repository.ProviderRepo
 	connRepo     *repository.ConnectionRepo
 	linkRepo     *repository.ProviderAccountRepo
@@ -42,6 +46,7 @@ func NewProvisionService(
 		linkRepo:     linkRepo,
 		pg:           pg,
 		client:       balanceSvc.Client(),
+		newapi:       balanceSvc.NewAPIClient(),
 		tokens:       balanceSvc.Tokens(),
 	}
 }
@@ -51,6 +56,7 @@ func (s *ProvisionService) Repo() *repository.ConnectionRepo { return s.connRepo
 
 // ConnectRequest 建号请求。
 type ConnectRequest struct {
+	Platform      string
 	ProviderID    int64   // 上游站
 	UpstreamGroup string  // 上游分组名
 	LocalGroupIDs []int64 // 本站分组 id（admin API 口径）
@@ -64,7 +70,7 @@ type ConnectRequest struct {
 func (s *ProvisionService) selfSession(ctx context.Context) (*repository.Provider, string, error) {
 	p, err := s.providerRepo.GetSelf(ctx)
 	if errors.Is(err, repository.ErrNotFound) {
-		return nil, "", errors.New("尚未配置本站连接，请先在调价页保存本站管理员凭据")
+		return nil, "", errors.New("尚未配置本站连接，请先在设置页「本站连接」保存本站管理员凭据")
 	}
 	if err != nil {
 		return nil, "", err
@@ -77,73 +83,92 @@ func (s *ProvisionService) selfSession(ctx context.Context) (*repository.Provide
 }
 
 // Connect 自动建号：上游建 key → 本站建账号 → 记录转 active。
-// 任一步失败都会补偿已建资源并把记录标 failed。
+// 已知失败补偿并标 failed；创建结果不明时保留 pending，绝不重发创建。
 func (s *ProvisionService) Connect(ctx context.Context, req ConnectRequest) (*repository.UpstreamConnection, error) {
-	// 幂等：同一 operation_id 已处理过直接返回
+	// Serialize local connect/disconnect; the unique operation_id index also protects multiple instances.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if req.OperationID != "" {
-		if existing, err := s.connRepo.GetByOperationID(ctx, req.OperationID); err == nil {
+		existing, err := s.connRepo.GetByOperationID(ctx, req.OperationID)
+		if err == nil {
+			if existing.ProviderID != req.ProviderID || existing.UpstreamGroup != req.UpstreamGroup || existing.Mode != repository.ConnModeManaged || (req.Platform != "" && existing.GroupPlatform != req.Platform) {
+				return nil, errors.New("operation_id 已用于其他请求")
+			}
+			if existing.Status != repository.ConnStatusActive {
+				return nil, fmt.Errorf("对接记录 #%d 状态为 %s，请核查记录后处理，未重复创建", existing.ID, existing.Status)
+			}
 			return existing, nil
 		}
+		if !errors.Is(err, repository.ErrNotFound) {
+			return nil, err
+		}
 	}
-	// 同一上游分组允许多个本站账号（备份/分流）；防手抖只靠 operation_id。
 	if len(req.LocalGroupIDs) == 0 {
 		return nil, errors.New("至少选择一个本站分组")
 	}
-
 	up, err := s.providerRepo.GetByID(ctx, req.ProviderID)
 	if err != nil {
 		return nil, err
 	}
-	if up.Platform == "new-api" {
-		return nil, errors.New("new-api 平台暂不支持自动建号，请手动建号后使用「关联已有资源」")
+	isNewAPI := up.Platform == "new-api"
+	if isNewAPI && req.Platform != "openai" && req.Platform != "anthropic" && req.Platform != "gemini" {
+		return nil, errors.New("new-api 必须选择 openai、anthropic 或 gemini 协议")
 	}
-
-	// 上游会话 + 定位分组（拿数字 id 与 platform）
 	upSess, err := s.tokens.ensure(ctx, up)
 	if err != nil {
 		return nil, fmt.Errorf("上游登录失败: %w", err)
 	}
-	groups, err := s.client.GetGroupRates(ctx, up.BaseURL, upSess.AccessToken)
-	if err != nil {
-		return nil, fmt.Errorf("拉取上游分组失败: %w", err)
-	}
 	var group *Sub2apiGroupRate
-	for i := range groups {
-		if groups[i].Name == req.UpstreamGroup {
-			group = &groups[i]
-			break
+	if isNewAPI {
+		group, err = s.newapi.ProvisionGroup(ctx, up.BaseURL, upSess.NewAPI, req.UpstreamGroup)
+		if err != nil {
+			return nil, err
+		}
+		group.Platform = req.Platform
+	} else {
+		groups, err := s.client.GetGroupRates(ctx, up.BaseURL, upSess.AccessToken)
+		if err != nil {
+			return nil, fmt.Errorf("拉取上游分组失败: %w", err)
+		}
+		for i := range groups {
+			if groups[i].Name == req.UpstreamGroup {
+				group = &groups[i]
+				break
+			}
+		}
+		if group == nil || group.ID == 0 {
+			return nil, errors.New("上游分组不存在或缺少数字 id")
 		}
 	}
-	if group == nil {
-		return nil, fmt.Errorf("上游分组 %q 不存在", req.UpstreamGroup)
-	}
-	if group.ID == 0 {
-		return nil, fmt.Errorf("上游分组 %q 缺少数字 id，无法建 key", req.UpstreamGroup)
-	}
-
-	// 本站会话
 	self, selfToken, err := s.selfSession(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	// ① 落 pending 记录
-	connID, err := s.connRepo.CreatePending(ctx, repository.ConnectionParams{
-		ProviderID:      req.ProviderID,
-		UpstreamGroup:   req.UpstreamGroup,
-		UpstreamGroupID: group.ID,
-		GroupPlatform:   group.Platform,
-		LocalGroupIDs:   req.LocalGroupIDs,
-		Mode:            repository.ConnModeManaged,
-		OperationID:     req.OperationID,
-	})
+	locals, err := s.client.GetAdminGroups(ctx, self.BaseURL, selfToken)
 	if err != nil {
-		return nil, fmt.Errorf("创建对接记录失败: %w", err)
+		return nil, errors.New("拉取本站分组失败")
 	}
-
+	for _, id := range req.LocalGroupIDs {
+		valid := false
+		for _, local := range locals {
+			if local.ID == id && id > 0 && local.Raw["platform"] == group.Platform && group.Platform != "" {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return nil, fmt.Errorf("本站分组 #%d 不存在或协议不一致", id)
+		}
+	}
 	keyName := strings.TrimSpace(req.KeyName)
 	if keyName == "" {
 		keyName = UpstreamKeyName(group.Name, group.Rate)
+	}
+	if isNewAPI {
+		keyName, err = NewAPITokenName(keyName)
+		if err != nil {
+			return nil, err
+		}
 	}
 	accountName := strings.TrimSpace(req.AccountName)
 	if accountName == "" {
@@ -156,50 +181,106 @@ func (s *ProvisionService) Connect(ctx context.Context, req ConnectRequest) (*re
 	if baseURL == "" {
 		baseURL = up.BaseURL
 	}
-
-	// ② 上游建 key
-	keyID, apiKey, err := s.client.CreateAPIKey(ctx, up.BaseURL, upSess.AccessToken, keyName, group.ID)
+	connID, err := s.connRepo.CreatePending(ctx, repository.ConnectionParams{
+		ProviderID: req.ProviderID, UpstreamGroup: req.UpstreamGroup, UpstreamGroupID: group.ID,
+		GroupPlatform: group.Platform, LocalGroupIDs: req.LocalGroupIDs, Mode: repository.ConnModeManaged,
+		OperationID: req.OperationID, UpstreamKeyName: keyName,
+	})
 	if err != nil {
-		msg := truncate(fmt.Sprintf("上游建 key 失败: %v", err), 500)
-		_ = s.connRepo.SetFailed(ctx, connID, msg)
-		return nil, errors.New(msg)
+		return nil, fmt.Errorf("创建对接记录失败: %w", err)
 	}
-	_ = s.connRepo.SetKeyCreated(ctx, connID, keyID, keyName)
 
-	// ③ 本站建账号（失败则补偿删除上游 key）
+	// Once intent is durable, finish reconciliation/compensation even if the browser disconnects.
+	work, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	defer cancel()
+	var keyID int64
+	var apiKey string
+	fail := func(message string, compensate bool) (*repository.UpstreamConnection, error) {
+		cleanup, done := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer done()
+		if compensate && keyID > 0 {
+			if err := s.deleteUpstreamKey(cleanup, up, upSess, keyID); err != nil {
+				message += fmt.Sprintf("；补偿删除上游令牌 #%d 失败，需人工清理或重试取消对接", keyID)
+				// Retry persisting the known ID if the initial state write failed.
+				if err := s.connRepo.SetKeyCreated(cleanup, connID, keyID, keyName); err != nil {
+					message += "；令牌 ID 写入仍失败，可按已保存的唯一名称核查"
+				}
+			} else if err := s.connRepo.SetKeyCreated(cleanup, connID, 0, keyName); err != nil {
+				message += "；令牌已删除但清理状态写入失败，需人工核查"
+			}
+		}
+		if err := s.connRepo.SetFailed(cleanup, connID, message); err != nil {
+			return nil, fmt.Errorf("%s；失败状态写入失败，记录 #%d 需人工核查", message, connID)
+		}
+		return nil, errors.New(message)
+	}
+	if isNewAPI {
+		// Preflight prevents adopting any pre-existing token, even on a name collision.
+		tokens, err := s.newapi.ListTokens(work, up.BaseURL, upSess.NewAPI)
+		if err != nil {
+			return fail("创建前读取令牌列表失败（未创建）", false)
+		}
+		for _, token := range tokens {
+			if token.Name == keyName {
+				return fail("唯一令牌名称已存在（未创建）", false)
+			}
+		}
+		createErr := s.newapi.CreateToken(work, up.BaseURL, upSess.NewAPI, keyName, group.Name)
+		// A timeout does not mean failure: query once, never repeat POST.
+		lookup, done := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		token, findErr := s.newapi.FindToken(lookup, up.BaseURL, upSess.NewAPI, keyName, group.Name)
+		done()
+		if findErr != nil {
+			message := "创建后未能唯一定位令牌，保留待核查记录；请勿重复创建"
+			if createErr != nil {
+				message = "创建请求结果不确定，未能唯一定位令牌；请勿重复创建"
+			}
+			if err := s.connRepo.SetPendingError(work, connID, message); err != nil {
+				return nil, fmt.Errorf("%s；状态写入失败，记录 #%d", message, connID)
+			}
+			return nil, fmt.Errorf("%s（记录 #%d）", message, connID)
+		}
+		keyID = token.ID
+		if err := s.connRepo.SetKeyCreated(work, connID, keyID, keyName); err != nil {
+			return fail("令牌 ID 写入失败，已停止建号", true)
+		}
+		apiKey, err = s.newapi.ProvisionTokenKey(work, up.BaseURL, upSess.NewAPI, token)
+		if err != nil {
+			return fail("读取完整令牌密钥失败", true)
+		}
+	} else {
+		keyID, apiKey, err = s.client.CreateAPIKey(work, up.BaseURL, upSess.AccessToken, keyName, group.ID)
+		if err != nil {
+			return fail("上游建 key 失败", keyID > 0)
+		}
+		if err := s.connRepo.SetKeyCreated(work, connID, keyID, keyName); err != nil {
+			return fail("上游 key ID 写入失败，已停止建号", true)
+		}
+	}
 	payload := BuildAccountPayload(group.Platform, baseURL, apiKey, accountName, req.LocalGroupIDs)
-	accountID, err := s.client.CreateAdminAccount(ctx, self.BaseURL, selfToken, payload)
+	accountID, err := s.client.CreateAdminAccount(work, self.BaseURL, selfToken, payload)
 	if err != nil {
-		msg := truncate(fmt.Sprintf("本站建账号失败: %v", err), 500)
-		// 补偿：删掉刚建的上游 key，避免孤儿资源
-		if delErr := s.client.DeleteAPIKey(ctx, up.BaseURL, upSess.AccessToken, keyID); delErr != nil {
-			msg += fmt.Sprintf("；补偿删除上游 key #%d 也失败: %v（需人工清理）", keyID, delErr)
-			log.Printf("[provision] 补偿失败 conn=%d upstream_key=%d: %v", connID, keyID, delErr)
-		} else {
-			log.Printf("[provision] 已补偿删除上游 key #%d", keyID)
-		}
-		_ = s.connRepo.SetFailed(ctx, connID, truncate(msg, 500))
-		return nil, errors.New(msg)
+		return fail("本站建账号失败（若请求超时，请核查本站是否已创建账号）", true)
 	}
+	if err := s.connRepo.SetLocalAccount(work, connID, accountID, accountName); err != nil {
+		return nil, fmt.Errorf("本站账号 #%d 已创建，但记录 #%d 写入失败，需人工核查；请勿重复创建", accountID, connID)
+	}
+	if s.linkRepo != nil {
+		if err := s.linkRepo.LinkMany(work, []repository.ProviderAccount{{ProviderID: req.ProviderID, AccountID: accountID, AccountName: accountName}}); err != nil {
+			return fail("账号已创建但供应商关联失败，需人工处理；请勿重复创建", false)
+		}
+	}
+	if err := s.connRepo.SetActive(work, connID, accountID, accountName); err != nil {
+		return nil, fmt.Errorf("对接已完成但状态写入失败，记录 #%d 需人工核查", connID)
+	}
+	return s.connRepo.GetByID(work, connID)
+}
 
-	// ④ 转 active
-	if err := s.connRepo.SetActive(ctx, connID, accountID, accountName); err != nil {
-		return nil, fmt.Errorf("对接已完成但状态写入失败: %w", err)
+func (s *ProvisionService) deleteUpstreamKey(ctx context.Context, up *repository.Provider, sess *providerSession, id int64) error {
+	if up.Platform == "new-api" {
+		return s.newapi.DeleteToken(ctx, up.BaseURL, sess.NewAPI, id)
 	}
-	// 归属只认 provider_accounts：不写的话新账号会掉进「未归属」，卡片计数也不涨。
-	// 关联失败不回滚远端资源，事后可在「关联账号」里补。
-	if s.linkRepo != nil && accountID > 0 {
-		if lerr := s.linkRepo.LinkMany(ctx, []repository.ProviderAccount{{
-			ProviderID:  req.ProviderID,
-			AccountID:   accountID,
-			AccountName: accountName,
-		}}); lerr != nil {
-			log.Printf("[provision] 建号成功但写入归属失败 provider=%d account=%d: %v", req.ProviderID, accountID, lerr)
-		}
-	}
-	log.Printf("[provision] 建号成功 上游=%s/%s key=#%d → 本站账号 %s(#%d)",
-		up.Name, req.UpstreamGroup, keyID, accountName, accountID)
-	return s.connRepo.GetByID(ctx, connID)
+	return s.client.DeleteAPIKey(ctx, up.BaseURL, sess.AccessToken, id)
 }
 
 // pickProviderAccountURL 从该站已关联子账号的转发地址里随机取一条。
@@ -242,7 +323,12 @@ type BindRequest struct {
 func (s *ProvisionService) Bind(ctx context.Context, req BindRequest) (*repository.UpstreamConnection, error) {
 	if req.OperationID != "" {
 		if existing, err := s.connRepo.GetByOperationID(ctx, req.OperationID); err == nil {
+			if existing.Status != repository.ConnStatusActive || existing.Mode != repository.ConnModeExisting || existing.ProviderID != req.ProviderID || existing.UpstreamGroup != req.UpstreamGroup || existing.LocalAccountID != req.LocalAccountID {
+				return nil, errors.New("operation_id 已用于其他请求或原操作尚未成功")
+			}
 			return existing, nil
+		} else if !errors.Is(err, repository.ErrNotFound) {
+			return nil, err
 		}
 	}
 	if existing, err := s.connRepo.GetActiveByUpstream(ctx, req.ProviderID, req.UpstreamGroup); err == nil {
@@ -310,36 +396,59 @@ func (s *ProvisionService) Bind(ctx context.Context, req BindRequest) (*reposito
 // Disconnect 取消对接。
 // deleteRemote=true 时同时删除远端资源（仅 managed 模式允许）。
 func (s *ProvisionService) Disconnect(ctx context.Context, id int64, deleteRemote bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	conn, err := s.connRepo.GetByID(ctx, id)
 	if err != nil {
 		return err
 	}
-
-	if deleteRemote {
-		if !conn.CanDeleteRemote() {
-			return errors.New("该连接为「关联已有资源」模式，不能删除远端资源（那些资源不是本系统创建的）")
+	if !deleteRemote {
+		return s.connRepo.Delete(ctx, id)
+	}
+	if conn.Mode != repository.ConnModeManaged {
+		return errors.New("关联已有资源模式不能删除远端资源")
+	}
+	up, err := s.providerRepo.GetByID(ctx, conn.ProviderID)
+	if err != nil {
+		return err
+	}
+	sess, err := s.tokens.ensure(ctx, up)
+	if err != nil {
+		return errors.New("上游会话不可用，保留记录以便重试")
+	}
+	// Unknown creation outcomes must be reconciled before removing the only tracking record.
+	if up.Platform == "new-api" && conn.UpstreamKeyID == 0 && (conn.Status == repository.ConnStatusPending || (conn.Error != nil && strings.Contains(*conn.Error, "令牌 ID 写入仍失败"))) {
+		token, err := s.newapi.FindToken(ctx, up.BaseURL, sess.NewAPI, conn.UpstreamKeyName, conn.UpstreamGroup)
+		if err != nil {
+			return errors.New("尚未确认令牌创建结果，保留待核查记录")
 		}
-		// 先删本站账号再删上游 key：本站账号还引用着 key，反序会短暂产生失效账号
-		if conn.LocalAccountID > 0 {
-			if self, selfToken, sErr := s.selfSession(ctx); sErr == nil {
-				if dErr := s.client.DeleteAdminAccount(ctx, self.BaseURL, selfToken, conn.LocalAccountID); dErr != nil {
-					return fmt.Errorf("删除本站账号失败: %w", dErr)
-				}
-			} else {
-				return fmt.Errorf("本站会话不可用，无法删除账号: %w", sErr)
-			}
+		conn.UpstreamKeyID = token.ID
+		if err := s.connRepo.SetKeyCreated(ctx, id, token.ID, conn.UpstreamKeyName); err != nil {
+			return err
 		}
-		if conn.UpstreamKeyID > 0 {
-			up, uErr := s.providerRepo.GetByID(ctx, conn.ProviderID)
-			if uErr == nil {
-				if upSess, sErr := s.tokens.ensure(ctx, up); sErr == nil {
-					if dErr := s.client.DeleteAPIKey(ctx, up.BaseURL, upSess.AccessToken, conn.UpstreamKeyID); dErr != nil {
-						// 本站账号已删，上游 key 删失败只记日志：记录仍会被移除，
-						// 残留 key 由日志提示人工清理，避免卡住整个取消流程
-						log.Printf("[provision] 删除上游 key #%d 失败（需人工清理）: %v", conn.UpstreamKeyID, dErr)
-					}
-				}
+	}
+	if conn.LocalAccountID > 0 {
+		self, token, err := s.selfSession(ctx)
+		if err != nil {
+			return err
+		}
+		if err := s.client.DeleteAdminAccount(ctx, self.BaseURL, token, conn.LocalAccountID); err != nil {
+			return errors.New("删除本站账号失败，保留记录以便重试")
+		}
+		if err := s.connRepo.SetLocalAccount(ctx, id, 0, conn.LocalAccountName); err != nil {
+			return err
+		}
+	}
+	if conn.UpstreamKeyID > 0 {
+		if err := s.deleteUpstreamKey(ctx, up, sess, conn.UpstreamKeyID); err != nil {
+			message := "删除上游令牌失败，保留记录以便重试"
+			if saveErr := s.connRepo.SetFailed(ctx, id, message); saveErr != nil {
+				return fmt.Errorf("%s；状态写入失败", message)
 			}
+			return errors.New(message)
+		}
+		if err := s.connRepo.SetKeyCreated(ctx, id, 0, conn.UpstreamKeyName); err != nil {
+			return err
 		}
 	}
 	return s.connRepo.Delete(ctx, id)

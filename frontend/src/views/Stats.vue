@@ -70,8 +70,6 @@
       </div>
     </div>
 
-    <!-- 成本来源与新鲜度 -->
-    <CostSyncBar v-if="!privacyMode" :sync="costSync" :complete="costComplete" :accounts-missing="accountsMissing" />
     <!-- 分组成本是分摊值，口径须显式说明 -->
     <p v-if="costHintKey && !privacyMode" class="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-500 dark:bg-dark-800/50 dark:text-dark-400">
       ⓘ {{ t(costHintKey) }}
@@ -235,7 +233,6 @@ import { useAppStore } from '@/stores/app'
 import { usePrivacyMoney } from '@/composables/usePrivacyMoney'
 import { useTableSort } from '@/composables/useTableSort'
 import DoughnutChart from '@/components/DoughnutChart.vue'
-import CostSyncBar from '@/components/CostSyncBar.vue'
 import MarginCell from '@/components/stats/MarginCell.vue'
 import TableState from '@/components/common/TableState.vue'
 import SortableTh from '@/components/common/SortableTh.vue'
@@ -243,26 +240,41 @@ import LoadingState from '@/components/common/LoadingState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import { sliceColors } from '@/utils/chartTheme'
 import { buildDistribution } from '@/utils/statsDistribution'
-import type { CostSyncStatus, StatsProviderRow, StatsGroupRow, StatsUserRow } from '@/types'
+import type { StatsProviderRow, StatsGroupRow, StatsUserRow } from '@/types'
 
 const { t } = useI18n()
 const app = useAppStore()
 const { privacyMode, displayMoney, displayMoneyClass } = usePrivacyMoney()
 type StatsDim = 'provider' | 'group' | 'user'
+/** 'custom' 只在手改日期时出现，不在快捷按钮组里 */
+type StatsRangeKey = 'today' | 'yesterday' | '7' | '30' | 'custom'
+type PresetRangeKey = Exclude<StatsRangeKey, 'custom'>
 const dim = ref<StatsDim>('provider')
-const rangeKey = ref<'today' | '7' | '30' | 'custom'>('today')
+const rangeKey = ref<StatsRangeKey>('today')
 const startDate = ref(todayStr())
 const endDate = ref(todayStr())
 const rows = ref<(StatsProviderRow | StatsGroupRow | StatsUserRow)[]>([])
-const costSync = ref<CostSyncStatus | null>(null)
 const expanded = ref(new Set<string>())
 const loading = ref(false)
 
-const ranges = [
-  { key: 'today' as const, label: 'stats.rangeToday' },
-  { key: '7' as const, label: 'stats.range7' },
-  { key: '30' as const, label: 'stats.range30' }
+const ranges: { key: PresetRangeKey; label: string }[] = [
+  { key: 'today', label: 'stats.rangeToday' },
+  { key: 'yesterday', label: 'stats.rangeYesterday' },
+  { key: '7', label: 'stats.range7' },
+  { key: '30', label: 'stats.range30' }
 ]
+
+/**
+ * 快捷区间 → 距今天数偏移（闭区间，含首尾）。
+ * 昨日是单日区间，起止都回退 1 天；单日区间的天数不能从 key 反推，
+ * 故显式列出而非按数字解析。
+ */
+const RANGE_OFFSETS: Record<PresetRangeKey, [startAgo: number, endAgo: number]> = {
+  today: [0, 0],
+  yesterday: [1, 1],
+  '7': [6, 0],
+  '30': [29, 0]
+}
 
 const isProvider = computed(() => dim.value === 'provider')
 const isGroup = computed(() => dim.value === 'group')
@@ -404,7 +416,6 @@ const totals = computed(() =>
 )
 
 const costComplete = computed(() => viewRows.value.every((r) => r.cost_complete))
-const accountsMissing = computed(() => viewRows.value.reduce((n, r) => n + r.accounts_missing, 0))
 
 /**
  * 总体利润率是收益加权的 Σ利润 / Σ收益，刻意不是各行利润率的算术平均 ——
@@ -444,10 +455,11 @@ function setDim(d: StatsDim) {
   expanded.value = new Set()
   load()
 }
-function setRange(key: 'today' | '7' | '30') {
+function setRange(key: PresetRangeKey) {
   rangeKey.value = key
-  endDate.value = todayStr()
-  startDate.value = key === 'today' ? todayStr() : daysAgoStr(key === '7' ? 6 : 29)
+  const [startAgo, endAgo] = RANGE_OFFSETS[key]
+  startDate.value = daysAgoStr(startAgo)
+  endDate.value = daysAgoStr(endAgo)
   load()
 }
 function onCustom() {
@@ -467,7 +479,6 @@ async function load() {
           ? await statsApi.byGroup(s, e)
           : await statsApi.byUser(s, e)
     rows.value = res.items || []
-    costSync.value = res.cost_sync ?? null
   } catch (err) {
     app.showError(errorMessage(err))
     rows.value = []

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log"
 	"strconv"
 	"time"
 
@@ -14,19 +15,18 @@ import (
 
 // DashboardHandler 仪表盘处理器。
 type DashboardHandler struct {
-	statsSvc    *service.StatsService
-	providerSvc *service.ProviderService
-	cfg         *config.Config
-	pg          *repository.PG
+	statsSvc *service.StatsService
+	cfg      *config.Config
+	pg       *repository.PG
 }
 
 // NewDashboardHandler 创建 DashboardHandler。
-func NewDashboardHandler(statsSvc *service.StatsService, providerSvc *service.ProviderService, cfg *config.Config, pg *repository.PG) *DashboardHandler {
-	return &DashboardHandler{statsSvc: statsSvc, providerSvc: providerSvc, cfg: cfg, pg: pg}
+func NewDashboardHandler(statsSvc *service.StatsService, cfg *config.Config, pg *repository.PG) *DashboardHandler {
+	return &DashboardHandler{statsSvc: statsSvc, cfg: cfg, pg: pg}
 }
 
 // Summary GET /dashboard/summary?start=&end=
-// 返回区间内收益/成本/利润/请求数 + 供应商/账号计数。缺省为今日。
+// 返回区间内收益/成本/利润/请求数 + 新增/活跃用户数。缺省为今日。
 func (h *DashboardHandler) Summary(c *gin.Context) {
 	if !h.pg.Available() {
 		response.ServiceUnavailable(c, "线上数据库暂不可用")
@@ -56,20 +56,17 @@ func (h *DashboardHandler) Summary(c *gin.Context) {
 		}
 	}
 
-	// 供应商与账号计数
-	providerCount := 0
-	accountCount := 0
-	if h.providerSvc != nil {
-		providerCount = h.providerSvc.Count(c.Request.Context())
+	// 用户计数：次要指标，失败返回 null（前端显示 -），不拖垮主数据
+	var newUsers, activeUsers any
+	if n, err := h.pg.CountUsersCreated(c.Request.Context(), start, end); err == nil {
+		newUsers = n
+	} else {
+		log.Printf("[dashboard] 统计新增用户失败: %v", err)
 	}
-	if accs, err := h.pg.ListActiveAccounts(c.Request.Context()); err == nil {
-		accountCount = len(accs)
-	}
-
-	// 成本同步状态：让前端能显示数据新鲜度，避免误读缺失成本
-	syncStatus, err := h.statsSvc.CostSyncStatus(c.Request.Context())
-	if err != nil {
-		syncStatus = nil // 状态读取失败不影响主数据
+	if n, err := h.statsSvc.ActiveUsers(c.Request.Context(), start, end); err == nil {
+		activeUsers = n
+	} else {
+		log.Printf("[dashboard] 统计活跃用户失败: %v", err)
 	}
 
 	// 分组贡献：Top N 收益分组 + Top3 集中度（次要数据，失败不影响主指标）
@@ -109,11 +106,10 @@ func (h *DashboardHandler) Summary(c *gin.Context) {
 		"operating_cost":      operatingCost,
 		"profit":              revenue - cost - operatingCost,
 		"requests":            requests,
-		"provider_count":      providerCount,
-		"account_count":       accountCount,
+		"new_users":           newUsers,
+		"active_users":        activeUsers,
 		"cost_complete":       costComplete,
 		"accounts_missing":    accountsMissing,
-		"cost_sync":           syncStatus,
 		"groups":              groups,
 		"group_total":         groupTotal,
 		"group_concentration": concentration,

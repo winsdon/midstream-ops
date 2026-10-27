@@ -33,6 +33,17 @@ type Scheduler struct {
 	creditSvc *CreditService
 	// detectSvc 渠道检测历史清理。同为可选依赖，未注入时该清理项跳过。
 	detectSvc *ModelDetectService
+	// rollupSvc 收入日结。未注入时不结算，统计整段实时查。
+	rollupSvc *UsageRollupService
+}
+
+// usageRollupSpec 日结时刻：站点时区 01:10。当天数据还在变不落汇总，
+// 过了零点结算前一天；留出 10 分钟让零点前后的请求落完日志。
+const usageRollupSpec = "10 1 * * *"
+
+// SetUsageRollupService 注入收入日结服务。
+func (s *Scheduler) SetUsageRollupService(svc *UsageRollupService) {
+	s.rollupSvc = svc
 }
 
 // SetModelDetectService 注入渠道检测服务，使每日清理覆盖 model_detections。
@@ -107,6 +118,17 @@ func (s *Scheduler) Start() error {
 		return err
 	}
 
+	if s.rollupSvc != nil {
+		// 全局 cron 未设时区（按进程本地时区解释），容器里通常是 UTC；
+		// 日结必须按站点时区的日界走，用 CRON_TZ 前缀单独指定。
+		spec := "CRON_TZ=" + s.cfg.Location.String() + " " + usageRollupSpec
+		if _, err := s.cron.AddFunc(spec, s.settleUsage); err != nil {
+			return err
+		}
+		// 启动补跑：首次部署抢救 sub2api 上尚存的日志，停机错过的日子也一并补上
+		go s.settleUsage()
+	}
+
 	if s.creditSvc != nil {
 		if _, err := s.cron.AddFunc("@every 5m", func() {
 			s.withPG("credit-balance", func(ctx context.Context) { s.creditSvc.WatchUserBalances(ctx) })
@@ -116,9 +138,18 @@ func (s *Scheduler) Start() error {
 	}
 
 	s.cron.Start()
-	log.Printf("[scheduler] 已启动 probe=%s rate=%s credit-balance=5m cleanup=03:30（供应商 sync 由 SyncScheduler 调度）",
-		probeEvery, rateEvery)
+	log.Printf("[scheduler] 已启动 probe=%s rate=%s credit-balance=5m usage-rollup=%s(%s) cleanup=03:30（供应商 sync 由 SyncScheduler 调度）",
+		probeEvery, rateEvery, usageRollupSpec, s.cfg.Location)
 	return nil
+}
+
+// settleUsage 结算所有待结算日。逐日聚合远端大表，给足超时；失败只记日志，下次从断点续结。
+func (s *Scheduler) settleUsage() {
+	s.withPGTimeout("usage-rollup", 30*time.Minute, func(ctx context.Context) {
+		if err := s.rollupSvc.SettlePending(ctx); err != nil {
+			log.Printf("[usage-rollup] 结算中断，下次续结: %v", err)
+		}
+	})
 }
 
 // withPG 任务包装：PG 不可用时跳过。

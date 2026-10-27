@@ -58,6 +58,8 @@ prototype.html
 tmp/
 tmp_pgtest/
 .tmp/
+# 排查过程产物（截图、复测 JSON、对账 CSV），体积大且不应进镜像
+artifacts/
 
 # 部署文件（entrypoint 例外，Dockerfile 需要它）
 deploy/.env

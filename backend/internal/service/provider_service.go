@@ -22,9 +22,6 @@ func NewProviderService(repo *repository.ProviderRepo,
 	return &ProviderService{repo: repo, linkRepo: linkRepo, pg: pg}
 }
 
-// Count 返回供应商数量。
-func (s *ProviderService) Count(ctx context.Context) int { return s.repo.Count(ctx) }
-
 // Repo 暴露底层 repo（供 balance/probe service 复用）。
 func (s *ProviderService) Repo() *repository.ProviderRepo { return s.repo }
 

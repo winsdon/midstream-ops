@@ -477,6 +477,10 @@ func (c *Sub2apiClient) doWithRetry(ctx context.Context, factory requestFactory)
 		}
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
+			// Provisioning POSTs may have committed before the timeout; never duplicate them.
+			if req.Method == http.MethodPost && (strings.HasSuffix(req.URL.Path, "/api/v1/keys") || strings.HasSuffix(req.URL.Path, "/api/v1/admin/accounts")) {
+				return nil, err
+			}
 			lastErr = err
 			continue // 网络错误，重试
 		}

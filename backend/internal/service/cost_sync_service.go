@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -56,6 +57,31 @@ func NewCostSyncService(
 // backfillDays 首次同步时回补的历史天数（上游逐日接口上限 90）。
 const backfillDays = 90
 
+// catchUpWindow 返回本轮需用逐日接口重拉的窗口天数（含今天），0 = 无需补。
+//
+// 常规同步只写「今天」一行：零点前最后一次同步之后到 24:00 的消耗、停机或连续失败的
+// 那几天都永远补不上。finalizedThrough 记录已终结到哪天，落后于昨天就把
+// (finalizedThrough, 昨天] 连同今天一起重拉一遍；写入走 GREATEST，重拉不会冲掉已采数据。
+// 从未终结（升级前的老数据）按满窗口重拉一次，顺带修复历史上漏掉的零点尾巴。
+func catchUpWindow(finalizedThrough *string, now time.Time) int {
+	if finalizedThrough == nil || *finalizedThrough == "" {
+		return backfillDays
+	}
+	f, err := time.ParseInLocation("2006-01-02", *finalizedThrough, now.Location())
+	if err != nil {
+		return backfillDays
+	}
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	days := int(math.Round(today.Sub(f).Hours() / 24))
+	if days < 2 { // 已终结到昨天（或更晚）
+		return 0
+	}
+	if days > backfillDays {
+		return backfillDays
+	}
+	return days
+}
+
 // SyncOneByID 同步指定供应商（手动触发用）。
 func (s *CostSyncService) SyncOneByID(ctx context.Context, providerID int64, backfill bool) error {
 	p, err := s.providerRepo.GetByID(ctx, providerID)
@@ -81,6 +107,7 @@ func (s *CostSyncService) SyncOne(
 	backfill bool,
 ) error {
 	state := repository.CostSyncState{ProviderID: p.ID}
+	prev, prevErr := s.SyncState(ctx, p.ID)
 
 	keys, usage, fetchErr := s.fetchKeysAndUsage(ctx, p)
 	// 用量部分失败时仍保存已获取的 key 映射与成功结果，失败项不补零。
@@ -162,13 +189,29 @@ func (s *CostSyncService) SyncOne(
 	state.KeysTotal = int64(len(keys))
 	state.KeysMatched = matched
 
-	if backfill && fetchErr == nil {
-		if err := s.backfillHistory(ctx, p, keys, mappings); err != nil {
+	yesterday := time.Now().In(s.cfg.Location).AddDate(0, 0, -1).Format("2006-01-02")
+	switch {
+	case fetchErr != nil:
+		// key 列表不全时不回补，下轮重试
+	case backfill:
+		if err := s.backfillHistory(ctx, p, keys, mappings, backfillDays); err != nil {
 			// 回补失败不影响今日成本：记录告警，下轮重试
 			log.Printf("[cost-sync] 供应商 %s 历史回补失败（今日成本已写入）: %v", p.Name, err)
 		} else {
 			state.BackfilledAt = &now
+			state.FinalizedThrough = &yesterday
 			log.Printf("[cost-sync] 供应商 %s 历史回补完成（%d 天 × %d keys）", p.Name, backfillDays, len(keys))
+		}
+	case prevErr == nil && (prev.FinalizedThrough != nil || prev.BackfilledAt != nil):
+		// 状态读失败时宁可这轮不补，也不按「从未终结」去满窗口重拉；
+		// 从未回补过的站由首次回补负责，这里不抢。
+		if days := catchUpWindow(prev.FinalizedThrough, time.Now().In(s.cfg.Location)); days > 0 {
+			if err := s.backfillHistory(ctx, p, keys, mappings, days); err != nil {
+				log.Printf("[cost-sync] 供应商 %s 补齐近 %d 天成本失败，下轮重试: %v", p.Name, days, err)
+			} else {
+				state.FinalizedThrough = &yesterday
+				log.Printf("[cost-sync] 供应商 %s 已补齐近 %d 天成本（终结到 %s）", p.Name, days, yesterday)
+			}
 		}
 	}
 	if saveErr := s.costRepo.SaveSyncState(ctx, state); saveErr != nil {
@@ -177,15 +220,17 @@ func (s *CostSyncService) SyncOne(
 	return fetchErr
 }
 
-// backfillHistory 逐 key 拉取历史逐日用量并落库（首次同步用）。
+// backfillHistory 逐 key 拉取最近 days 天（含今天）的逐日用量并落库。
+// 首次同步传 backfillDays；跨零点/停机后的补齐传实际缺口天数。
 func (s *CostSyncService) backfillHistory(
 	ctx context.Context,
 	p *repository.Provider,
 	keys []ProviderAPIKey,
 	mappings []repository.UpstreamKeyMapping,
+	days int,
 ) error {
 	if p.Platform == "new-api" {
-		return s.backfillNewAPIHistory(ctx, p, keys, mappings)
+		return s.backfillNewAPIHistory(ctx, p, keys, mappings, days)
 	}
 	accByKey := make(map[int64]*int64, len(mappings))
 	for _, m := range mappings {
@@ -199,7 +244,7 @@ func (s *CostSyncService) backfillHistory(
 
 	var firstErr error
 	for _, k := range keys {
-		items, err := s.client.GetAPIKeyDailyUsage(ctx, p.BaseURL, sess.AccessToken, k.ID, backfillDays)
+		items, err := s.client.GetAPIKeyDailyUsage(ctx, p.BaseURL, sess.AccessToken, k.ID, days)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -226,12 +271,13 @@ func (s *CostSyncService) backfillHistory(
 	return firstErr
 }
 
-// backfillNewAPIHistory 按本地日界逐日查询最近 90 天的 token 用量。
+// backfillNewAPIHistory 按本地日界逐日查询最近 days 天（含今天）的 token 用量。
 func (s *CostSyncService) backfillNewAPIHistory(
 	ctx context.Context,
 	p *repository.Provider,
 	keys []ProviderAPIKey,
 	mappings []repository.UpstreamKeyMapping,
+	days int,
 ) error {
 	sess, err := s.tokens.ensure(ctx, p)
 	if err != nil {
@@ -252,7 +298,7 @@ func (s *CostSyncService) backfillNewAPIHistory(
 	}
 
 	now := time.Now().In(s.cfg.Location)
-	for offset := backfillDays - 1; offset >= 0; offset-- {
+	for offset := days - 1; offset >= 0; offset-- {
 		day := now.AddDate(0, 0, -offset)
 		start, end := s.cfg.DayRange(day)
 		usage, usageErr := s.newapiClient.GetTokensUsage(ctx, p.BaseURL, sess.NewAPI, tokens, start, end, quotaPerUnit)
@@ -749,11 +795,14 @@ func costAccountAlias(name string) string {
 	return name
 }
 
-// Cleanup 清理超过保留期的成本记录。
+// Cleanup 清理超过保留期的成本记录。retention_days <= 0（默认）= 永久保留。
+//
+// upstream_key_costs 是本站唯一一份权威成本账，而上游日志随时会被清、回补不回来，
+// 删掉就再也找不回；粒度是 key × 天，几年也只有几万行，没有删的必要。
 func (s *CostSyncService) Cleanup(ctx context.Context) {
 	days := s.cfg.Cost.RetentionDays
 	if days <= 0 {
-		days = 180
+		return
 	}
 	before := time.Now().In(s.cfg.Location).AddDate(0, 0, -days).Format("2006-01-02")
 	if n, err := s.costRepo.DeleteOlderThan(ctx, before); err != nil {

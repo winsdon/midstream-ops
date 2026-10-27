@@ -41,7 +41,7 @@ cost:
   interval_minutes: 10         # 同步间隔
   timeout_seconds: 30
   concurrency: 2               # 并发同步的供应商数
-  retention_days: 180          # 成本明细保留天数
+  retention_days: 0            # 成本明细保留天数，0 = 永久保留（推荐：上游日志会被清，删了就补不回）
 
 probe:
   interval_minutes: 15

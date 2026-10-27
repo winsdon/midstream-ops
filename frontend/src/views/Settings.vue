@@ -24,6 +24,9 @@
     <template v-else-if="activeTab === 'strategy'">
       <p class="text-sm text-gray-500 dark:text-dark-400">{{ t('settings.strategyDesc') }}</p>
 
+      <!-- 本站连接（独立保存，不走顶部「保存配置」） -->
+      <SelfConnectionPanel />
+
       <!-- 数据刷新频率 -->
       <div class="card p-5">
         <div class="flex items-center justify-between gap-4">
@@ -451,6 +454,7 @@ import Icon from '@/components/icons/Icon.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue'
 import StatusPushPanel from '@/components/settings/StatusPushPanel.vue'
+import SelfConnectionPanel from '@/components/settings/SelfConnectionPanel.vue'
 
 const { t } = useI18n()
 const app = useAppStore()

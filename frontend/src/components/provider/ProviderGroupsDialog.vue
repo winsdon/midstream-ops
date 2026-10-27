@@ -75,8 +75,7 @@
       <button
         type="button"
         class="btn btn-primary"
-        :disabled="!selected.size || !canCreate"
-        :title="createTitle"
+        :disabled="!selected.size"
         @click="openProvision"
       >
         {{ t('provider.createSelected') }}
@@ -134,11 +133,6 @@ const showProvision = ref(false)
 
 const PLATFORM_ORDER = ['anthropic', 'openai', 'gemini', 'antigravity']
 
-const canCreate = computed(() => props.provider?.platform !== 'new-api')
-const createTitle = computed(() =>
-  canCreate.value ? undefined : t('provider.createDisabledNewApi')
-)
-
 const groupedGroups = computed(() => {
   const buckets = upstreamGroups.value.reduce<Record<string, RateSnapshotItem[]>>((acc, g) => {
     const key = g.platform || ''
@@ -193,7 +187,7 @@ function matched(g: RateSnapshotItem) {
 }
 
 function canSelect(g: RateSnapshotItem): boolean {
-  return !g.deleted && canCreate.value
+  return !g.deleted
 }
 
 function cardClass(g: RateSnapshotItem): string {
@@ -216,7 +210,7 @@ function toggleExpand(name: string) {
 }
 
 function openProvision() {
-  if (!selectedGroups.value.length || !canCreate.value) return
+  if (!selectedGroups.value.length) return
   showProvision.value = true
 }
 
