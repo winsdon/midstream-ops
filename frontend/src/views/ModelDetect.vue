@@ -45,8 +45,10 @@
           :loading="checksLoading"
           :target-count="targets.length"
           :pelican-prompt="iqPelicanPrompt"
+          :pelican-effort="iqPelicanEffort"
           @update:selected="iqSelected = $event"
           @update:pelican-prompt="iqPelicanPrompt = $event"
+          @update:pelican-effort="iqPelicanEffort = $event"
         />
 
         <DetectRunBar
@@ -199,6 +201,7 @@ import {
   withDependencies
 } from '@/utils/detectModel'
 import { baselineApplies, sameBaselineModel } from '@/utils/detectBaseline'
+import { DETECT_PELICAN_DEFAULT_EFFORT, type PelicanEffort } from '@/utils/pelican'
 import type {
   DetectAccount,
   DetectBaseline,
@@ -235,6 +238,7 @@ const checksLoading = ref(false)
 const selected = ref<string[]>([])
 const iqSelected = ref<string[]>([])
 const iqPelicanPrompt = ref('')
+const iqPelicanEffort = ref<PelicanEffort>(DETECT_PELICAN_DEFAULT_EFFORT)
 const concurrency = ref(DEFAULT_DETECT_CONCURRENCY)
 const resultTab = ref<(typeof RESULT_TABS)[number]>('result')
 
@@ -446,6 +450,7 @@ async function startRun(): Promise<void> {
     auth_mode: runOptions.value.authMode,
     checks: current === 'iq' ? iqSelected.value : selected.value,
     pelican_prompt: current === 'iq' ? iqPelicanPrompt.value : undefined,
+    pelican_effort: current === 'iq' ? iqPelicanEffort.value : undefined,
     baseline_id: baselineId,
     extra_headers: runOptions.value.extraHeaders,
     timeout_ms: runOptions.value.timeoutMs,

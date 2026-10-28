@@ -184,7 +184,8 @@ func RunWithBaseline(ctx context.Context, target Target, checkIDs []string, gate
 	}
 
 	client := NewClient(target)
-	st := &runState{profile: ResolveProfile(target.Model), baseline: baseline, pelicanPrompt: target.PelicanPrompt}
+	st := &runState{profile: ResolveProfile(target.Model), baseline: baseline,
+		pelicanPrompt: target.PelicanPrompt, pelicanEffort: target.PelicanEffort}
 	ids := ResolveCheckIDs(checkIDs)
 	run.Suite = SuiteOf(ids)
 	if gate == nil {
@@ -332,7 +333,8 @@ func RetryChecksWithBaseline(ctx context.Context, target Target, checkIDs []stri
 	}
 
 	client := NewClient(target)
-	st := &runState{profile: ResolveProfile(target.Model), baseline: baseline, pelicanPrompt: target.PelicanPrompt}
+	st := &runState{profile: ResolveProfile(target.Model), baseline: baseline,
+		pelicanPrompt: target.PelicanPrompt, pelicanEffort: target.PelicanEffort}
 	hydrateRunState(st, run.Checks, ids)
 	if gate == nil {
 		gate = NewGate(1)

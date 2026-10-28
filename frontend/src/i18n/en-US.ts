@@ -372,13 +372,14 @@ export default {
     },
     suiteHint: {
       authenticity: 'Channel fingerprint + authenticity score: official Max pool / API / Bedrock / reverse proxy, or a spoofed wrapper',
-      iq: 'Fixed hard prompts compared side by side to spot downgraded models: judge the pelican SVG animation by eye, the candy puzzle is auto-graded'
+      iq: 'Fixed hard prompts compared side by side to spot downgraded models: judge the pelican ink painting by eye, the candy puzzle is auto-graded'
     },
     iqPickerTitle: 'Prompts',
     iqPickerHint: 'Default prompts can be customized and compared across targets; both stream with thinking and usually take 1–3 minutes each',
     iqShowPrompt: 'Show prompt',
     iqCustomPrompt: 'Pelican prompt (customizable)',
-    iqCustomPromptHint: 'Keep the default prompt to run the built-in task. Custom prompts are still reviewed for a complete animated SVG.',
+    iqCustomPromptHint: 'Keep the default prompt to run the built-in task. Custom prompts are still checked for a complete HTML / SVG artwork and judged by eye.',
+    iqEffortHint: 'Sent as output_config.effort, medium by default. Older models that do not support it get no effort; xhigh is sent as high on Opus / Sonnet 4.6. Higher effort is slower.',
     iqPromptUsed: 'Prompt used for this run',
     iqResultEmpty: 'No IQ test results yet',
     iqResultEmptyHint: 'Pick targets and prompts, then start',

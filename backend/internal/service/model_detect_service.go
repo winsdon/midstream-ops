@@ -65,7 +65,9 @@ type DetectRunRequest struct {
 	AuthMode   string              `json:"auth_mode"`
 	Checks     []string            `json:"checks"`
 	// PelicanPrompt 仅用于智商测试的鹈鹕题；为空时使用内置原题。
-	PelicanPrompt string            `json:"pelican_prompt"`
+	PelicanPrompt string `json:"pelican_prompt"`
+	// PelicanEffort 鹈鹕题的思考强度（low / medium / high / xhigh / max）；为空时按 medium。
+	PelicanEffort string            `json:"pelican_effort"`
 	ExtraHeaders  map[string]string `json:"extra_headers"`
 	TimeoutMs     int               `json:"timeout_ms"`
 	// Concurrency 同时执行几项检测（跨目标共享）。0 / 缺省按 3；超出 1–10 夹紧，不 400。
@@ -383,8 +385,8 @@ func (s *ModelDetectService) resolveTargets(ctx context.Context, req DetectRunRe
 		target := modeldetect.Target{
 			Name: in.Name, BaseURL: in.BaseURL, APIKey: in.APIKey,
 			Model: req.Model, AuthMode: req.AuthMode,
-			PelicanPrompt: req.PelicanPrompt,
-			ExtraHeaders:  req.ExtraHeaders, Timeout: timeout,
+			PelicanPrompt: req.PelicanPrompt, PelicanEffort: req.PelicanEffort,
+			ExtraHeaders: req.ExtraHeaders, Timeout: timeout,
 		}
 		if in.AccountID != nil {
 			acc, ok := findAccountByID(accounts, *in.AccountID)

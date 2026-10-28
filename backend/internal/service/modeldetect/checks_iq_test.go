@@ -79,7 +79,7 @@ func (up *iqUpstream) server(t *testing.T) *httptest.Server {
 			return
 		}
 		text := up.candy
-		if strings.Contains(userText(body), "pelican") {
+		if !strings.Contains(userText(body), "糖果") {
 			text = up.pelican
 		}
 		stop := up.stop
@@ -156,14 +156,56 @@ func TestPelicanPassesWithAnimatedSVG(t *testing.T) {
 	}
 }
 
-func TestPelicanWithoutAnimationFails(t *testing.T) {
-	static := `<svg viewBox="0 0 10 10"><circle r="3"/></svg>`
-	res := findCheck(runIQ(t, &iqUpstream{pelican: static}, "iq-pelican").Checks, "iq-pelican")
-	if res.Status != StatusSuspicious {
-		t.Fatalf("没有动画应判未通过，实际 %s", res.Status)
+// 默认水墨题不要求动画：静态作品照样通过，动画手段只记诊断。
+func TestPelicanStaticArtworkPasses(t *testing.T) {
+	static := "<html><body><svg viewBox=\"0 0 10 10\"><circle r=\"3\"/></svg></body></html>"
+	res := findCheck(runIQ(t, &iqUpstream{pelican: "```html\n" + static + "\n```"}, "iq-pelican").Checks, "iq-pelican")
+	if res.Status != StatusPassed {
+		t.Fatalf("完整的静态作品应通过，实际 %s（%s）", res.Status, res.Summary)
 	}
 	if res.Output == nil || res.Output.Document != static {
-		t.Fatal("没有动画的作品也应保存，方便人工对照")
+		t.Fatal("作品应原样保存，方便人工对照")
+	}
+	if !strings.Contains(res.Summary, "静态") {
+		t.Fatalf("摘要应注明静态作品，实际 %q", res.Summary)
+	}
+}
+
+func TestPelicanEffortDefaultsToMedium(t *testing.T) {
+	up := &iqUpstream{pelican: "```svg\n" + animatedPelican + "\n```", candy: "最终答案：21"}
+	runIQ(t, up, "iq-pelican", "iq-candy")
+	if len(up.bodies) != 2 {
+		t.Fatalf("应发两次请求，实际 %d", len(up.bodies))
+	}
+	for _, body := range up.bodies {
+		effort := mapOf(body["output_config"])["effort"]
+		if userText(body) == pelicanPrompt+"\n" {
+			if effort != "medium" {
+				t.Fatalf("鹈鹕题默认应按 medium 发送，实际 %v", body["output_config"])
+			}
+		} else if body["output_config"] != nil {
+			t.Fatalf("糖果题不应带 output_config，实际 %v", body["output_config"])
+		}
+	}
+}
+
+func TestPelicanUsesCustomEffort(t *testing.T) {
+	up := &iqUpstream{pelican: "```svg\n" + animatedPelican + "\n```"}
+	target, err := Target{Name: "t", BaseURL: up.server(t).URL, APIKey: "sk-test-key-1234567890",
+		Model: "claude-opus-5", PelicanEffort: "max"}.Normalize()
+	if err != nil {
+		t.Fatalf("归一化目标失败: %v", err)
+	}
+	Run(context.Background(), target, ResolveSuiteCheckIDs(SuiteIQ, []string{"iq-pelican"}), NewGate(1), nil)
+	if got := mapOf(up.bodies[0]["output_config"])["effort"]; got != "max" {
+		t.Fatalf("应按自定义强度 max 发送，实际 %v", got)
+	}
+}
+
+func TestTargetRejectsInvalidPelicanEffort(t *testing.T) {
+	_, err := Target{BaseURL: "https://example.com", APIKey: "sk-test", PelicanEffort: "ultra"}.Normalize()
+	if err == nil {
+		t.Fatal("非法思考强度应报错")
 	}
 }
 
@@ -185,13 +227,13 @@ func TestPelicanTruncatedIsInconclusive(t *testing.T) {
 	}
 }
 
-// 先交静态版、动画版没写完就被截断：不能判「没有动画」。
+// 先交一版、改进版没写完就被截断：拿到的未必是最终作品，记证据不足。
 func TestPelicanTruncatedStaticVersionIsInconclusive(t *testing.T) {
 	static := `<svg viewBox="0 0 10 10"><circle r="3"/></svg>`
 	up := &iqUpstream{pelican: "```svg\n" + static + "\n```\n动画版：\n```svg\n<svg><g>", stop: "max_tokens"}
 	res := findCheck(runIQ(t, up, "iq-pelican").Checks, "iq-pelican")
 	if res.Status != StatusInconclusive {
-		t.Fatalf("截断时没写出动画应记证据不足，实际 %s（%s）", res.Status, res.Summary)
+		t.Fatalf("被截断时应记证据不足，实际 %s（%s）", res.Status, res.Summary)
 	}
 }
 

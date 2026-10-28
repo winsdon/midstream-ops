@@ -8,8 +8,12 @@ import (
 	"time"
 )
 
-// pelicanPrompt 鹈鹕测试（Simon Willison 的 pelican-on-a-bicycle）原题。
-const pelicanPrompt = "Generate an SVG of a pelican riding a bicycle and animate this"
+// pelicanPrompt 鹈鹕测试默认题：Simon Willison 的 pelican-on-a-bicycle 改成水墨风 HTML，
+// 并要求从零独立完成，避免模型去翻项目或写测试。
+const pelicanPrompt = "独立画一个中国传统水墨风格的鹈鹕骑脚踏车html，你不需要任何测试，完全重新制作，不要看任何项目，从0开始"
+
+// DefaultPelicanEffort 鹈鹕题缺省的思考强度（output_config.effort）。
+const DefaultPelicanEffort = "medium"
 
 // candyPrompt 糖果题。原题的表格在转述时被压成了一行，这里按行排成 Markdown 表格；
 // 末尾的格式行只规定作答格式、不含任何解题提示，自动判分只认它。
@@ -52,12 +56,20 @@ const (
 // HTTP 层面失败时记「证据不足」并返回 false。流在 200 之后才断（读超时、流内 overloaded、
 // 网关没收尾）同样是临时故障：把原因记进 NetworkError，让它和 429 / 5xx 一样可以一键重试，
 // 已经收到的内容照常返回，留给调用方保存以便查看。
-func askIQ(ctx context.Context, c *Client, st *runState, r *CheckResult, prompt string, maxTokens int) (streamedReply, bool) {
-	ex := c.PostStreamWithin(ctx, KindMessages, map[string]any{
-		"model": c.Target().Model, "max_tokens": maxTokens, "stream": true,
+//
+// effort 为空表示不发 output_config（交给上游默认）；非空时先经 EffortFor 按型号收敛。
+func askIQ(ctx context.Context, c *Client, st *runState, r *CheckResult, prompt string, maxTokens int, effort string) (streamedReply, bool) {
+	model := c.Target().Model
+	body := map[string]any{
+		"model": model, "max_tokens": maxTokens, "stream": true,
 		"thinking": ThinkingParamFor(st.profile),
 		"messages": []map[string]any{{"role": "user", "content": prompt}},
-	}, iqStreamBudget)
+	}
+	if e := EffortFor(model, effort); e != "" {
+		body["output_config"] = map[string]any{"effort": e}
+		r.diagnose("思考强度", true, "effort="+e)
+	}
+	ex := c.PostStreamWithin(ctx, KindMessages, body, iqStreamBudget)
 	r.Exchanges = []*Exchange{ex}
 	r.DurationMs = ex.DurationMs
 	if !ex.OK() {
@@ -97,8 +109,9 @@ func askIQ(ctx context.Context, c *Client, st *runState, r *CheckResult, prompt 
 
 // checkPelican 鹈鹕测试。
 //
-// 画得好不好只能人看：本项只核对「交出了完整、带动画的 SVG」，作品原样保存，
-// 由前端放进沙箱 iframe 渲染、多目标并排对照。
+// 画得好不好只能人看：本项只核对「交出了完整的 HTML / SVG 作品」，作品原样保存，
+// 由前端放进沙箱 iframe 渲染、多目标并排对照。题目不一定要求动画（默认水墨题就不要求），
+// 动画手段只记诊断、不影响判定。
 func checkPelican(ctx context.Context, c *Client, st *runState) *CheckResult {
 	meta, _ := checkByID("iq-pelican")
 	r := newResult(meta)
@@ -107,7 +120,11 @@ func checkPelican(ctx context.Context, c *Client, st *runState) *CheckResult {
 		prompt = st.pelicanPrompt
 	}
 	r.Prompt = prompt
-	reply, ok := askIQ(ctx, c, st, r, prompt, pelicanMaxTokens)
+	effort := DefaultPelicanEffort
+	if st != nil && st.pelicanEffort != "" {
+		effort = st.pelicanEffort
+	}
+	reply, ok := askIQ(ctx, c, st, r, prompt, pelicanMaxTokens, effort)
 	if !ok {
 		return r.finish("请求失败，没拿到作品")
 	}
@@ -123,32 +140,28 @@ func checkPelican(ctx context.Context, c *Client, st *runState) *CheckResult {
 		if truncated {
 			r.Status = StatusInconclusive
 			r.diagnose("输出未被 max_tokens 截断", false, fmt.Sprintf("max_tokens=%d 内没写完作品", pelicanMaxTokens))
-			return r.finish("输出被 max_tokens 截断，没拿到完整 SVG")
+			return r.finish("输出被 max_tokens 截断，没拿到完整作品")
 		}
 		r.Status = StatusSuspicious
-		r.assert("交出完整的 SVG 作品", false, "回复里没有闭合的 <svg>…</svg> 或 <html>…</html>")
-		return r.finish("没有交出完整的 SVG")
+		r.assert("交出完整作品", false, "回复里没有闭合的 <svg>…</svg> 或 <html>…</html>")
+		return r.finish("没有交出完整的 HTML / SVG 作品")
 	}
 
 	label := fmt.Sprintf("%s %.1f KB", strings.ToUpper(kind), float64(len(doc))/1024)
-	r.assert("交出完整的 SVG 作品", true, label)
+	r.assert("交出完整作品", true, label)
 	kinds := animationKinds(doc)
-	animation := strings.Join(kinds, " / ")
-	if animation == "" {
-		animation = "未发现 SMIL / CSS / JS 动画"
+	animation := "静态"
+	if len(kinds) > 0 {
+		animation = strings.Join(kinds, " / ") + " 动画"
 	}
-	r.assert("作品包含动画", len(kinds) > 0, animation)
-	if len(kinds) == 0 {
-		if truncated {
-			// 可能是先交了静态版、动画版还没写完就被截断
-			r.Status = StatusInconclusive
-			r.diagnose("输出未被 max_tokens 截断", false, "动画版可能还没写完")
-			return r.finish(label + "，被 max_tokens 截断前没写出动画")
-		}
-		r.Status = StatusSuspicious
-		return r.finish(label + "，没有动画")
+	r.diagnose("动画手段", len(kinds) > 0, animation)
+	if truncated {
+		// 可能是先交了一版、改进版还没写完就被截断，拿到的未必是最终作品
+		r.Status = StatusInconclusive
+		r.diagnose("输出未被 max_tokens 截断", false, "后续版本可能还没写完")
+		return r.finish(label + "，被 max_tokens 截断，作品可能不是最终版")
 	}
-	return r.finish(fmt.Sprintf("%s · %s 动画 · 画面请人工评判", label, animation))
+	return r.finish(fmt.Sprintf("%s · %s · 画面请人工评判", label, animation))
 }
 
 // artworkOutput 作品原样保存；没抽到作品时保留回复原文，方便看模型到底交了什么。
@@ -169,7 +182,7 @@ func artworkOutput(r *CheckResult, text, doc, kind string) *ModelOutput {
 func checkCandy(ctx context.Context, c *Client, st *runState) *CheckResult {
 	meta, _ := checkByID("iq-candy")
 	r := newResult(meta)
-	reply, ok := askIQ(ctx, c, st, r, candyPrompt, candyMaxTokens)
+	reply, ok := askIQ(ctx, c, st, r, candyPrompt, candyMaxTokens, "")
 	if !ok {
 		return r.finish("请求失败，没拿到回答")
 	}

@@ -61,6 +61,20 @@
             <p class="mt-1 text-xs leading-relaxed text-gray-400 dark:text-dark-500">
               {{ t('detect.iqCustomPromptHint') }}
             </p>
+            <label class="mt-3 block max-w-xs text-xs font-medium text-gray-700 dark:text-dark-200">
+              <span class="mb-1 block">{{ t('pelican.effort') }}</span>
+              <Select
+                :model-value="pelicanEffort"
+                class="w-full"
+                :options="effortOptions"
+                :searchable="false"
+                :aria-label="t('pelican.effort')"
+                @update:model-value="onPelicanEffortChange"
+              />
+            </label>
+            <p class="mt-1 text-xs leading-relaxed text-gray-400 dark:text-dark-500">
+              {{ t('detect.iqEffortHint') }}
+            </p>
           </div>
         </div>
 
@@ -77,7 +91,9 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Badge from '@/components/common/Badge.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
+import Select from '@/components/common/Select.vue'
 import { costLabelKey, costVariant, estimateRequests } from '@/utils/detectModel'
+import { PELICAN_EFFORTS, type PelicanEffort } from '@/utils/pelican'
 import type { DetectCheckMeta } from '@/types/detect'
 
 const { t } = useI18n()
@@ -89,12 +105,16 @@ const props = defineProps<{
   loading: boolean
   targetCount: number
   pelicanPrompt: string
+  pelicanEffort: PelicanEffort
 }>()
 
 const emit = defineEmits<{
   (e: 'update:selected', ids: string[]): void
   (e: 'update:pelicanPrompt', prompt: string): void
+  (e: 'update:pelicanEffort', effort: PelicanEffort): void
 }>()
+
+const effortOptions = computed(() => PELICAN_EFFORTS.map((value) => ({ value, label: t(`pelican.efforts.${value}`) })))
 
 const selectedSet = computed(() => new Set(props.selected))
 const requestEstimate = computed(() => estimateRequests(props.checks, selectedSet.value, props.targetCount))
@@ -112,5 +132,9 @@ function toggle(id: string): void {
 
 function onPelicanPromptInput(e: Event): void {
   emit('update:pelicanPrompt', (e.target as HTMLTextAreaElement).value)
+}
+
+function onPelicanEffortChange(value: unknown): void {
+  if (PELICAN_EFFORTS.includes(value as PelicanEffort)) emit('update:pelicanEffort', value as PelicanEffort)
 }
 </script>

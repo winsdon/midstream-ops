@@ -17,6 +17,8 @@ export const PELICAN_NO_THINKING_SUFFIX = '直接输出完整 HTML，不要思�
 export const PELICAN_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 export type PelicanEffort = typeof PELICAN_EFFORTS[number]
 export const PELICAN_DEFAULT_EFFORT: PelicanEffort = 'low'
+/** 模型检测里鹈鹕题的默认思考强度，与后端 modeldetect.DefaultPelicanEffort 一致。 */
+export const DETECT_PELICAN_DEFAULT_EFFORT: PelicanEffort = 'medium'
 /** 与后端 normalizePelicanRequest 的默认值一致：高级选项不填时按这套参数提交。 */
 export const PELICAN_DEFAULT_CONCURRENCY = 3
 export const PELICAN_DEFAULT_MAX_TOKENS = 32000

@@ -229,6 +229,8 @@ export interface DetectRunPayload {
   checks?: string[]
   /** 智商测试鹈鹕题的自定义提示词；为空时使用内置原题 */
   pelican_prompt?: string
+  /** 鹈鹕题的思考强度（output_config.effort）；为空时后端按 medium */
+  pelican_effort?: string
   extra_headers?: Record<string, string>
   timeout_ms?: number
   concurrency?: number

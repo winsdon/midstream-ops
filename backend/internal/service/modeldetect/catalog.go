@@ -194,6 +194,8 @@ type runState struct {
 	baseline *BaselineStats
 	// pelicanPrompt 是本轮鹈鹕测试的提示词。空值时由 checkPelican 回退内置原题。
 	pelicanPrompt string
+	// pelicanEffort 是本轮鹈鹕测试的思考强度。空值时由 checkPelican 回退 DefaultPelicanEffort。
+	pelicanEffort string
 
 	// pingUsage 基础请求的 usage，用于估算注入量与缓存命中。
 	pingUsage      map[string]any
@@ -306,7 +308,7 @@ var Checks = []Check{
 
 	{ID: "iq-pelican", Title: "鹈鹕测试", Group: GroupIQ, Suite: SuiteIQ, Default: true, Cost: CostHigh, Requests: 1,
 		Grading: GradingVisual, Prompt: pelicanPrompt,
-		Note: "SVG 动画作品：自动核对完整与动画，画面好坏人工评判"},
+		Note: "HTML / SVG 作品：自动核对作品完整，画面好坏人工评判；思考强度可选，默认 medium"},
 	{ID: "iq-candy", Title: "糖果题测试", Group: GroupIQ, Suite: SuiteIQ, Default: true, Cost: CostMedium, Requests: 1,
 		Grading: GradingAnswer, Prompt: candyPrompt, Note: candyNote},
 }

@@ -372,13 +372,14 @@ export default {
     },
     suiteHint: {
       authenticity: '渠道指纹 + 真实性评分：判断背后是官方号池 / API / Bedrock / 反代，还是套壳伪装',
-      iq: '固定难题横向对比，看渠道有没有降智：鹈鹕 SVG 动画人工评判，糖果推理题自动核对答案'
+      iq: '固定难题横向对比，看渠道有没有降智：鹈鹕水墨作品人工评判，糖果推理题自动核对答案'
     },
     iqPickerTitle: '测试题目',
     iqPickerHint: '默认题目可自定义，同一批目标横向对比；两题都走流式 + thinking，单题常需 1–3 分钟',
     iqShowPrompt: '查看题目',
     iqCustomPrompt: '鹈鹕提示词（可自定义）',
-    iqCustomPromptHint: '保留默认值即可使用内置原题；自定义后仍按完整 SVG 和动画结果供人工评判。',
+    iqCustomPromptHint: '保留默认值即可使用内置原题；自定义后仍按是否交出完整 HTML / SVG 作品核对，画面供人工评判。',
+    iqEffortHint: '按 output_config.effort 发送，默认 medium；不支持的旧型号自动不发，Opus / Sonnet 4.6 的 xhigh 按 high 发送。强度越高越慢。',
     iqPromptUsed: '本次实际提示词',
     iqResultEmpty: '还没有本轮智商测试结果',
     iqResultEmptyHint: '选好目标与题目后点开始检测',
