@@ -51,8 +51,8 @@ func TestPelicanVisibleGroups(t *testing.T) {
 }
 
 // 账号归属分组的口径：账号真挂在 account_groups 上、分组启用未删除、平台匹配
-// （composite 通吃）。刻意不看调度开关与专属标记 —— 鹈鹕测试直连账号自己的地址，
-// 不经 sub2api 调度，停调账号照样能测，专属分组也一直能当作品归属。本测试把这条
+// （composite 通吃）。刻意不看账号状态、调度开关与专属标记 —— 鹈鹕测试直连账号自己的地址，
+// 不经 sub2api 调度，停用、报错、停调的账号都要能列出来看状态，专属分组也一直能当作品归属。本测试把这条
 // 口径钉住，免得日后「对齐分组可用模型」时把能测的账号一起过滤掉。
 func TestListAccountGroupIDs(t *testing.T) {
 	ctx, pg, pool := pelicanTestPool(t)
@@ -87,7 +87,32 @@ func TestListAccountGroupIDs(t *testing.T) {
 	if got := groups[6]; len(got) != 1 || got[0] != 15 {
 		t.Fatalf("paused account on an exclusive group %v", got)
 	}
-	if len(groups) != 3 {
-		t.Fatalf("stopped or non api_key accounts must not be listed: %v", groups)
+	// 停用账号也列出来（选择列表里显示状态，由管理员决定测不测）。
+	if got := groups[3]; len(got) != 1 || got[0] != 10 {
+		t.Fatalf("disabled account groups %v", got)
+	}
+	if len(groups) != 4 {
+		t.Fatalf("deleted or non api_key accounts must not be listed: %v", groups)
+	}
+
+	if _, err := pool.Exec(ctx, `ALTER TABLE accounts ADD COLUMN rate_multiplier numeric, ADD COLUMN error_message text,
+ ADD COLUMN rate_limit_reset_at timestamptz, ADD COLUMN overload_until timestamptz, ADD COLUMN temp_unschedulable_until timestamptz;
+ UPDATE accounts SET error_message='401 invalid key' WHERE id=3;
+ UPDATE accounts SET rate_limit_reset_at=now()+interval '1 hour' WHERE id=6;`); err != nil {
+		t.Fatal(err)
+	}
+	accounts, err := pg.ListPelicanAccounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[int64]PGPelicanAccount{}
+	for _, a := range accounts {
+		byID[a.ID] = a
+	}
+	if len(byID) != 4 || byID[3].Status != "disabled" || byID[3].ErrorMessage != "401 invalid key" {
+		t.Fatalf("pelican accounts must include disabled ones with error message: %+v", accounts)
+	}
+	if byID[6].RateLimitResetAt == nil || byID[6].Schedulable || byID[1].RateLimitResetAt != nil {
+		t.Fatalf("runtime status fields not scanned: %+v", byID[6])
 	}
 }

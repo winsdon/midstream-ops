@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"sub2api-account-monitor/internal/pkg/keyidentity"
 )
@@ -87,12 +88,52 @@ func (p *PG) ListProbeCandidates(ctx context.Context) ([]PGAccount, error) {
 	return out, rows.Err()
 }
 
-// ListAccountGroupIDs 返回每个可探测账号所属的分组 id（account_id -> []group_id）。
+// PGPelicanAccount 鹈鹕测试可选账号：在 PGAccount 之上带 sub2api 的运行状态字段，
+// 用于在选择账号时显示「正常 / 停用 / 错误 / 限流中 / 不可调度」等状态。
+type PGPelicanAccount struct {
+	PGAccount
+	ErrorMessage           string
+	RateLimitResetAt       *time.Time
+	OverloadUntil          *time.Time
+	TempUnschedulableUntil *time.Time
+}
+
+// ListPelicanAccounts 返回全部未删除的 api_key 账号（含停用与错误状态）及其运行状态。
+//
+// 与 ListProbeCandidates 不同，这里不限 status='active'：鹈鹕测试拿账号自己的地址与 Key
+// 直连上游，管理员要能看到并自行决定是否测试停用或报错的账号。
+func (p *PG) ListPelicanAccounts(ctx context.Context) ([]PGPelicanAccount, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT id, COALESCE(name,''), COALESCE(platform,''), COALESCE(type,''),
+		       COALESCE(status,''), COALESCE(schedulable,false),
+		       COALESCE(rate_multiplier,1),
+		       COALESCE(NULLIF(credentials->>'base_url',''), extra->>'base_url', ''),
+		       COALESCE(credentials->>'api_key',''),
+		       COALESCE(error_message,''), rate_limit_reset_at, overload_until, temp_unschedulable_until
+		FROM accounts
+		WHERE deleted_at IS NULL AND type IN ('api_key','apikey')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PGPelicanAccount
+	for rows.Next() {
+		var a PGPelicanAccount
+		if err := rows.Scan(&a.ID, &a.Name, &a.Platform, &a.Type, &a.Status, &a.Schedulable, &a.RateMultiplier, &a.BaseURL, &a.APIKey,
+			&a.ErrorMessage, &a.RateLimitResetAt, &a.OverloadUntil, &a.TempUnschedulableUntil); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// ListAccountGroupIDs 返回每个 api_key 账号所属的分组 id（account_id -> []group_id）。
 //
 // 归属只看三件事：账号真挂在 account_groups 上、分组启用且未删除、平台匹配
-// （composite 分组接受全部平台）。刻意不看 a.schedulable 与 is_exclusive ——
-// 鹈鹕测试是拿账号自己的 base_url 与 Key 直连上游，不经 sub2api 调度，临时停调的
-// 账号照样能测；专属分组也一直允许当作品归属（Groups 只排除非 active 的分组）。
+// （composite 分组接受全部平台）。刻意不看账号的 status 与 schedulable、也不看 is_exclusive ——
+// 鹈鹕测试是拿账号自己的 base_url 与 Key 直连上游，不经 sub2api 调度，停用、报错或停调的
+// 账号也要能在选择列表里看到状态并自行决定是否测试；专属分组也一直允许当作品归属（Groups 只排除非 active 的分组）。
 // 注意分组下拉里的模型提示来自 ListGroupAvailableModels（那份口径含 schedulable），
 // 所以停调账号的模型名可能不在提示里，模型仍可直接手填。
 func (p *PG) ListAccountGroupIDs(ctx context.Context) (map[int64][]int64, error) {
@@ -101,7 +142,7 @@ func (p *PG) ListAccountGroupIDs(ctx context.Context) (map[int64][]int64, error)
 		FROM accounts a
 		JOIN account_groups ag ON ag.account_id = a.id
 		JOIN groups g         ON g.id = ag.group_id
-		WHERE a.deleted_at IS NULL AND a.type IN ('api_key','apikey') AND a.status = 'active'
+		WHERE a.deleted_at IS NULL AND a.type IN ('api_key','apikey')
 		  AND g.deleted_at IS NULL AND g.status = 'active'
 		  AND (g.platform = 'composite' OR a.platform = g.platform)
 		ORDER BY a.id, g.id`)

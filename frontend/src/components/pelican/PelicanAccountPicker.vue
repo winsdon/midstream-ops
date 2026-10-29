@@ -27,6 +27,10 @@
             <span class="block truncate text-sm text-gray-900 dark:text-white" :title="account.name">{{ account.name }}</span>
             <span class="block truncate text-xs text-gray-500 dark:text-dark-400">{{ account.platform }} · {{ pelicanHost(account.base_url) }}</span>
           </span>
+          <span v-if="account.state" class="flex shrink-0 flex-col items-end gap-0.5" :title="account.error_message || undefined">
+            <Badge :variant="pelicanAccountStateVariant(account.state)">{{ stateLabel(account) }}</Badge>
+            <span v-if="account.state_until" class="text-[11px] text-gray-400 dark:text-dark-500">{{ t('pelican.accountStateUntil', { time: fmtDateTime(account.state_until) }) }}</span>
+          </span>
         </label>
       </li>
     </ul>
@@ -39,8 +43,10 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import Badge from '@/components/common/Badge.vue'
 import type { PelicanAccount } from '@/types/pelican'
-import { pelicanHost } from '@/utils/pelican'
+import { fmtDateTime } from '@/utils/format'
+import { pelicanAccountStateVariant, pelicanHost } from '@/utils/pelican'
 
 const props = defineProps<{
   /** 已经按归属分组过滤好的可选账号。 */
@@ -60,9 +66,13 @@ function onChange(id: number, event: Event) {
   void nextTick(() => { input.checked = props.selected.includes(id) })
 }
 
+function stateLabel(account: PelicanAccount) {
+  return account.state ? t(`pelican.accountStates.${account.state}`) : ''
+}
+
 const visible = computed(() => {
   const keyword = query.value.trim().toLowerCase()
   if (!keyword) return props.accounts
-  return props.accounts.filter(account => `${account.name} ${account.platform} ${pelicanHost(account.base_url)}`.toLowerCase().includes(keyword))
+  return props.accounts.filter(account => `${account.name} ${account.platform} ${pelicanHost(account.base_url)} ${stateLabel(account)}`.toLowerCase().includes(keyword))
 })
 </script>

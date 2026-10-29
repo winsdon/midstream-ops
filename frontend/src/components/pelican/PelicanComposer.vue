@@ -75,11 +75,35 @@
         </div>
       </div>
 
+      <div class="space-y-3 rounded-xl border border-gray-200 p-3 dark:border-dark-600">
+        <div class="grid gap-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)] sm:items-start">
+          <div class="min-w-0 text-xs text-gray-500 dark:text-dark-400">
+            <span class="mb-1 block font-medium">{{ t('pelican.effort') }}</span>
+            <Select :model-value="draft.effort || null" class="w-full" :options="effortOptions" :placeholder="t('pelican.effortUnset')" :searchable="false" :disabled="submitting" :aria-label="t('pelican.effort')" @update:model-value="value => patch({ effort: (value || '') as PelicanEffort | '' })" />
+          </div>
+          <p class="text-xs text-gray-500 dark:text-dark-400 sm:pt-5">{{ t('pelican.effortHint') }}</p>
+        </div>
+        <label class="flex cursor-pointer items-start gap-2 text-xs text-gray-500 dark:text-dark-400">
+          <input type="checkbox" class="mt-0.5" :checked="noThinking" :disabled="submitting" @change="onNoThinking(($event.target as HTMLInputElement).checked)" />
+          <span class="min-w-0">
+            <span class="block font-medium text-gray-700 dark:text-gray-200">{{ t('pelican.noThinking') }}</span>
+            <span class="block">{{ t('pelican.noThinkingHint') }}</span>
+          </span>
+        </label>
+        <label class="flex cursor-pointer items-start gap-2 text-xs text-gray-500 dark:text-dark-400">
+          <input type="checkbox" class="mt-0.5" :checked="draft.candy" :disabled="submitting" @change="patch({ candy: ($event.target as HTMLInputElement).checked })" />
+          <span class="min-w-0">
+            <span class="block font-medium text-gray-700 dark:text-gray-200">{{ t('pelican.candy') }}</span>
+            <span class="block">{{ t('pelican.candyHint', { answer: PELICAN_CANDY_ANSWER }) }}</span>
+          </span>
+        </label>
+      </div>
+
       <div>
         <button type="button" class="text-sm text-primary-600 dark:text-primary-400" :aria-expanded="advanced" @click="advanced = !advanced">
           {{ t('pelican.advanced') }}
         </button>
-        <div v-if="advanced" class="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div v-if="advanced" class="mt-2 grid gap-3 sm:grid-cols-3">
           <label class="text-xs text-gray-500 dark:text-dark-400">{{ t('pelican.concurrency') }}
             <input :value="draft.concurrency" class="input mt-1 w-full !py-1.5 text-center" type="number" min="1" max="10" :disabled="submitting" @input="onNumber('concurrency', $event, 10)" @blur="syncNumber('concurrency', $event)" />
           </label>
@@ -88,18 +112,6 @@
           </label>
           <label class="text-xs text-gray-500 dark:text-dark-400">{{ t('pelican.timeout') }}
             <input :value="draft.timeout_seconds" class="input mt-1 w-full !py-1.5 text-center" type="number" min="1" max="3600" :disabled="submitting" @input="onNumber('timeout_seconds', $event, 3600)" @blur="syncNumber('timeout_seconds', $event)" />
-          </label>
-          <div class="min-w-0 text-xs text-gray-500 dark:text-dark-400">
-            <span class="mb-1 block">{{ t('pelican.effort') }}</span>
-            <Select :model-value="draft.effort || null" class="w-full" :options="effortOptions" :placeholder="t('pelican.effortUnset')" :searchable="false" :disabled="submitting" :aria-label="t('pelican.effort')" @update:model-value="value => patch({ effort: (value || '') as PelicanEffort | '' })" />
-          </div>
-          <p class="text-xs text-gray-500 dark:text-dark-400 sm:col-span-2 lg:col-span-4">{{ t('pelican.effortHint') }}</p>
-          <label class="flex cursor-pointer items-start gap-2 text-xs text-gray-500 dark:text-dark-400 sm:col-span-2 lg:col-span-4">
-            <input type="checkbox" class="mt-0.5" :checked="noThinking" :disabled="submitting" @change="onNoThinking(($event.target as HTMLInputElement).checked)" />
-            <span class="min-w-0">
-              <span class="block font-medium text-gray-700 dark:text-gray-200">{{ t('pelican.noThinking') }}</span>
-              <span class="block">{{ t('pelican.noThinkingHint') }}</span>
-            </span>
           </label>
         </div>
       </div>
@@ -129,11 +141,12 @@ import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
 import type { PelicanAccount, PelicanGroup, PelicanProtocol, PelicanSource } from '@/types/pelican'
 import {
+  DEFAULT_PELICAN_PROMPT,
+  PELICAN_CANDY_ANSWER,
   PELICAN_EFFORTS,
   PELICAN_MAX_TARGETS,
   pelicanAccountProtocolChoices,
   pelicanAccountsForGroup,
-  pelicanDefaultPromptWithNoThinking,
   pelicanHasNoThinking,
   pelicanPruneAccountIDs,
   pelicanProtocolLabel,
@@ -155,8 +168,6 @@ const props = defineProps<{
   runCount: number
   /** 参数没改动，本次提交是把待确认的那份原样重放。 */
   replayed: boolean
-  /** 当前目标对应的默认题目（Claude / 其他），「恢复默认提示词」用它。 */
-  defaultPrompt: string
   error?: string
 }>()
 const draft = defineModel<PelicanDraft>('draft', { required: true })
@@ -223,9 +234,9 @@ function onGroup(value: unknown) {
   const group_id = Number(value) || 0
   patch({ group_id, model: '', account_ids: accountsForGroup(group_id) })
 }
-/** 恢复默认题目：切到 Claude 默认题目时保留「禁止思考」，避免点一下就把开关丢掉。 */
+/** 恢复默认题目：保留当前「禁止思考」的勾选，避免点一下就把开关丢掉。 */
 function resetPrompt() {
-  patch({ prompt: pelicanDefaultPromptWithNoThinking(props.defaultPrompt, draft.value.prompt) })
+  patch({ prompt: pelicanToggleNoThinking(DEFAULT_PELICAN_PROMPT, noThinking.value) })
 }
 /** 勾选/取消「禁止思考」：只在提示词末尾追加或移除固定后缀，不改请求参数。 */
 function onNoThinking(enabled: boolean) {

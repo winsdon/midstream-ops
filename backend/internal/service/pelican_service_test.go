@@ -27,8 +27,12 @@ func (p *pelicanTestPG) ListGroups(context.Context) ([]repository.PGGroup, error
 func (p *pelicanTestPG) ListGroupAvailableModels(context.Context) ([]repository.PGGroupModels, error) {
 	return []repository.PGGroupModels{{GroupID: 1, GroupName: "group", Platform: "anthropic", Models: []string{"claude-opus-5"}}}, nil
 }
-func (p *pelicanTestPG) ListProbeCandidates(context.Context) ([]repository.PGAccount, error) {
-	return p.accounts, nil
+func (p *pelicanTestPG) ListPelicanAccounts(context.Context) ([]repository.PGPelicanAccount, error) {
+	out := make([]repository.PGPelicanAccount, 0, len(p.accounts))
+	for _, a := range p.accounts {
+		out = append(out, repository.PGPelicanAccount{PGAccount: a})
+	}
+	return out, nil
 }
 func (p *pelicanTestPG) ListAccountGroupIDs(context.Context) (map[int64][]int64, error) {
 	if p.fail {
@@ -93,29 +97,70 @@ func TestPelicanRequestValidation(t *testing.T) {
 	}
 }
 
-// 空提示词按协议取默认：全部 Messages（Claude）用初音未来，含 GPT 协议时回到考拉。
-func TestPelicanDefaultPromptByProtocol(t *testing.T) {
+// 空提示词一律用水墨鹈鹕题，不再按协议切换。
+func TestPelicanDefaultPrompt(t *testing.T) {
 	claude := PelicanTarget{GroupID: 1, Source: PelicanSourceAccount, AccountID: 2, Model: "claude-opus-5-5", Protocol: "messages"}
 	gpt := PelicanTarget{GroupID: 1, Source: PelicanSourceAccount, AccountID: 3, Model: "gpt-5.1", Protocol: "responses"}
+	for _, targets := range [][]PelicanTarget{{claude}, {gpt}, {claude, gpt}} {
+		r := PelicanRequest{RequestID: "request-123", Targets: targets}
+		if err := normalizePelicanRequest(&r); err != nil || r.Prompt != DefaultPelicanPrompt {
+			t.Fatalf("prompt=%q err=%v", r.Prompt, err)
+		}
+	}
+	if !strings.Contains(DefaultPelicanPrompt, "水墨") || !strings.Contains(DefaultPelicanPrompt, "鹈鹕") {
+		t.Fatalf("default prompt must be the ink-wash pelican: %q", DefaultPelicanPrompt)
+	}
+}
+
+// 不勾糖果题时请求体与旧版逐字节一致，已提交批次的幂等 hash 不会因为加了字段而变。
+func TestPelicanCandyKeepsRequestHash(t *testing.T) {
+	raw, _ := json.Marshal(PelicanRequest{RequestID: "request-123"})
+	if strings.Contains(string(raw), "candy") {
+		t.Fatalf("candy must be omitted when off: %s", raw)
+	}
+	raw, _ = json.Marshal(PelicanRequest{RequestID: "request-123", Candy: true})
+	if !strings.Contains(string(raw), `"candy":true`) {
+		t.Fatalf("candy flag missing: %s", raw)
+	}
+}
+
+// 账号状态与 sub2api 账号列表同一优先级：限流中 > 过载 > 错误 > 临时不可调度 > 停用 > 不可调度 > 正常。
+func TestPelicanAccountState(t *testing.T) {
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	later, earlier := now.Add(time.Hour), now.Add(-time.Hour)
+	account := func(status string, schedulable bool, mutate func(*repository.PGPelicanAccount)) repository.PGPelicanAccount {
+		a := repository.PGPelicanAccount{PGAccount: repository.PGAccount{Status: status, Schedulable: schedulable}}
+		if mutate != nil {
+			mutate(&a)
+		}
+		return a
+	}
 	cases := []struct {
-		name    string
-		targets []PelicanTarget
-		want    string
+		name  string
+		in    repository.PGPelicanAccount
+		want  string
+		until bool
 	}{
-		{"claude only", []PelicanTarget{claude}, DefaultPelicanClaudePrompt},
-		{"gpt only", []PelicanTarget{gpt}, DefaultPelicanPrompt},
-		{"mixed", []PelicanTarget{claude, gpt}, DefaultPelicanPrompt},
+		{"active", account("active", true, nil), PelicanAccountActive, false},
+		{"paused", account("active", false, nil), PelicanAccountUnschedulable, false},
+		{"inactive", account("inactive", true, nil), PelicanAccountInactive, false},
+		{"disabled", account("disabled", true, nil), PelicanAccountInactive, false},
+		{"error", account("error", false, nil), PelicanAccountError, false},
+		{"rate limited beats error", account("error", true, func(a *repository.PGPelicanAccount) { a.RateLimitResetAt = &later }), PelicanAccountRateLimited, true},
+		{"overloaded", account("active", true, func(a *repository.PGPelicanAccount) { a.OverloadUntil = &later }), PelicanAccountOverloaded, true},
+		{"temp unschedulable", account("active", true, func(a *repository.PGPelicanAccount) { a.TempUnschedulableUntil = &later }), PelicanAccountTempUnschedulable, true},
+		{"error beats temp unschedulable", account("error", true, func(a *repository.PGPelicanAccount) { a.TempUnschedulableUntil = &later }), PelicanAccountError, false},
+		{"expired limits ignored", account("active", true, func(a *repository.PGPelicanAccount) {
+			a.RateLimitResetAt, a.OverloadUntil, a.TempUnschedulableUntil = &earlier, &earlier, &earlier
+		}), PelicanAccountActive, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := PelicanRequest{RequestID: "request-123", Targets: tc.targets}
-			if err := normalizePelicanRequest(&r); err != nil || r.Prompt != tc.want {
-				t.Fatalf("prompt=%q err=%v", r.Prompt, err)
+			got, until := pelicanAccountState(tc.in, now)
+			if got != tc.want || (until != nil) != tc.until {
+				t.Fatalf("state=%s until=%v want %s until=%v", got, until, tc.want, tc.until)
 			}
 		})
-	}
-	if !strings.Contains(DefaultPelicanPrompt, "考拉") || !strings.Contains(DefaultPelicanPrompt, "SVG") {
-		t.Fatalf("default prompt must ask for an animated koala SVG: %q", DefaultPelicanPrompt)
 	}
 }
 
@@ -376,5 +421,83 @@ func TestPelicanServiceCancelQueuedAndRunning(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatal("queued request charged after cancel")
+	}
+}
+
+// 勾选糖果题后每个目标并行发两次请求：作品带交付指令，糖果题不带；
+// 糖果题判分进 metadata、全文进 output，作品失败不影响糖果题结论，记录状态只看作品。
+func TestPelicanCandyRunsAlongsideArtwork(t *testing.T) {
+	store, cleanup, err := repository.NewTestStore()
+	if errors.Is(err, repository.ErrNoTestDSN) {
+		t.Skip(err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	var artworkCalls, candyCalls atomic.Int32
+	artworkFails := atomic.Bool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		if body["system"] == nil {
+			candyCalls.Add(1)
+			fmt.Fprint(w, `{"content":[{"type":"text","text":"推理……\n最终答案：21"}],"stop_reason":"end_turn"}`)
+			return
+		}
+		artworkCalls.Add(1)
+		if artworkFails.Load() {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		fmt.Fprint(w, `{"content":[{"type":"text","text":"<svg></svg>"}],"stop_reason":"end_turn"}`)
+	}))
+	defer server.Close()
+	repo := repository.NewPelicanRepo(store)
+	s := NewPelicanService(repo, &pelicanTestPG{accounts: []repository.PGAccount{{ID: 7, Name: "acct", Platform: "anthropic", BaseURL: server.URL, APIKey: "sk-account"}}})
+	defer s.Close()
+	ctx := context.Background()
+	target := PelicanTarget{GroupID: 1, Source: PelicanSourceAccount, AccountID: 7, Model: "claude-opus-5-5", Protocol: "messages"}
+
+	batch, err := s.Start(ctx, PelicanRequest{RequestID: "candy-request", Candy: true, Targets: []PelicanTarget{target}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.workers.Wait()
+	rows, _, err := repo.List(ctx, repository.PelicanFilter{BatchID: batch.ID})
+	if err != nil || len(rows) != 1 || rows[0].Status != "completed" {
+		t.Fatalf("rows %+v err %v", rows, err)
+	}
+	if c := rows[0].Candy; c == nil || c.Status != CandyCorrect || c.Answer != "21" || c.Expected != "21" {
+		t.Fatalf("candy not graded on the list row: %+v", rows[0].Candy)
+	}
+	detail, err := repo.Get(ctx, rows[0].ID)
+	if err != nil || !strings.Contains(detail.Output.CandyText, "最终答案：21") || detail.Output.Document == "" {
+		t.Fatalf("detail output %+v err %v", detail.Output, err)
+	}
+	if artworkCalls.Load() != 1 || candyCalls.Load() != 1 {
+		t.Fatalf("artwork=%d candy=%d", artworkCalls.Load(), candyCalls.Load())
+	}
+
+	artworkFails.Store(true)
+	failed, err := s.Start(ctx, PelicanRequest{RequestID: "candy-artwork-fails", Candy: true, Targets: []PelicanTarget{target}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.workers.Wait()
+	rows, _, err = repo.List(ctx, repository.PelicanFilter{BatchID: failed.ID})
+	if err != nil || len(rows) != 1 || rows[0].Status != "failed" || rows[0].Candy == nil || rows[0].Candy.Status != CandyCorrect {
+		t.Fatalf("artwork failure must not hide the candy result: %+v err %v", rows, err)
+	}
+
+	plain, err := s.Start(ctx, PelicanRequest{RequestID: "no-candy", Targets: []PelicanTarget{target}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.workers.Wait()
+	rows, _, err = repo.List(ctx, repository.PelicanFilter{BatchID: plain.ID})
+	if err != nil || len(rows) != 1 || rows[0].Candy != nil || candyCalls.Load() != 2 {
+		t.Fatalf("candy must not run when off: %+v calls=%d err %v", rows, candyCalls.Load(), err)
 	}
 }

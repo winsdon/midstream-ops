@@ -45,7 +45,6 @@ func TestDetectRoutesRequireAuth(t *testing.T) {
 		{"历史列表", http.MethodGet, "/api/v1/detect/history"},
 		{"历史详情", http.MethodGet, "/api/v1/detect/history/1"},
 		{"删除历史", http.MethodDelete, "/api/v1/detect/history/1"},
-		{"删除智商测试历史", http.MethodDelete, "/api/v1/detect/iq/history/1"},
 	}
 
 	for _, c := range cases {

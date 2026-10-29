@@ -23,3 +23,26 @@ func TestPelicanPublicDTOHasNoInternalFields(t *testing.T) {
 		t.Fatal("missing public artwork")
 	}
 }
+
+// 糖果题结果客户也能看，但只带判定与答案：错误原因、耗时与回复全文都不下发。
+func TestPelicanPublicDTOCandySummaryOnly(t *testing.T) {
+	v := &repository.PelicanResult{ID: 1, Status: "completed", PelicanMetadata: repository.PelicanMetadata{
+		GroupName: "public",
+		Candy:     &repository.PelicanCandy{Status: "wrong", Answer: "29", Expected: "21", DurationMs: 4321, Error: "candy-private-error"},
+	}, Output: &repository.PelicanOutput{Document: "<svg></svg>", Kind: "svg", CandyText: "candy-private-reply"}}
+	raw, err := json.Marshal(publicPelican(v))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"candy":{"status":"wrong","answer":"29","expected":"21"}`) {
+		t.Fatalf("public DTO must carry the candy verdict: %s", raw)
+	}
+	for _, secret := range []string{"candy-private-error", "candy-private-reply", "candy_text", "4321"} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("public DTO leaked %s: %s", secret, raw)
+		}
+	}
+	if raw, _ := json.Marshal(publicPelican(&repository.PelicanResult{ID: 2})); strings.Contains(string(raw), "candy") {
+		t.Fatalf("records without the candy question must not show one: %s", raw)
+	}
+}

@@ -5,7 +5,7 @@ import { useAppStore } from '@/stores/app'
 import type { PaginatedData } from '@/types'
 
 /**
- * 分页历史的加载状态。模型真伪与智商测试的历史各持一份，翻页逻辑共用。
+ * 分页历史的加载状态，翻页逻辑共用。
  */
 export function usePagedHistory<T>(
   fetchPage: (params: { page: number; page_size: number }) => Promise<PaginatedData<T>>,

@@ -30,21 +30,6 @@ const (
 	GroupProtocol   = "protocol"   // 协议严格性
 	GroupIdentity   = "identity"   // 身份与人设
 	GroupCapability = "capability" // 能力与采样
-	GroupIQ         = "iq"         // 智商测试
-)
-
-// 测试套件。真伪检测回答「渠道背后是谁、后端是不是真 Claude」，产出分类与真实性评分；
-// 智商测试回答「有没有降智」，只看答题结果，不出判定也不跑跨项审计。
-// 两套分开勾选、分开执行、分开留痕，一次作业只跑一个套件。
-const (
-	SuiteAuthenticity = "authenticity"
-	SuiteIQ           = "iq"
-)
-
-// 智商题的判分方式（前端据此决定结果怎么摆）。
-const (
-	GradingVisual = "visual" // 交出作品，画面好坏人工评判
-	GradingAnswer = "answer" // 有标准答案，自动核对
 )
 
 // 成本档位（前端展示，用于提醒会消耗多少额度）。
@@ -89,26 +74,6 @@ type CheckResult struct {
 	AuthCapReason string      `json:"auth_cap_reason,omitempty"`
 	// Informational 只做检测、不参与分类与真实性评分（也不进跨项审计）。
 	Informational bool `json:"informational,omitempty"`
-	// Prompt 智商题本轮实际发送的提示词；自定义题目需要随报告留痕。
-	Prompt string `json:"prompt,omitempty"`
-	// Output 需要人工复核的模型产出（智商测试）。
-	Output *ModelOutput `json:"output,omitempty"`
-}
-
-// ModelOutput 智商题的完整作答。
-//
-// exchange 原文截断到 8000 字符，流式时还是 SSE 分片，既看不出完整回答也渲染不了作品，
-// 而这类题的价值恰恰在全文，所以单独保存。
-type ModelOutput struct {
-	// Text 可见回复（不含 thinking），超长截断。
-	Text string `json:"text,omitempty"`
-	// Document 从回复里取出的完整 SVG / HTML 作品，前端只在沙箱 iframe 里渲染。
-	Document string `json:"document,omitempty"`
-	// DocumentKind 取 svg / html。
-	DocumentKind string `json:"document_kind,omitempty"`
-	// Answer 从回复里解析出的最终答案；Expected 为标准答案。只有自动判分的题目才有。
-	Answer   string `json:"answer,omitempty"`
-	Expected string `json:"expected,omitempty"`
 }
 
 // addEvidence 追加一条证据。
@@ -192,10 +157,6 @@ func newResult(meta Check) *CheckResult {
 type runState struct {
 	profile  ThinkingProfile
 	baseline *BaselineStats
-	// pelicanPrompt 是本轮鹈鹕测试的提示词。空值时由 checkPelican 回退内置原题。
-	pelicanPrompt string
-	// pelicanEffort 是本轮鹈鹕测试的思考强度。空值时由 checkPelican 回退 DefaultPelicanEffort。
-	pelicanEffort string
 
 	// pingUsage 基础请求的 usage，用于估算注入量与缓存命中。
 	pingUsage      map[string]any
@@ -243,21 +204,8 @@ type Check struct {
 	Note     string `json:"note,omitempty"`
 	// Requires 声明前置检测项。缺前置时 runner 会自动补跑。
 	Requires []string `json:"requires,omitempty"`
-	// Suite 所属套件。空值即真伪检测——目录里绝大多数项都是它，只有智商题显式标注。
-	Suite string `json:"suite,omitempty"`
 	// Informational 只做检测、不参与分类与真实性评分。
 	Informational bool `json:"informational,omitempty"`
-	// Grading 智商题的判分方式；Prompt 题目原文，供前端「查看题目」。
-	Grading string `json:"grading,omitempty"`
-	Prompt  string `json:"prompt,omitempty"`
-}
-
-// InSuite 判断检测项是否属于指定套件。
-func (c Check) InSuite(suite string) bool {
-	if c.Suite == "" {
-		return suite == SuiteAuthenticity
-	}
-	return c.Suite == suite
 }
 
 // Checks 全部检测项，顺序即执行顺序。
@@ -305,12 +253,6 @@ var Checks = []Check{
 	{ID: "baseline-quality", Title: "CCMax 基准对照", Group: GroupCapability, Default: true, Cost: CostHigh, Requests: 1, Note: "与已保存的真实 CCMax 基准比较质量、输出 token 与 thinking"},
 	{ID: "slope", Title: "输出斜率", Group: GroupCapability, Default: false, Cost: CostMedium, Requests: 1,
 		Note: "扣掉 thinking_tokens 后的正文 token/词 比例；偏高说明有看不见的输出被计费"},
-
-	{ID: "iq-pelican", Title: "鹈鹕测试", Group: GroupIQ, Suite: SuiteIQ, Default: true, Cost: CostHigh, Requests: 1,
-		Grading: GradingVisual, Prompt: pelicanPrompt,
-		Note: "HTML / SVG 作品：自动核对作品完整，画面好坏人工评判；思考强度可选，默认 medium"},
-	{ID: "iq-candy", Title: "糖果题测试", Group: GroupIQ, Suite: SuiteIQ, Default: true, Cost: CostMedium, Requests: 1,
-		Grading: GradingAnswer, Prompt: candyPrompt, Note: candyNote},
 }
 
 // handlers 检测项 id → 执行体。
@@ -340,8 +282,6 @@ var handlers = map[string]CheckFunc{
 	"slope":             checkSlope,
 	"baseline-quality":  checkBaselineQuality,
 	"quality-baseline":  checkQualityBaseline,
-	"iq-pelican":        checkPelican,
-	"iq-candy":          checkCandy,
 }
 
 // checkByID 按 id 查元信息。
@@ -354,33 +294,15 @@ func checkByID(id string) (Check, bool) {
 	return Check{}, false
 }
 
-// NormalizeSuite 归一套件名，未知值按真伪检测处理（与历史请求兼容）。
-func NormalizeSuite(suite string) string {
-	if suite == SuiteIQ {
-		return SuiteIQ
-	}
-	return SuiteAuthenticity
-}
-
-// DefaultCheckIDs 指定套件里推荐勾选的检测项。
-func DefaultCheckIDs(suite string) []string {
+// DefaultCheckIDs 推荐勾选的检测项。
+func DefaultCheckIDs() []string {
 	var out []string
 	for _, c := range Checks {
-		if c.Default && c.InSuite(suite) {
+		if c.Default {
 			out = append(out, c.ID)
 		}
 	}
 	return out
-}
-
-// SuiteOf 一组检测项所属的套件（调用方保证同属一个套件）。
-func SuiteOf(ids []string) string {
-	for _, id := range ids {
-		if meta, ok := checkByID(id); ok && meta.InSuite(SuiteIQ) {
-			return SuiteIQ
-		}
-	}
-	return SuiteAuthenticity
 }
 
 // Preset 场景预设：一键勾选一组针对某类渠道的检测项。
@@ -390,7 +312,7 @@ type Preset struct {
 	Checks []string `json:"checks"`
 }
 
-// Presets 运营常用的两套真伪检测场景（不含智商题）。高成本能力项不进预设，要跑再去自定义勾。
+// Presets 运营常用的两套真伪检测场景。高成本能力项不进预设，要跑再去自定义勾。
 var Presets = []Preset{
 	{
 		ID:    "cc_max",

@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 )
@@ -46,10 +45,6 @@ type Target struct {
 	ExtraHeaders map[string]string
 	// Timeout 单请求超时。
 	Timeout time.Duration
-	// PelicanPrompt 鹈鹕测试本轮使用的提示词；为空时使用内置原题。
-	PelicanPrompt string
-	// PelicanEffort 鹈鹕测试的思考强度（EffortLevels 之一）；为空时使用 DefaultPelicanEffort。
-	PelicanEffort string
 	// AccountID 关联的本站账号 id（手填目标为 nil）。
 	AccountID *int64
 	// ProviderID 账号归属的供应商 id（未关联为 nil）。
@@ -71,11 +66,6 @@ func (t Target) Normalize() (Target, error) {
 	out.APIKey = strings.TrimSpace(t.APIKey)
 	if out.APIKey == "" {
 		return out, errors.New("API Key 不能为空")
-	}
-	out.PelicanPrompt = strings.TrimSpace(t.PelicanPrompt)
-	out.PelicanEffort = strings.TrimSpace(t.PelicanEffort)
-	if out.PelicanEffort != "" && !slices.Contains(EffortLevels, out.PelicanEffort) {
-		return out, fmt.Errorf("思考强度 %q 无效，可选 %s", out.PelicanEffort, strings.Join(EffortLevels, " / "))
 	}
 	out.Model = strings.TrimSpace(t.Model)
 	if out.Model == "" {

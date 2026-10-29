@@ -153,7 +153,7 @@ func (h *PelicanHandler) Retry(c *gin.Context) {
 		pelicanError(c, service.ErrPelicanInvalid)
 		return
 	}
-	b, err := h.svc.Start(c.Request.Context(), service.PelicanRequest{RequestID: req.RequestID, Prompt: old.Prompt, MaxTokens: old.MaxTokens, TimeoutSeconds: old.TimeoutSeconds, Effort: old.Effort, Targets: []service.PelicanTarget{target}})
+	b, err := h.svc.Start(c.Request.Context(), service.PelicanRequest{RequestID: req.RequestID, Prompt: old.Prompt, MaxTokens: old.MaxTokens, TimeoutSeconds: old.TimeoutSeconds, Effort: old.Effort, Candy: old.Candy != nil, Targets: []service.PelicanTarget{target}})
 	if err != nil {
 		pelicanError(c, err)
 		return
@@ -257,12 +257,17 @@ type pelicanPublicDTO struct {
 	MaxTokens   int                       `json:"max_tokens"`
 	HasDocument bool                      `json:"has_document"`
 	Output      *repository.PelicanOutput `json:"output,omitempty"`
+	// Candy 糖果题结果只下发判定与答案，不含错误原因与回复全文。
+	Candy *repository.PelicanCandy `json:"candy,omitempty"`
 }
 
 func publicPelican(v *repository.PelicanResult) pelicanPublicDTO {
 	out := pelicanPublicDTO{ID: v.ID, GroupID: v.GroupID, GroupName: v.GroupName, Model: v.Model, TestedAt: v.TestedAt, PublishedAt: v.PublishedAt, DurationMs: v.DurationMs, Prompt: v.Prompt, Protocol: v.Protocol, MaxTokens: v.MaxTokens, HasDocument: v.HasDocument}
 	if v.Output != nil {
 		out.Output = &repository.PelicanOutput{Document: v.Output.Document, Kind: v.Output.Kind}
+	}
+	if v.Candy != nil {
+		out.Candy = &repository.PelicanCandy{Status: v.Candy.Status, Answer: v.Candy.Answer, Expected: v.Candy.Expected}
 	}
 	return out
 }

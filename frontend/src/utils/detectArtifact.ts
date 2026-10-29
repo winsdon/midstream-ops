@@ -1,5 +1,5 @@
 /**
- * 智商测试作品（模型生成的 SVG / HTML）的预览文档。
+ * 鹈鹕作品（模型生成的 SVG / HTML）的预览文档。
  *
  * 作品是不可信内容，只放进不带 allow-same-origin 的沙箱 iframe：不透明源，碰不到本站
  * localStorage 里的登录 token，也碰不到父页面 DOM。这里再用 CSP 禁掉一切子资源外连
@@ -68,9 +68,4 @@ export const ARTIFACT_PREVIEW_VIEW = { width: 1280, height: 800 }
 export function artifactPreviewDocument(document: string, kind: ArtifactKind, fit = false): string {
   if (kind === 'html') return PREVIEW_HEAD + (fit ? `<style>${HTML_FIT_STYLE}</style>` : '') + document
   return `<!doctype html><html><head>${PREVIEW_HEAD}<style>${SVG_FIT_STYLE}</style></head><body>${document}</body></html>`
-}
-
-/** 作品是否带脚本（<script> 或 onload= 之类的事件属性）。带脚本的才需要给用户「运行脚本」的开关。 */
-export function artifactHasScript(document: string): boolean {
-  return /<script[\s>]|\son[a-z]+\s*=/i.test(document)
 }

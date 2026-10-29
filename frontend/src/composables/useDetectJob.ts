@@ -11,7 +11,7 @@ const POLL_INTERVAL_MS = 800
 /**
  * 一份检测作业的生命周期：发起 → 轮询快照 → 取消 / 重试。
  *
- * 模型真伪与智商测试各持一份，切换模式不会互相覆盖；组件卸载时自动停表。
+ * 组件卸载时自动停表。
  * onFinished 在作业结束（完成或取消）后回调，调用方据此刷新对应的历史。
  */
 export function useDetectJob(options: { onFinished?: (job: DetectJob) => void } = {}) {
@@ -23,7 +23,7 @@ export function useDetectJob(options: { onFinished?: (job: DetectJob) => void } 
   let pollTimer: ReturnType<typeof setInterval> | null = null
   /**
    * 轮询代次。停表或换一轮轮询都会让代次加一，之前发出、之后才回来的响应一律丢弃——
-   * 智商测试的快照带作品与回复全文，单次请求可能比轮询间隔还慢，晚到的旧快照不能盖掉新结果。
+   * 单次请求可能比轮询间隔还慢，晚到的旧快照不能盖掉新结果。
    */
   let generation = 0
 

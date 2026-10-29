@@ -39,7 +39,7 @@ const (
 type pelicanPG interface {
 	ListGroups(context.Context) ([]repository.PGGroup, error)
 	ListGroupAvailableModels(context.Context) ([]repository.PGGroupModels, error)
-	ListProbeCandidates(context.Context) ([]repository.PGAccount, error)
+	ListPelicanAccounts(context.Context) ([]repository.PGPelicanAccount, error)
 	ListAccountGroupIDs(context.Context) (map[int64][]int64, error)
 	PelicanVisibleGroups(context.Context) ([]int64, error)
 }
@@ -69,6 +69,8 @@ type PelicanRequest struct {
 	TimeoutSeconds int             `json:"timeout_seconds"`
 	// Effort 思考强度，只对 Messages 协议生效；空表示不发（上游默认）。omitempty 让旧请求的 hash 不变。
 	Effort string `json:"effort,omitempty"`
+	// Candy 每个目标同时答糖果题。omitempty 让旧请求的 hash 不变。
+	Candy bool `json:"candy,omitempty"`
 }
 
 // PelicanGroupOption 作品归属分组：只决定 group_id / group_name 与可见范围。
@@ -88,6 +90,46 @@ type PelicanAccountOption struct {
 	// GroupIDs 该账号归属的分组 id（含 composite 分组的跨平台归属）。管理端据此
 	// 按归属分组过滤账号选择项；为空表示账号没挂任何启用中的分组。
 	GroupIDs []int64 `json:"group_ids"`
+	// State 账号当前状态，口径同 sub2api 账号列表：见 pelicanAccountState。
+	State string `json:"state"`
+	// StateUntil 限流中 / 过载 / 临时不可调度的恢复时间。
+	StateUntil *time.Time `json:"state_until,omitempty"`
+	// ErrorMessage sub2api 记录的账号错误信息（只在管理端接口出现）。
+	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+// 账号状态，口径与 sub2api 后台账号列表的状态徽章一致。
+const (
+	PelicanAccountActive            = "active"
+	PelicanAccountInactive          = "inactive"
+	PelicanAccountError             = "error"
+	PelicanAccountRateLimited       = "rate_limited"
+	PelicanAccountOverloaded        = "overloaded"
+	PelicanAccountTempUnschedulable = "temp_unschedulable"
+	PelicanAccountUnschedulable     = "unschedulable"
+)
+
+// pelicanAccountState 按 sub2api AccountStatusIndicator 的优先级判定账号状态：
+// 限流中 > 过载 > 错误 > 临时不可调度 > 停用（及其他非 active 状态）> 不可调度 > 正常。
+// 限流、过载、临时不可调度同时返回恢复时间。
+func pelicanAccountState(a repository.PGPelicanAccount, now time.Time) (string, *time.Time) {
+	future := func(t *time.Time) bool { return t != nil && t.After(now) }
+	switch {
+	case future(a.RateLimitResetAt):
+		return PelicanAccountRateLimited, a.RateLimitResetAt
+	case future(a.OverloadUntil):
+		return PelicanAccountOverloaded, a.OverloadUntil
+	case a.Status == "error":
+		return PelicanAccountError, nil
+	case future(a.TempUnschedulableUntil):
+		return PelicanAccountTempUnschedulable, a.TempUnschedulableUntil
+	case a.Status != "active":
+		return PelicanAccountInactive, nil
+	case !a.Schedulable:
+		return PelicanAccountUnschedulable, nil
+	default:
+		return PelicanAccountActive, nil
+	}
 }
 
 type PelicanService struct {
@@ -145,9 +187,9 @@ func (s *PelicanService) Groups(ctx context.Context) ([]PelicanGroupOption, erro
 	return out, nil
 }
 
-// Accounts 列出可选的本站上游账号（anthropic / openai 的 api_key 账号）。
+// Accounts 列出可选的本站上游账号（anthropic / openai 的 api_key 账号，含停用与错误状态）。
 func (s *PelicanService) Accounts(ctx context.Context) ([]PelicanAccountOption, error) {
-	accounts, err := s.pg.ListProbeCandidates(ctx)
+	accounts, err := s.pg.ListPelicanAccounts(ctx)
 	if err != nil {
 		return nil, ErrPelicanUnavailable
 	}
@@ -156,6 +198,7 @@ func (s *PelicanService) Accounts(ctx context.Context) ([]PelicanAccountOption, 
 		return nil, ErrPelicanUnavailable
 	}
 	out := make([]PelicanAccountOption, 0, len(accounts))
+	now := time.Now()
 	for _, a := range accounts {
 		if !pelicanPlatform(a.Platform) || strings.TrimSpace(a.APIKey) == "" {
 			continue
@@ -168,7 +211,11 @@ func (s *PelicanService) Accounts(ctx context.Context) ([]PelicanAccountOption, 
 		if groups == nil {
 			groups = []int64{}
 		}
-		out = append(out, PelicanAccountOption{ID: a.ID, Name: a.Name, Platform: strings.ToLower(strings.TrimSpace(a.Platform)), BaseURL: base, GroupIDs: groups})
+		state, until := pelicanAccountState(a, now)
+		out = append(out, PelicanAccountOption{
+			ID: a.ID, Name: a.Name, Platform: strings.ToLower(strings.TrimSpace(a.Platform)), BaseURL: base, GroupIDs: groups,
+			State: state, StateUntil: until, ErrorMessage: strings.TrimSpace(a.ErrorMessage),
+		})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Name == out[j].Name {
@@ -228,22 +275,9 @@ func pelicanProtocolPlatform(protocol, platform string) error {
 	return nil
 }
 
-// defaultPelicanPrompt 全部目标都走 Messages（Claude）时用 Claude 题目，否则用通用题目。
-func defaultPelicanPrompt(targets []PelicanTarget) string {
-	if len(targets) == 0 {
-		return DefaultPelicanPrompt
-	}
-	for _, t := range targets {
-		if strings.TrimSpace(t.Protocol) != "messages" {
-			return DefaultPelicanPrompt
-		}
-	}
-	return DefaultPelicanClaudePrompt
-}
-
 func normalizePelicanRequest(r *PelicanRequest) error {
 	if strings.TrimSpace(r.Prompt) == "" {
-		r.Prompt = defaultPelicanPrompt(r.Targets)
+		r.Prompt = DefaultPelicanPrompt
 	}
 	r.Effort = strings.TrimSpace(r.Effort)
 	if r.Effort != "" && !slices.Contains(modeldetect.EffortLevels, r.Effort) {
@@ -312,7 +346,7 @@ type pelicanCredential struct {
 	key  string
 }
 
-func pelicanTargetCredential(t PelicanTarget, accounts map[int64]repository.PGAccount) (pelicanCredential, error) {
+func pelicanTargetCredential(t PelicanTarget, accounts map[int64]repository.PGPelicanAccount) (pelicanCredential, error) {
 	if t.Source == PelicanSourceManual {
 		return pelicanCredential{base: t.BaseURL, key: t.APIKey}, nil
 	}
@@ -354,7 +388,7 @@ func (s *PelicanService) Start(ctx context.Context, r PelicanRequest) (*reposito
 	for _, g := range groups {
 		groupNames[g.ID] = g.Name
 	}
-	accounts := map[int64]repository.PGAccount{}
+	accounts := map[int64]repository.PGPelicanAccount{}
 	needAccounts := false
 	for _, t := range r.Targets {
 		if t.Source == PelicanSourceAccount {
@@ -363,7 +397,7 @@ func (s *PelicanService) Start(ctx context.Context, r PelicanRequest) (*reposito
 		}
 	}
 	if needAccounts {
-		list, err := s.pg.ListProbeCandidates(ctx)
+		list, err := s.pg.ListPelicanAccounts(ctx)
 		if err != nil {
 			return nil, ErrPelicanUnavailable
 		}
@@ -398,6 +432,9 @@ func (s *PelicanService) Start(ctx context.Context, r PelicanRequest) (*reposito
 		}
 		if t.Source == PelicanSourceManual {
 			meta.KeyFP = keyidentity.Fingerprint(t.APIKey)
+		}
+		if r.Candy {
+			meta.Candy = &repository.PelicanCandy{Status: CandyQueued}
 		}
 		results = append(results, &repository.PelicanResult{GroupID: t.GroupID, Model: t.Model, Status: "queued", PelicanMetadata: meta})
 		creds = append(creds, cred)
@@ -476,10 +513,32 @@ func (s *PelicanService) execute(parent context.Context, cred pelicanCredential,
 		return
 	}
 	var err error
+	var candy repository.PelicanCandy
+	var candyText string
 	if strings.TrimSpace(cred.base) == "" || strings.TrimSpace(cred.key) == "" {
 		err = errors.New("pelican.errors.credentialsUnavailable")
+		candy = repository.PelicanCandy{Status: CandyFailed, Error: err.Error()}
 	} else {
+		// 糖果题与作品对同一目标并行发出，共用单项超时；goroutine 只读 v，结果回到这里再写。
+		var wg sync.WaitGroup
+		if v.Candy != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				candy, candyText = s.answerCandy(ctx, cred, v)
+			}()
+		}
 		v.Output, err = s.gateway.Generate(ctx, cred.base, cred.key, v)
+		wg.Wait()
+	}
+	if v.Candy != nil {
+		v.Candy = &candy
+		if candyText != "" {
+			if v.Output == nil {
+				v.Output = &repository.PelicanOutput{}
+			}
+			v.Output.CandyText = candyText
+		}
 	}
 	end := time.Now().UTC()
 	v.FinishedAt = &end
@@ -500,6 +559,25 @@ func (s *PelicanService) execute(parent context.Context, cred pelicanCredential,
 		v.Error = "pelican.errors.noDocument"
 	}
 	s.persistResult(v)
+}
+
+// answerCandy 发糖果题并判分。回复没正常结束时仍按截断口径尝试取答案，错误原因一并保留。
+func (s *PelicanService) answerCandy(ctx context.Context, cred pelicanCredential, v *repository.PelicanResult) (repository.PelicanCandy, string) {
+	start := time.Now()
+	out, err := s.gateway.Ask(ctx, cred.base, cred.key, candyCall(v))
+	text := ""
+	if out != nil {
+		text = out.Text
+	}
+	result := gradeCandy(text, err != nil)
+	result.DurationMs = time.Since(start).Milliseconds()
+	if err != nil {
+		result.Error = err.Error()
+		if result.Status == CandyNoAnswer {
+			result.Status = CandyFailed
+		}
+	}
+	return result, truncateRunes(text, candyMaxTextRunes)
 }
 
 // pelicanPersistTimeout 单次落库超时：库在远端、回复正文可达数百 KB，5 秒不够用。

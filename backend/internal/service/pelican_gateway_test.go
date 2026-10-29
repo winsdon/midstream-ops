@@ -188,7 +188,7 @@ func TestPelicanEffortPayload(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, body, err := pelicanPayload(&repository.PelicanResult{Model: tc.model, PelicanMetadata: repository.PelicanMetadata{Protocol: tc.protocol, Prompt: "p", MaxTokens: 100, Effort: tc.effort}})
+			_, body, err := pelicanPayload(artworkCall(&repository.PelicanResult{Model: tc.model, PelicanMetadata: repository.PelicanMetadata{Protocol: tc.protocol, Prompt: "p", MaxTokens: 100, Effort: tc.effort}}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -202,6 +202,55 @@ func TestPelicanEffortPayload(t *testing.T) {
 				t.Fatalf("effort=%q want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// 作品请求带交付指令，糖果题不带：三种协议各自的 system 位置都要空着，且题目原样发送。
+func TestPelicanPayloadDeliveryInstructions(t *testing.T) {
+	system := func(protocol string, body map[string]any) (string, int) {
+		switch protocol {
+		case "messages":
+			s, _ := body["system"].(string)
+			return s, len(body["messages"].([]map[string]string))
+		case "responses":
+			s, _ := body["instructions"].(string)
+			return s, len(body["input"].([]map[string]any))
+		default:
+			messages := body["messages"].([]map[string]string)
+			if messages[0]["role"] == "system" {
+				return messages[0]["content"], len(messages)
+			}
+			return "", len(messages)
+		}
+	}
+	for _, protocol := range []string{"messages", "responses", "chat"} {
+		v := &repository.PelicanResult{Model: "claude-opus-5-5", PelicanMetadata: repository.PelicanMetadata{Protocol: protocol, Prompt: "画鹈鹕", MaxTokens: 32000, Effort: "medium"}}
+		_, art, err := pelicanPayload(artworkCall(v))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := system(protocol, art); got != pelicanDeliveryInstructions {
+			t.Fatalf("%s artwork system=%q", protocol, got)
+		}
+		_, candy, err := pelicanPayload(candyCall(v))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, n := system(protocol, candy); got != "" || n != 1 {
+			t.Fatalf("%s candy must not carry delivery instructions: system=%q messages=%d", protocol, got, n)
+		}
+		raw, _ := json.Marshal(candy)
+		if !strings.Contains(string(raw), "最终答案") || strings.Contains(string(raw), "画鹈鹕") {
+			t.Fatalf("%s candy prompt not sent verbatim: %s", protocol, raw)
+		}
+		if protocol == "messages" {
+			if candy["max_tokens"] != candyMaxTokens {
+				t.Fatalf("candy max_tokens=%v", candy["max_tokens"])
+			}
+			if cfg, _ := candy["output_config"].(map[string]any); cfg["effort"] != "medium" {
+				t.Fatalf("candy effort must follow the batch: %v", candy["output_config"])
+			}
+		}
 	}
 }
 

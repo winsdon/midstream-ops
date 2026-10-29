@@ -2,9 +2,9 @@
   <BaseDialog :show="detail !== null" :title="detail ? `${detail.group_name} · ${detail.model}` : ''" width="full" @close="emit('close')">
     <div v-if="detail" class="grid items-start gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(16rem,22rem)]">
       <div class="min-w-0">
-        <div v-if="admin && detail.has_document" class="mb-2 flex flex-wrap rounded-lg bg-gray-100 p-0.5 text-xs dark:bg-dark-800">
+        <div v-if="admin && tabs.length > 1" class="mb-2 flex flex-wrap rounded-lg bg-gray-100 p-0.5 text-xs dark:bg-dark-800">
           <button
-            v-for="mode in TABS"
+            v-for="mode in tabs"
             :key="mode"
             type="button"
             class="rounded-md px-2.5 py-1 font-medium transition-colors"
@@ -19,6 +19,7 @@
         <pre v-else-if="view === 'reply'" class="h-[55vh] min-h-[20rem] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-3 text-xs dark:bg-dark-900">{{ detail.output?.text }}</pre>
         <pre v-else-if="view === 'parameters'" class="h-[55vh] min-h-[20rem] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-3 text-xs dark:bg-dark-900">{{ pretty(detail.output?.request) }}</pre>
         <pre v-else-if="view === 'usage'" class="h-[55vh] min-h-[20rem] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-3 text-xs dark:bg-dark-900">{{ pretty(detail.output?.usage) }}</pre>
+        <pre v-else-if="view === 'candy'" class="h-[55vh] min-h-[20rem] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-3 text-xs dark:bg-dark-900">{{ detail.output?.candy_text || t('pelican.candyNoReply') }}</pre>
         <div v-else class="flex h-[24rem] items-center justify-center rounded-lg bg-gray-50 text-sm text-gray-500 dark:bg-dark-900">{{ t(`pelican.statuses.${detail.status}`) }}</div>
       </div>
 
@@ -32,6 +33,11 @@
         <p v-if="detail.published_at" class="text-gray-500">{{ t('pelican.publishedAt') }}: {{ fullDate(detail.published_at) }}</p>
         <p class="text-gray-500">{{ t('pelican.parameters') }}: {{ pelicanProtocolLabel(detail.protocol) }} · max_tokens={{ detail.max_tokens }}<span v-if="detail.effort"> · effort={{ detail.effort }}</span><span v-if="detail.source"> · {{ detail.source === 'manual' ? t('pelican.sourceManual') : t('pelican.sourceAccount') }}</span></p>
         <p v-if="accountLabel" class="text-gray-500">{{ t('pelican.accountName') }}: {{ accountLabel }}</p>
+        <p v-if="detail.candy" class="flex flex-wrap items-center gap-1.5 text-gray-500">
+          <PelicanCandyBadge :candy="detail.candy" :status="detail.status" />
+          <span v-if="admin && detail.candy.duration_ms">· {{ fmtMs(detail.candy.duration_ms) }}</span>
+        </p>
+        <p v-if="admin && detail.candy?.error" class="break-words text-xs text-red-600">{{ t('pelican.candyError') }}: {{ detail.candy.error }}</p>
         <p v-if="admin && detail.error" class="text-red-600">{{ t(detail.error) }}</p>
         <h4 class="font-semibold text-gray-900 dark:text-white">{{ t('pelican.prompt') }}</h4>
         <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-3 text-xs dark:bg-dark-900">{{ detail.prompt }}</pre>
@@ -67,9 +73,10 @@ import Select from '@/components/common/Select.vue'
 import { fmtMs } from '@/utils/format'
 import { pelicanAccountsForGroup, pelicanDeletable, pelicanHost, pelicanPending, pelicanProtocolLabel, pelicanStatusVariant } from '@/utils/pelican'
 import type { PelicanAccount, PelicanResult } from '@/types/pelican'
+import PelicanCandyBadge from './PelicanCandyBadge.vue'
 import PelicanPreview from './PelicanPreview.vue'
 
-const TABS = ['preview', 'source', 'reply', 'parameters', 'usage'] as const
+const TABS = ['preview', 'source', 'reply', 'parameters', 'usage', 'candy'] as const
 type Tab = (typeof TABS)[number]
 
 const props = defineProps<{
@@ -90,7 +97,20 @@ const retryAccountOptions = computed(() => {
   const all = props.accounts ?? []
   const scoped = props.detail ? pelicanAccountsForGroup(all, props.detail.group_id) : []
   const list = scoped.length ? scoped : all
-  return list.map(account => ({ value: account.id, label: `${account.name} · ${account.platform} · ${pelicanHost(account.base_url)}` }))
+  return list.map(account => ({
+    value: account.id,
+    label: `${account.name} · ${account.platform} · ${pelicanHost(account.base_url)}${account.state ? ` · ${t(`pelican.accountStates.${account.state}`)}` : ''}`
+  }))
+})
+/** 管理端页签：没有作品时不给预览 / 源码，没测糖果题时不给糖果题页签。 */
+const tabs = computed<Tab[]>(() => {
+  const item = props.detail
+  if (!item) return []
+  return TABS.filter(tab => {
+    if (tab === 'preview' || tab === 'source') return item.has_document
+    if (tab === 'candy') return !!item.candy
+    return true
+  })
 })
 const showPreview = computed(() => !!props.detail?.has_document && (!props.admin || view.value === 'preview'))
 /** 所属账号：优先用记录里的名称快照，旧记录回落到账号列表；只给管理端看。 */
@@ -110,7 +130,7 @@ const deleteHint = computed(() => {
   return t('pelican.delete')
 })
 
-watch(() => props.detail?.id, () => { view.value = 'preview' })
+watch(() => props.detail?.id, () => { view.value = tabs.value[0] ?? 'preview' })
 
 function fullDate(value: string) { return new Date(value).toLocaleString(locale.value, { timeZoneName: 'short' }) }
 function pretty(value: unknown) { return JSON.stringify(value, null, 2) }

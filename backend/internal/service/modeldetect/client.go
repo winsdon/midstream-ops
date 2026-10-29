@@ -155,18 +155,6 @@ func (c *Client) PostStream(ctx context.Context, kind string, body map[string]an
 	return c.do(ctx, http.MethodPost, kind, body, true)
 }
 
-// PostStreamWithin 发送流式请求，整段读取的总时限放宽到 total（不低于默认值）。
-//
-// 智商题带 thinking 且输出长，默认「3×超时+10s」的总上限容易在写完前截断；
-// 首字节仍受 ResponseHeaderTimeout 约束，连不上或迟迟不回头的上游照样尽早失败。
-func (c *Client) PostStreamWithin(ctx context.Context, kind string, body map[string]any, total time.Duration) *Exchange {
-	hc := *c.http
-	if total > hc.Timeout {
-		hc.Timeout = total
-	}
-	return c.doWith(ctx, &hc, http.MethodPost, kind, body, true)
-}
-
 // Get 发送 GET 请求（仅 /v1/models 用）。
 func (c *Client) Get(ctx context.Context, kind string) *Exchange {
 	return c.do(ctx, http.MethodGet, kind, nil, false)

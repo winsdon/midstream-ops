@@ -72,6 +72,7 @@
         <div class="flex flex-wrap items-center gap-x-1.5 gap-y-1 px-2.5 py-1.5 text-xs text-gray-500">
           <time :datetime="item.tested_at" :title="fullDate(item.tested_at)">{{ date(item.tested_at) }}</time>
           <span v-if="item.duration_ms > 0">· {{ fmtMs(item.duration_ms) }}</span>
+          <PelicanCandyBadge :candy="item.candy" :status="item.status" />
           <Badge v-if="admin" :variant="pelicanStatusVariant(item.status)">{{ t(`pelican.statuses.${item.status}`) }}</Badge>
           <Badge v-if="admin" :variant="item.published_at ? 'success' : 'gray'">{{ t(item.published_at ? 'pelican.published' : 'pelican.draft') }}</Badge>
         </div>
@@ -114,6 +115,7 @@ import Icon from '@/components/icons/Icon.vue'
 import { fmtDateTime, fmtMs } from '@/utils/format'
 import { pelicanAccountsForGroup, pelicanDateRange, pelicanDeletable, pelicanHost, pelicanPending, pelicanRequestID, pelicanStatusVariant } from '@/utils/pelican'
 import type { PelicanAccount, PelicanFacet, PelicanGroup, PelicanResult } from '@/types/pelican'
+import PelicanCandyBadge from './PelicanCandyBadge.vue'
 import PelicanDetail from './PelicanDetail.vue'
 import PelicanPreview from './PelicanPreview.vue'
 

@@ -56,20 +56,14 @@ type DetectTargetInput struct {
 
 // DetectRunRequest 发起检测的请求。
 type DetectRunRequest struct {
-	Owner string `json:"-"`
-	// Suite 测试套件：authenticity（模型真伪，缺省）或 iq（智商测试）。一次作业只跑一个套件。
-	Suite      string              `json:"suite"`
-	BaselineID *int64              `json:"baseline_id"`
-	Targets    []DetectTargetInput `json:"targets"`
-	Model      string              `json:"model"`
-	AuthMode   string              `json:"auth_mode"`
-	Checks     []string            `json:"checks"`
-	// PelicanPrompt 仅用于智商测试的鹈鹕题；为空时使用内置原题。
-	PelicanPrompt string `json:"pelican_prompt"`
-	// PelicanEffort 鹈鹕题的思考强度（low / medium / high / xhigh / max）；为空时按 medium。
-	PelicanEffort string            `json:"pelican_effort"`
-	ExtraHeaders  map[string]string `json:"extra_headers"`
-	TimeoutMs     int               `json:"timeout_ms"`
+	Owner        string              `json:"-"`
+	BaselineID   *int64              `json:"baseline_id"`
+	Targets      []DetectTargetInput `json:"targets"`
+	Model        string              `json:"model"`
+	AuthMode     string              `json:"auth_mode"`
+	Checks       []string            `json:"checks"`
+	ExtraHeaders map[string]string   `json:"extra_headers"`
+	TimeoutMs    int                 `json:"timeout_ms"`
 	// Concurrency 同时执行几项检测（跨目标共享）。0 / 缺省按 3；超出 1–10 夹紧，不 400。
 	Concurrency int `json:"concurrency"`
 }
@@ -97,7 +91,6 @@ type DetectRetryRequest struct {
 type DetectJob struct {
 	BaselineID  *int64                   `json:"baseline_id,omitempty"`
 	ID          string                   `json:"id"`
-	Suite       string                   `json:"suite"`
 	Status      string                   `json:"status"`
 	Checks      []string                 `json:"checks"`
 	Total       int                      `json:"total"`
@@ -116,8 +109,6 @@ type ModelDetectService struct {
 	pg           *repository.PG
 	linkRepo     *repository.ProviderAccountRepo
 	providerRepo *repository.ProviderRepo
-	// iqRepo 智商测试留痕。可选依赖，未注入时智商测试照常执行、只是不落库。
-	iqRepo *repository.ModelIQRepo
 
 	mu   sync.RWMutex
 	jobs map[string]*detectJob
@@ -145,28 +136,6 @@ func NewModelDetectServiceWithBaseline(repo *repository.ModelDetectionRepo, base
 
 // Repo 暴露存储（供 handler 查历史）。
 func (s *ModelDetectService) Repo() *repository.ModelDetectionRepo { return s.repo }
-
-// SetIQRepo 注入智商测试留痕存储。用 setter 是因为它与基准存储一样是可选依赖，
-// 不必再把构造函数的签名拉长一截。
-func (s *ModelDetectService) SetIQRepo(repo *repository.ModelIQRepo) { s.iqRepo = repo }
-
-// IQHistory 智商测试历史分页（不含报告大字段）。未注入存储时返回空列表。
-// 打开列表时顺手裁到最新 20 条，已有的超额记录不用等到下一次写入或凌晨清理。
-func (s *ModelDetectService) IQHistory(ctx context.Context, page, pageSize int) ([]*repository.ModelIQRun, int64, error) {
-	if s.iqRepo == nil {
-		return nil, 0, nil
-	}
-	s.TrimIQHistory(ctx)
-	return s.iqRepo.List(ctx, page, pageSize)
-}
-
-// IQHistoryDetail 单条智商测试报告（含作品与回复全文）。
-func (s *ModelDetectService) IQHistoryDetail(ctx context.Context, id int64) (*repository.ModelIQRun, error) {
-	if s.iqRepo == nil {
-		return nil, repository.ErrIQRunNotFound
-	}
-	return s.iqRepo.Get(ctx, id)
-}
 
 // DetectAccount 可检测的本站账号（不含密钥）。
 type DetectAccount struct {
@@ -313,12 +282,10 @@ func (s *ModelDetectService) Start(ctx context.Context, req DetectRunRequest) (s
 	if err != nil {
 		return "", err
 	}
-	suite := modeldetect.NormalizeSuite(req.Suite)
-	checks := modeldetect.ResolveSuiteCheckIDs(suite, req.Checks)
+	checks := modeldetect.ResolveCheckIDs(req.Checks)
 	var baseline *modeldetect.BaselineStats
 	var baselineID *int64
-	// CCMax 基准只服务于真伪对照；智商测试用不上，也就不必把它挂进作业。
-	if suite == modeldetect.SuiteAuthenticity && s.baselineRepo != nil && req.Owner != "" {
+	if s.baselineRepo != nil && req.Owner != "" {
 		if b, e := s.baselineRepo.Get(ctx, req.Owner); e == nil && b.Status == "passed" {
 			baselineID = &b.ID
 			baseline = baselineStatsFromRow(b)
@@ -335,7 +302,7 @@ func (s *ModelDetectService) Start(ctx context.Context, req DetectRunRequest) (s
 	job := &detectJob{
 		snap: DetectJob{
 			BaselineID: baselineID,
-			ID:         jobID, Suite: suite, Status: DetectJobRunning, Checks: checks,
+			ID:         jobID, Status: DetectJobRunning, Checks: checks,
 			Total: len(targets) * len(checks), Concurrency: concurrency,
 			CreatedAt: now, UpdatedAt: now,
 		},
@@ -345,7 +312,7 @@ func (s *ModelDetectService) Start(ctx context.Context, req DetectRunRequest) (s
 	for _, t := range targets {
 		job.snap.Targets = append(job.snap.Targets, &modeldetect.TargetRun{
 			Name: t.Name, BaseURL: t.BaseURL, Model: t.Model, AuthMode: t.AuthMode,
-			AccountID: t.AccountID, ProviderID: t.ProviderID, Suite: suite,
+			AccountID: t.AccountID, ProviderID: t.ProviderID,
 		})
 	}
 
@@ -385,7 +352,6 @@ func (s *ModelDetectService) resolveTargets(ctx context.Context, req DetectRunRe
 		target := modeldetect.Target{
 			Name: in.Name, BaseURL: in.BaseURL, APIKey: in.APIKey,
 			Model: req.Model, AuthMode: req.AuthMode,
-			PelicanPrompt: req.PelicanPrompt, PelicanEffort: req.PelicanEffort,
 			ExtraHeaders: req.ExtraHeaders, Timeout: timeout,
 		}
 		if in.AccountID != nil {
@@ -656,10 +622,6 @@ func (s *ModelDetectService) persist(ctx context.Context, target modeldetect.Tar
 	if !persistable(run, selected) {
 		return
 	}
-	if run.Suite == modeldetect.SuiteIQ {
-		s.persistIQ(ctx, target, run)
-		return
-	}
 	if s.repo == nil || run.Verdict == nil {
 		return
 	}
@@ -700,73 +662,6 @@ func (s *ModelDetectService) persist(ctx context.Context, target modeldetect.Tar
 // 结果仍留在作业快照里，当场可以看。
 func persistable(run *modeldetect.TargetRun, selected []string) bool {
 	return run != nil && !run.Cancelled() && modeldetect.Complete(run, selected)
-}
-
-// IQResult 智商测试历史列表里每道题的一行结论。
-type IQResult struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Status  string `json:"status"`
-	Summary string `json:"summary"`
-}
-
-// persistIQ 智商测试单独落表：它没有渠道分类与真实性评分，
-// 混进 model_detections 会污染真伪历史。失败同样只记日志。
-func (s *ModelDetectService) persistIQ(ctx context.Context, target modeldetect.Target, run *modeldetect.TargetRun) {
-	if s.iqRepo == nil || run == nil {
-		return
-	}
-	results, passed := summarizeIQ(run.Checks)
-	if len(results) == 0 {
-		// 一道题都没跑完（如刚开跑就取消），不留空记录
-		return
-	}
-	resultsJSON, err := json.Marshal(results)
-	if err != nil {
-		log.Printf("[detect] 序列化智商测试结论失败: %v", err)
-		return
-	}
-	report, err := json.Marshal(run)
-	if err != nil {
-		log.Printf("[detect] 序列化智商测试报告失败: %v", err)
-		return
-	}
-	rec := &repository.ModelIQRun{
-		AccountID:   target.AccountID,
-		AccountName: target.Name,
-		ProviderID:  target.ProviderID,
-		TargetFP:    TargetFingerprint(target.BaseURL, target.APIKey),
-		TargetName:  target.Name,
-		BaseURL:     target.BaseURL,
-		Model:       target.Model,
-		Passed:      passed,
-		Total:       len(results),
-		Results:     resultsJSON,
-		Report:      report,
-	}
-	timeoutCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	if err := s.iqRepo.Insert(timeoutCtx, rec); err != nil {
-		log.Printf("[detect] 写入智商测试历史失败: %v", err)
-		return
-	}
-	s.TrimIQHistory(timeoutCtx)
-}
-
-// summarizeIQ 提炼每道题的结论与通过数，供历史列表直接展示（列表不取报告大字段）。
-func summarizeIQ(checks []*modeldetect.CheckResult) ([]IQResult, int) {
-	results := make([]IQResult, 0, len(checks))
-	passed := 0
-	for _, c := range checks {
-		if c == nil || c.Status == modeldetect.StatusRunning {
-			continue
-		}
-		if c.Status == modeldetect.StatusPassed {
-			passed++
-		}
-		results = append(results, IQResult{ID: c.ID, Title: c.Title, Status: c.Status, Summary: c.Summary})
-	}
-	return results, passed
 }
 
 // TargetFingerprint 目标同一性指纹：base_url + key 的哈希前缀。
@@ -814,7 +709,7 @@ func (s *ModelDetectService) evictExpired() {
 	}
 }
 
-// Cleanup 按保留天数清理检测历史与智商测试历史，再把两张表各自裁到最新 20 条（调度器调用）。
+// Cleanup 按保留天数清理检测历史，再裁到最新 20 条（调度器调用）。
 func (s *ModelDetectService) Cleanup(ctx context.Context, retentionDays int) {
 	if retentionDays > 0 {
 		before := time.Now().AddDate(0, 0, -retentionDays)
@@ -823,15 +718,9 @@ func (s *ModelDetectService) Cleanup(ctx context.Context, retentionDays int) {
 				log.Printf("[cleanup] model_detections 删除 %d 行", n)
 			}
 		}
-		if s.iqRepo != nil {
-			if n, err := s.iqRepo.DeleteOlderThan(ctx, before); err == nil && n > 0 {
-				log.Printf("[cleanup] model_iq_runs 删除 %d 行", n)
-			}
-		}
 		s.evictExpired()
 	}
 	s.TrimDetectionHistory(ctx)
-	s.TrimIQHistory(ctx)
 }
 
 // ---- detectJob 的并发安全存取 ----

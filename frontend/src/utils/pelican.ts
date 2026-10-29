@@ -1,13 +1,12 @@
 import { ARTIFACT_PREVIEW_VIEW } from '@/utils/detectArtifact'
-import type { PelicanAccount, PelicanProtocol, PelicanRequest, PelicanSource, PelicanTarget } from '@/types/pelican'
+import type { PelicanAccount, PelicanAccountState, PelicanCandy, PelicanProtocol, PelicanRequest, PelicanSource, PelicanTarget } from '@/types/pelican'
 
-export const DEFAULT_PELICAN_PROMPT = '生成一张考拉骑自行车的 SVG 图像并添加动画效果'
-/** 全部目标都走 Messages（Claude）时的默认题目，与后端 DefaultPelicanClaudePrompt 一致。 */
-export const DEFAULT_PELICAN_CLAUDE_PROMPT = '做个初音未来.html带人物'
+/** 默认题目：水墨风鹈鹕骑脚踏车 HTML，与后端 DefaultPelicanPrompt 一致。 */
+export const DEFAULT_PELICAN_PROMPT = '独立画一个中国传统水墨风格的鹈鹕骑脚踏车html，你不需要任何测试，完全重新制作，不要看任何项目，从0开始'
 /**
  * 「禁止思考」的提示词后缀：只是提示词层面的引导，不改请求参数。
  *
- * 实测（Claude Opus 5.5，thinking adaptive + effort low）：同一道初音题，
+ * 实测（Claude Opus 5.5，thinking adaptive + effort low）：同一道 HTML 作品题，
  * 加上这句后思考 token 从 6785 / 12315 降到 0，耗时分别从 333.7s / 389.8s 降到 186.8s / 184.9s，
  * 作品仍完整返回。它不是 API 层的关闭（`{"type":"disabled"}` 会被上游 400），
  * 所以复杂推理题上模型仍可能思考，也可能因为“不要思考”掉质量。
@@ -16,9 +15,9 @@ export const PELICAN_NO_THINKING_SUFFIX = '直接输出完整 HTML，不要思�
 /** 思考强度（output_config.effort），只对 Messages 协议生效；与后端 modeldetect.EffortLevels 一致。 */
 export const PELICAN_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 export type PelicanEffort = typeof PELICAN_EFFORTS[number]
-export const PELICAN_DEFAULT_EFFORT: PelicanEffort = 'low'
-/** 模型检测里鹈鹕题的默认思考强度，与后端 modeldetect.DefaultPelicanEffort 一致。 */
-export const DETECT_PELICAN_DEFAULT_EFFORT: PelicanEffort = 'medium'
+export const PELICAN_DEFAULT_EFFORT: PelicanEffort = 'medium'
+/** 糖果题标准答案，与后端 candyAnswer 一致（只用于界面说明）。 */
+export const PELICAN_CANDY_ANSWER = 21
 /** 与后端 normalizePelicanRequest 的默认值一致：高级选项不填时按这套参数提交。 */
 export const PELICAN_DEFAULT_CONCURRENCY = 3
 export const PELICAN_DEFAULT_MAX_TOKENS = 32000
@@ -67,6 +66,41 @@ export function pelicanProtocolOptions(platform?: string): PelicanProtocol[] {
 
 export type PelicanStatusVariant = 'primary' | 'success' | 'warning' | 'danger' | 'gray'
 
+/** 账号状态徽章颜色，与 sub2api 后台账号列表一致；未知状态按灰色。 */
+export function pelicanAccountStateVariant(state?: PelicanAccountState | string): PelicanStatusVariant {
+  switch (state) {
+    case 'active': return 'success'
+    case 'rate_limited':
+    case 'temp_unschedulable': return 'warning'
+    case 'error':
+    case 'overloaded': return 'danger'
+    default: return 'gray'
+  }
+}
+
+/** 糖果题在卡片上的展示态：记录已结束却仍是 queued（取消 / 重启中断）按未完成处理。 */
+export type PelicanCandyView = 'pending' | 'correct' | 'wrong' | 'no_answer' | 'failed' | 'unfinished'
+export function pelicanCandyView(candy: PelicanCandy | null | undefined, recordStatus?: string): PelicanCandyView | null {
+  if (!candy) return null
+  if (candy.status === 'queued') return pelicanPending(recordStatus) ? 'pending' : 'unfinished'
+  switch (candy.status) {
+    case 'correct':
+    case 'wrong':
+    case 'no_answer':
+    case 'failed': return candy.status
+    default: return 'unfinished'
+  }
+}
+export function pelicanCandyVariant(view: PelicanCandyView): PelicanStatusVariant {
+  switch (view) {
+    case 'correct': return 'success'
+    case 'wrong': return 'danger'
+    case 'no_answer': return 'warning'
+    case 'pending': return 'primary'
+    default: return 'gray'
+  }
+}
+
 /** 状态徽章颜色。未知状态用灰色，避免进行中和失败看起来一样。 */
 export function pelicanStatusVariant(status?: string): PelicanStatusVariant {
   switch (status) {
@@ -107,6 +141,13 @@ export interface PelicanDraft {
   timeout_seconds: number
   /** 思考强度；空串表示不指定（只会出现在旧的待确认提交里）。 */
   effort: PelicanEffort | ''
+  /** 每个目标同时答糖果题。 */
+  candy: boolean
+}
+
+/** 新测试的默认提示词：默认题目 + 「禁止思考」后缀（禁止思考默认勾选）。 */
+export function pelicanDefaultDraftPrompt(): string {
+  return pelicanToggleNoThinking(DEFAULT_PELICAN_PROMPT, true)
 }
 
 /** 空白表单。分组与账号等账号列表加载完成后再由调用方水合。 */
@@ -121,17 +162,13 @@ export function pelicanEmptyDraft(): PelicanDraft {
     // 手填来源必须自己挑协议（和改造前一致，避免默认值打错端点）；
     // 账号来源下这个空值不影响提交：anthropic 恒为 messages，OpenAI 落到 responses。
     protocol: '',
-    prompt: DEFAULT_PELICAN_PROMPT,
+    prompt: pelicanDefaultDraftPrompt(),
     concurrency: PELICAN_DEFAULT_CONCURRENCY,
     max_tokens: PELICAN_DEFAULT_MAX_TOKENS,
     timeout_seconds: PELICAN_DEFAULT_TIMEOUT_SECONDS,
-    effort: PELICAN_DEFAULT_EFFORT
+    effort: PELICAN_DEFAULT_EFFORT,
+    candy: true
   }
-}
-
-/** 按目标协议取默认题目：全部走 Messages（Claude）用初音未来，含 GPT 协议或尚无目标时用考拉。 */
-export function pelicanDefaultPrompt(targets: readonly Pick<PelicanTarget, 'protocol'>[]): string {
-  return targets.length && targets.every(target => target.protocol === 'messages') ? DEFAULT_PELICAN_CLAUDE_PROMPT : DEFAULT_PELICAN_PROMPT
 }
 
 /** 提示词是否已经带上了「禁止思考」后缀（只看末尾，避免误伤正文里出现的同一句话）。 */
@@ -156,24 +193,6 @@ export function pelicanToggleNoThinking(prompt: string, enabled: boolean): strin
   if (!enabled) return bare
   if (pelicanHasNoThinking(trimmed)) return trimmed
   return bare ? `${bare}\n${PELICAN_NO_THINKING_SUFFIX}` : PELICAN_NO_THINKING_SUFFIX
-}
-
-/**
- * 提示词仍是某一句默认题目（管理员没改过），换目标时可以跟着协议切换。
- * 「禁止思考」后缀不算改写：带着后缀的默认题目仍然跟随协议切换。
- */
-export function pelicanIsDefaultPrompt(prompt: string): boolean {
-  const bare = pelicanWithoutNoThinking(prompt)
-  return bare === DEFAULT_PELICAN_PROMPT || bare === DEFAULT_PELICAN_CLAUDE_PROMPT
-}
-
-/**
- * 换默认题目时是否保留「禁止思考」后缀：只在切到 Claude 的 HTML 默认题目时保留。
- * GPT 默认题目要的是 SVG，后缀里的“直接输出完整 HTML”会和它打架，所以切过去时丢掉后缀。
- */
-export function pelicanDefaultPromptWithNoThinking(next: string, current: string): string {
-  if (next !== DEFAULT_PELICAN_CLAUDE_PROMPT || !pelicanHasNoThinking(current)) return next
-  return pelicanToggleNoThinking(next, true)
 }
 
 /** 归属分组下的可选账号：后端按 account_groups 给出 group_ids，前端只做匹配。 */
@@ -257,6 +276,8 @@ export function pelicanDraftFromRequest(request: PelicanRequest): PelicanDraft |
   if (request.timeout_seconds > 0) draft.timeout_seconds = request.timeout_seconds
   // 旧提交没有 effort 字段：回填空串，重放时不凭空多出一个参数（否则 hash 对不上）。
   draft.effort = PELICAN_EFFORTS.find(level => level === request.effort) ?? ''
+  // 同理，没勾糖果题的提交不带 candy 字段。
+  draft.candy = request.candy === true
   if (source === 'account') {
     draft.account_ids = [...new Set(targets.map(target => target.account_id ?? 0).filter(id => id > 0))]
     draft.protocol = targets.some(target => target.protocol === 'chat') ? 'chat' : 'responses'

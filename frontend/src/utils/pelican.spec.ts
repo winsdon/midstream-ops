@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { ARTIFACT_PREVIEW_VIEW } from './detectArtifact'
 import {
-  DEFAULT_PELICAN_CLAUDE_PROMPT,
   DEFAULT_PELICAN_PROMPT,
+  PELICAN_CANDY_ANSWER,
   PELICAN_DEFAULT_CONCURRENCY,
   PELICAN_DEFAULT_EFFORT,
   PELICAN_DEFAULT_MAX_TOKENS,
@@ -11,18 +11,19 @@ import {
   PELICAN_MAX_TARGETS,
   PELICAN_NO_THINKING_SUFFIX,
   pelicanAccountProtocol,
+  pelicanAccountStateVariant,
   pelicanAccountProtocolChoices,
   pelicanAccountsForGroup,
+  pelicanCandyVariant,
+  pelicanCandyView,
   pelicanDateRange,
-  pelicanDefaultPrompt,
+  pelicanDefaultDraftPrompt,
   pelicanDeletable,
   pelicanDraftFingerprint,
   pelicanDraftFromRequest,
-  pelicanDefaultPromptWithNoThinking,
   pelicanDraftTargets,
   pelicanEmptyDraft,
   pelicanHasNoThinking,
-  pelicanIsDefaultPrompt,
   pelicanPending,
   pelicanPreviewScale,
   pelicanProtocolOptions,
@@ -38,21 +39,17 @@ const account = (id: number, platform: string, group_ids: number[] = [1]): Pelic
 
 describe('pelican default prompt', () => {
   // 与后端 service.DefaultPelicanPrompt 必须逐字一致：改一处不改另一处就是两边提示词不同。
-  it('asks for an animated koala SVG', () => {
-    expect(DEFAULT_PELICAN_PROMPT).toBe('生成一张考拉骑自行车的 SVG 图像并添加动画效果')
+  it('asks for the ink-wash pelican HTML for every protocol', () => {
+    expect(DEFAULT_PELICAN_PROMPT).toBe('独立画一个中国传统水墨风格的鹈鹕骑脚踏车html，你不需要任何测试，完全重新制作，不要看任何项目，从0开始')
   })
-  // 与后端 service.DefaultPelicanClaudePrompt 逐字一致。
-  it('uses the Miku prompt only when every target is Claude (Messages)', () => {
-    expect(DEFAULT_PELICAN_CLAUDE_PROMPT).toBe('做个初音未来.html带人物')
-    expect(pelicanDefaultPrompt([{ protocol: 'messages' }, { protocol: 'messages' }])).toBe(DEFAULT_PELICAN_CLAUDE_PROMPT)
-    expect(pelicanDefaultPrompt([{ protocol: 'messages' }, { protocol: 'responses' }])).toBe(DEFAULT_PELICAN_PROMPT)
-    expect(pelicanDefaultPrompt([{ protocol: 'chat' }])).toBe(DEFAULT_PELICAN_PROMPT)
-    expect(pelicanDefaultPrompt([])).toBe(DEFAULT_PELICAN_PROMPT)
-  })
-  it('only treats the built-in prompts as untouched defaults', () => {
-    expect(pelicanIsDefaultPrompt(DEFAULT_PELICAN_PROMPT)).toBe(true)
-    expect(pelicanIsDefaultPrompt(DEFAULT_PELICAN_CLAUDE_PROMPT)).toBe(true)
-    expect(pelicanIsDefaultPrompt(`${DEFAULT_PELICAN_CLAUDE_PROMPT}，加点樱花`)).toBe(false)
+  it('starts new tests with suppress-thinking checked, medium effort and the candy question on', () => {
+    const draft = pelicanEmptyDraft()
+    expect(draft.prompt).toBe(`${DEFAULT_PELICAN_PROMPT}
+${PELICAN_NO_THINKING_SUFFIX}`)
+    expect(draft.prompt).toBe(pelicanDefaultDraftPrompt())
+    expect(pelicanHasNoThinking(draft.prompt)).toBe(true)
+    expect(draft.effort).toBe('medium')
+    expect(draft.candy).toBe(true)
   })
 })
 
@@ -60,7 +57,7 @@ describe('pelican no-thinking prompt suffix', () => {
   // 与实测用的指令逐字一致：改文案就等于换了一个未验证的提示词。
   it('appends the measured instruction once and removes it cleanly', () => {
     expect(PELICAN_NO_THINKING_SUFFIX).toBe('直接输出完整 HTML，不要思考，不要解释。')
-    const prompt = DEFAULT_PELICAN_CLAUDE_PROMPT
+    const prompt = DEFAULT_PELICAN_PROMPT
     const on = pelicanToggleNoThinking(prompt, true)
     expect(on).toBe(`${prompt}\n${PELICAN_NO_THINKING_SUFFIX}`)
     expect(pelicanHasNoThinking(on)).toBe(true)
@@ -80,29 +77,17 @@ describe('pelican no-thinking prompt suffix', () => {
     expect(pelicanToggleNoThinking(PELICAN_NO_THINKING_SUFFIX, false)).toBe('')
     expect(pelicanToggleNoThinking('题目\n\n', true)).toBe(`题目\n${PELICAN_NO_THINKING_SUFFIX}`)
   })
-  it('still recognises the built-in prompt when the suffix is on, so the default can follow the protocol', () => {
-    expect(pelicanIsDefaultPrompt(pelicanToggleNoThinking(DEFAULT_PELICAN_CLAUDE_PROMPT, true))).toBe(true)
-    expect(pelicanIsDefaultPrompt(pelicanToggleNoThinking(DEFAULT_PELICAN_PROMPT, true))).toBe(true)
-    expect(pelicanIsDefaultPrompt(pelicanToggleNoThinking('自定义题目', true))).toBe(false)
-  })
-  // GPT 的默认题目要的是 SVG，后缀里的“输出完整 HTML”会和它打架，切过去时不能保留。
-  it('keeps the suffix across default-prompt switches only for the Claude HTML prompt', () => {
-    const claudeWithSuffix = pelicanToggleNoThinking(DEFAULT_PELICAN_CLAUDE_PROMPT, true)
-    expect(pelicanDefaultPromptWithNoThinking(DEFAULT_PELICAN_CLAUDE_PROMPT, claudeWithSuffix)).toBe(claudeWithSuffix)
-    expect(pelicanDefaultPromptWithNoThinking(DEFAULT_PELICAN_PROMPT, claudeWithSuffix)).toBe(DEFAULT_PELICAN_PROMPT)
-    expect(pelicanDefaultPromptWithNoThinking(DEFAULT_PELICAN_PROMPT, DEFAULT_PELICAN_PROMPT)).toBe(DEFAULT_PELICAN_PROMPT)
-  })
   it('changes the draft fingerprint so a pending submission is not replayed with different text', () => {
     const draft: PelicanDraft = { ...pelicanEmptyDraft(), group_id: 1, model: 'm', account_ids: [1] }
-    const withSuffix: PelicanDraft = { ...draft, prompt: pelicanToggleNoThinking(draft.prompt, true) }
-    expect(pelicanDraftFingerprint(withSuffix)).not.toBe(pelicanDraftFingerprint(draft))
+    const withoutSuffix: PelicanDraft = { ...draft, prompt: pelicanToggleNoThinking(draft.prompt, false) }
+    expect(pelicanDraftFingerprint(withoutSuffix)).not.toBe(pelicanDraftFingerprint(draft))
   })
 })
 
 describe('pelican effort', () => {
-  it('defaults new tests to low', () => {
-    expect(PELICAN_DEFAULT_EFFORT).toBe('low')
-    expect(pelicanEmptyDraft().effort).toBe('low')
+  it('defaults new tests to medium', () => {
+    expect(PELICAN_DEFAULT_EFFORT).toBe('medium')
+    expect(pelicanEmptyDraft().effort).toBe('medium')
     expect(PELICAN_EFFORTS).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
   })
 })
@@ -260,13 +245,47 @@ describe('pelican pending submission restore', () => {
   })
   it('falls back to the built-in defaults for missing parameters', () => {
     const restored = pelicanDraftFromRequest({ request_id: 'r', prompt: '', concurrency: 0, max_tokens: 0, timeout_seconds: 0, targets: [{ group_id: 3, source: 'account', account_id: 7, model: 'm', protocol: 'messages' }] })
-    expect(restored).toMatchObject({ prompt: DEFAULT_PELICAN_PROMPT, concurrency: PELICAN_DEFAULT_CONCURRENCY, max_tokens: PELICAN_DEFAULT_MAX_TOKENS, timeout_seconds: PELICAN_DEFAULT_TIMEOUT_SECONDS })
+    expect(restored).toMatchObject({ prompt: pelicanDefaultDraftPrompt(), concurrency: PELICAN_DEFAULT_CONCURRENCY, max_tokens: PELICAN_DEFAULT_MAX_TOKENS, timeout_seconds: PELICAN_DEFAULT_TIMEOUT_SECONDS })
   })
   it('restores effort, and leaves it unset for submissions made before effort existed', () => {
     const target = { group_id: 3, source: 'account' as const, account_id: 7, model: 'm', protocol: 'messages' as const }
     expect(pelicanDraftFromRequest({ ...request([target]), effort: 'xhigh' })?.effort).toBe('xhigh')
     expect(pelicanDraftFromRequest(request([target]))?.effort).toBe('')
     expect(pelicanDraftFromRequest({ ...request([target]), effort: 'bogus' })?.effort).toBe('')
+  })
+  // 没勾糖果题的旧提交不带 candy：回填 false，重放时不凭空多出字段（否则 hash 对不上）。
+  it('restores the candy switch, off for submissions made without it', () => {
+    const target = { group_id: 3, source: 'account' as const, account_id: 7, model: 'm', protocol: 'messages' as const }
+    expect(pelicanDraftFromRequest({ ...request([target]), candy: true })?.candy).toBe(true)
+    expect(pelicanDraftFromRequest(request([target]))?.candy).toBe(false)
+  })
+})
+
+describe('pelican account state and candy badges', () => {
+  it('colors account states like the sub2api account list', () => {
+    expect(pelicanAccountStateVariant('active')).toBe('success')
+    expect(pelicanAccountStateVariant('rate_limited')).toBe('warning')
+    expect(pelicanAccountStateVariant('temp_unschedulable')).toBe('warning')
+    expect(pelicanAccountStateVariant('error')).toBe('danger')
+    expect(pelicanAccountStateVariant('overloaded')).toBe('danger')
+    expect(pelicanAccountStateVariant('inactive')).toBe('gray')
+    expect(pelicanAccountStateVariant('unschedulable')).toBe('gray')
+    expect(pelicanAccountStateVariant(undefined)).toBe('gray')
+  })
+  it('shows nothing when the candy question was not run', () => {
+    expect(pelicanCandyView(undefined, 'completed')).toBeNull()
+  })
+  it('treats a queued candy as answering only while the record is still running', () => {
+    expect(pelicanCandyView({ status: 'queued' }, 'running')).toBe('pending')
+    expect(pelicanCandyView({ status: 'queued' }, 'cancelled')).toBe('unfinished')
+    expect(pelicanCandyView({ status: 'queued' }, 'interrupted')).toBe('unfinished')
+  })
+  it('maps graded results to badge colors', () => {
+    expect(PELICAN_CANDY_ANSWER).toBe(21)
+    expect(pelicanCandyVariant(pelicanCandyView({ status: 'correct', answer: '21', expected: '21' }, 'completed')!)).toBe('success')
+    expect(pelicanCandyVariant(pelicanCandyView({ status: 'wrong', answer: '29', expected: '21' }, 'failed')!)).toBe('danger')
+    expect(pelicanCandyVariant(pelicanCandyView({ status: 'no_answer' }, 'completed')!)).toBe('warning')
+    expect(pelicanCandyVariant(pelicanCandyView({ status: 'failed' }, 'completed')!)).toBe('gray')
   })
 })
 

@@ -258,9 +258,6 @@ func NewRouter(cfg *config.Config, authSvc *service.AuthService, h *Handlers) *g
 				auth.GET("/detect/history", h.Detect.History)
 				auth.GET("/detect/history/:id", h.Detect.HistoryDetail)
 				auth.DELETE("/detect/history/:id", h.Detect.DeleteHistory)
-				auth.GET("/detect/iq/history", h.Detect.IQHistory)
-				auth.GET("/detect/iq/history/:id", h.Detect.IQHistoryDetail)
-				auth.DELETE("/detect/iq/history/:id", h.Detect.DeleteIQHistory)
 			}
 
 			if h.Settings != nil {

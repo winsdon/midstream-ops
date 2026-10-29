@@ -49,7 +49,6 @@ type TargetRun struct {
 	AuthMode   string         `json:"auth_mode"`
 	AccountID  *int64         `json:"account_id,omitempty"`
 	ProviderID *int64         `json:"provider_id,omitempty"`
-	Suite      string         `json:"suite,omitempty"`
 	Checks     []*CheckResult `json:"checks"`
 	Verdict    *Verdict       `json:"verdict,omitempty"`
 	StartedAt  time.Time      `json:"started_at"`
@@ -94,23 +93,6 @@ func Complete(run *TargetRun, selected []string) bool {
 	return true
 }
 
-// ResolveSuiteCheckIDs 只保留属于 suite 的勾选项并补齐依赖；一个都没选时回退到该套件的推荐项。
-//
-// 两个套件不混跑：智商题不出判定，混进真伪检测只会白白消耗额度；
-// 真伪项混进智商测试则会因为不出判定而丢掉结论。
-func ResolveSuiteCheckIDs(suite string, selected []string) []string {
-	var picked []string
-	for _, id := range selected {
-		if meta, ok := checkByID(id); ok && meta.InSuite(suite) {
-			picked = append(picked, id)
-		}
-	}
-	if len(picked) == 0 {
-		picked = DefaultCheckIDs(suite)
-	}
-	return ResolveCheckIDs(picked)
-}
-
 // ResolveCheckIDs 把用户勾选的项补上前置依赖，并按目录顺序排列。
 //
 // 补依赖是必要的：签名篡改必须先拿到签名，缓存复现必须先有第一次请求。
@@ -135,7 +117,7 @@ func ResolveCheckIDs(selected []string) []string {
 		add(id)
 	}
 	if len(want) == 0 {
-		for _, id := range DefaultCheckIDs(SuiteAuthenticity) {
+		for _, id := range DefaultCheckIDs() {
 			add(id)
 		}
 	}
@@ -184,10 +166,8 @@ func RunWithBaseline(ctx context.Context, target Target, checkIDs []string, gate
 	}
 
 	client := NewClient(target)
-	st := &runState{profile: ResolveProfile(target.Model), baseline: baseline,
-		pelicanPrompt: target.PelicanPrompt, pelicanEffort: target.PelicanEffort}
+	st := &runState{profile: ResolveProfile(target.Model), baseline: baseline}
 	ids := ResolveCheckIDs(checkIDs)
-	run.Suite = SuiteOf(ids)
 	if gate == nil {
 		gate = NewGate(1)
 	}
@@ -333,8 +313,7 @@ func RetryChecksWithBaseline(ctx context.Context, target Target, checkIDs []stri
 	}
 
 	client := NewClient(target)
-	st := &runState{profile: ResolveProfile(target.Model), baseline: baseline,
-		pelicanPrompt: target.PelicanPrompt, pelicanEffort: target.PelicanEffort}
+	st := &runState{profile: ResolveProfile(target.Model), baseline: baseline}
 	hydrateRunState(st, run.Checks, ids)
 	if gate == nil {
 		gate = NewGate(1)
@@ -445,12 +424,10 @@ func RetryChecksWithBaseline(ctx context.Context, target Target, checkIDs []stri
 
 // judge 真伪检测的收尾：跨项审计 + 渠道分类与真实性评分。
 //
-// 智商测试不出判定：答对题证明不了后端是 Claude，答错也不说明渠道是谁，
-// 硬套一个分类只会得到「证据不足」这种误导性的结论。没有任何计分项结果时同样不出判定
-// （比如只勾了「是否 0 注入」，或者一项都没跑完就取消了）：没有证据却给出「渠道不可用」，
-// 还会被落进真伪历史，污染这条渠道的时间线。
+// 没有任何计分项结果时不出判定（比如只勾了「是否 0 注入」，或者一项都没跑完就取消了）：
+// 没有证据却给出「渠道不可用」，还会被落进真伪历史，污染这条渠道的时间线。
 func judge(run *TargetRun, profile ThinkingProfile) {
-	if run == nil || run.Suite == SuiteIQ {
+	if run == nil {
 		return
 	}
 	if !hasScoredResult(run.Checks) {

@@ -25,7 +25,7 @@ func (p *pelicanHandlerPG) ListGroups(context.Context) ([]repository.PGGroup, er
 func (p *pelicanHandlerPG) ListGroupAvailableModels(context.Context) ([]repository.PGGroupModels, error) {
 	return nil, nil
 }
-func (p *pelicanHandlerPG) ListProbeCandidates(context.Context) ([]repository.PGAccount, error) {
+func (p *pelicanHandlerPG) ListPelicanAccounts(context.Context) ([]repository.PGPelicanAccount, error) {
 	return nil, nil
 }
 func (p *pelicanHandlerPG) ListAccountGroupIDs(context.Context) (map[int64][]int64, error) {

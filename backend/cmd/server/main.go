@@ -97,8 +97,6 @@ func main() {
 	detectRepo := repository.NewModelDetectionRepo(store)
 	baselineRepo := repository.NewModelDetectionBaselineRepo(store)
 	detectSvc := service.NewModelDetectServiceWithBaseline(detectRepo, baselineRepo, pg, linkRepo, providerRepo)
-	// 智商测试（鹈鹕 / 糖果题）与真伪检测共用作业管线，但单独留痕
-	detectSvc.SetIQRepo(repository.NewModelIQRepo(store))
 	pelicanRepo := repository.NewPelicanRepo(store)
 	if err := pelicanRepo.Recover(context.Background()); err != nil {
 		log.Fatalf("恢复鹈鹕测试任务失败: %v", err)

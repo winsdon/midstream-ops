@@ -42,8 +42,6 @@ import type {
   DetectCheckMeta,
   DetectHistoryDetail,
   DetectHistoryItem,
-  DetectIQHistoryDetail,
-  DetectIQHistoryItem,
   DetectJob,
   DetectPreset,
   DetectBaselinePayload,
@@ -482,14 +480,5 @@ export const detectApi = {
   historyDetail: (id: number) =>
     unwrap<DetectHistoryDetail>(http.get<ApiResponse<DetectHistoryDetail>>(`/detect/history/${id}`)),
   deleteHistory: (id: number) =>
-    unwrap<{ deleted: number }>(http.delete<ApiResponse<{ deleted: number }>>(`/detect/history/${id}`)),
-  /** 智商测试历史：与真伪检测分表留痕 */
-  iqHistory: (params: { page?: number; page_size?: number }) =>
-    unwrap<PaginatedData<DetectIQHistoryItem>>(
-      http.get<ApiResponse<PaginatedData<DetectIQHistoryItem>>>('/detect/iq/history', { params })
-    ),
-  iqHistoryDetail: (id: number) =>
-    unwrap<DetectIQHistoryDetail>(http.get<ApiResponse<DetectIQHistoryDetail>>(`/detect/iq/history/${id}`)),
-  deleteIQHistory: (id: number) =>
-    unwrap<{ deleted: number }>(http.delete<ApiResponse<{ deleted: number }>>(`/detect/iq/history/${id}`))
+    unwrap<{ deleted: number }>(http.delete<ApiResponse<{ deleted: number }>>(`/detect/history/${id}`))
 }

@@ -18,6 +18,19 @@ type PelicanOutput struct {
 	Document string          `json:"document,omitempty"`
 	Kind     string          `json:"kind,omitempty"`
 	Usage    json.RawMessage `json:"usage,omitempty"`
+	// CandyText 糖果题的回复全文（只在详情里读取）。
+	CandyText string `json:"candy_text,omitempty"`
+}
+
+// PelicanCandy 糖果题的判定结果，随 metadata 落库，列表卡片直接可用。
+type PelicanCandy struct {
+	// Status queued / correct / wrong / no_answer / failed。
+	Status   string `json:"status"`
+	Answer   string `json:"answer,omitempty"`
+	Expected string `json:"expected,omitempty"`
+	// DurationMs 糖果题请求本身的耗时。
+	DurationMs int64  `json:"duration_ms,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 type PelicanMetadata struct {
 	GroupName string `json:"group_name"`
@@ -47,6 +60,8 @@ type PelicanMetadata struct {
 	DurationMs  int64      `json:"duration_ms"`
 	Error       string     `json:"error,omitempty"`
 	HasDocument bool       `json:"has_document"`
+	// Candy 糖果题结果；nil 表示这次没测糖果题（含该功能上线前的旧记录）。
+	Candy *PelicanCandy `json:"candy,omitempty"`
 }
 type PelicanResult struct {
 	ID          int64      `json:"id"`

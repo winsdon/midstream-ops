@@ -16,10 +16,9 @@ import (
 	"sub2api-account-monitor/internal/service/modeldetect"
 )
 
-const DefaultPelicanPrompt = "生成一张考拉骑自行车的 SVG 图像并添加动画效果"
-
-// DefaultPelicanClaudePrompt 全部目标都走 Messages（Claude）时的默认题目。
-const DefaultPelicanClaudePrompt = "做个初音未来.html带人物"
+// DefaultPelicanPrompt 鹈鹕测试默认题：Simon Willison 的 pelican-on-a-bicycle 改成水墨风 HTML，
+// 并要求从零独立完成，避免模型去翻项目或写测试。
+const DefaultPelicanPrompt = "独立画一个中国传统水墨风格的鹈鹕骑脚踏车html，你不需要任何测试，完全重新制作，不要看任何项目，从0开始"
 
 // Keep delivery instructions separate from the administrator's verbatim prompt.
 // This is a direct generation request, with no workspace or file-writing tools.
@@ -33,11 +32,11 @@ func NewPelicanGateway() *PelicanGateway {
 	return &PelicanGateway{client: &http.Client{Transport: &http.Transport{TLSHandshakeTimeout: 20 * time.Second, ResponseHeaderTimeout: 90 * time.Second}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
-// pelicanThinkingParam 与模型检测的智商题共用一套 thinking 口径（modeldetect.ThinkingParamFor）：
+// pelicanThinkingParam 与模型检测共用一套 thinking 口径（modeldetect.ThinkingParamFor）：
 // adaptive 型号只发 {"type":"adaptive"}，旧型号带 budget_tokens 与摘要。
 //
 // 型号不认识或本来不支持 thinking（如 Haiku 3.5）时返回 nil。Opus / Sonnet 5 起不传也会思考，
-// 这里显式对齐智商题的请求形态，让同一条渠道在两处得到一致的思考量。
+// 这里显式发出，让作品与糖果题拿到一致的思考量。
 func pelicanThinkingParam(model string) map[string]any {
 	p := modeldetect.ResolveProfile(model)
 	if !p.SupportsThinking {
@@ -46,43 +45,79 @@ func pelicanThinkingParam(model string) map[string]any {
 	return modeldetect.ThinkingParamFor(p)
 }
 
-func pelicanPayload(v *repository.PelicanResult) (string, map[string]any, error) {
-	body := map[string]any{"model": v.Model, "stream": true}
-	switch v.Protocol {
+// pelicanCall 一次生成请求的参数。System 为空时不发 system / instructions / system 消息。
+type pelicanCall struct {
+	Protocol  string
+	Model     string
+	Prompt    string
+	System    string
+	MaxTokens int
+	Effort    string
+}
+
+// artworkCall 作品请求：管理员的题目原样作为用户消息，另附统一交付指令。
+func artworkCall(v *repository.PelicanResult) pelicanCall {
+	return pelicanCall{Protocol: v.Protocol, Model: v.Model, Prompt: v.Prompt, System: pelicanDeliveryInstructions, MaxTokens: v.MaxTokens, Effort: v.Effort}
+}
+
+// candyCall 糖果题请求：不带交付指令（它要的是推理，不是 HTML），思考强度与作品一致。
+func candyCall(v *repository.PelicanResult) pelicanCall {
+	return pelicanCall{Protocol: v.Protocol, Model: v.Model, Prompt: candyPrompt, MaxTokens: candyMaxTokens, Effort: v.Effort}
+}
+
+func pelicanPayload(call pelicanCall) (string, map[string]any, error) {
+	body := map[string]any{"model": call.Model, "stream": true}
+	switch call.Protocol {
 	case "messages":
-		body["max_tokens"] = v.MaxTokens
-		body["system"] = pelicanDeliveryInstructions
-		body["messages"] = []map[string]string{{"role": "user", "content": v.Prompt}}
-		if thinking := pelicanThinkingParam(v.Model); thinking != nil {
+		body["max_tokens"] = call.MaxTokens
+		if call.System != "" {
+			body["system"] = call.System
+		}
+		body["messages"] = []map[string]string{{"role": "user", "content": call.Prompt}}
+		if thinking := pelicanThinkingParam(call.Model); thinking != nil {
 			body["thinking"] = thinking
 		}
-		if effort := modeldetect.EffortFor(v.Model, v.Effort); effort != "" {
+		if effort := modeldetect.EffortFor(call.Model, call.Effort); effort != "" {
 			body["output_config"] = map[string]any{"effort": effort}
 		}
 		return "/messages", body, nil
 	case "responses":
-		body["max_output_tokens"] = v.MaxTokens
-		body["instructions"] = pelicanDeliveryInstructions
+		body["max_output_tokens"] = call.MaxTokens
+		if call.System != "" {
+			body["instructions"] = call.System
+		}
 		body["input"] = []map[string]any{{
 			"type": "message", "role": "user",
-			"content": []map[string]string{{"type": "input_text", "text": v.Prompt}},
+			"content": []map[string]string{{"type": "input_text", "text": call.Prompt}},
 		}}
 		body["store"] = false
 		return "/responses", body, nil
 	case "chat":
-		body["max_completion_tokens"] = v.MaxTokens
-		body["messages"] = []map[string]string{
-			{"role": "system", "content": pelicanDeliveryInstructions},
-			{"role": "user", "content": v.Prompt},
+		body["max_completion_tokens"] = call.MaxTokens
+		messages := []map[string]string{}
+		if call.System != "" {
+			messages = append(messages, map[string]string{"role": "system", "content": call.System})
 		}
+		body["messages"] = append(messages, map[string]string{"role": "user", "content": call.Prompt})
 		body["stream_options"] = map[string]bool{"include_usage": true}
 		return "/chat/completions", body, nil
 	default:
 		return "", nil, errors.New("unsupported protocol")
 	}
 }
+
+// Generate 生成作品：回复里抽出完整 HTML / SVG。
 func (g *PelicanGateway) Generate(ctx context.Context, base, key string, v *repository.PelicanResult) (*repository.PelicanOutput, error) {
-	path, body, err := pelicanPayload(v)
+	output, err := g.Ask(ctx, base, key, artworkCall(v))
+	if output != nil {
+		output.Document, output.Kind = modeldetect.ExtractArtwork(output.Text)
+	}
+	return output, err
+}
+
+// Ask 发一次请求并把流式回复还原成文本；Key 在返回前从正文、用量与错误里擦掉。
+func (g *PelicanGateway) Ask(ctx context.Context, base, key string, call pelicanCall) (*repository.PelicanOutput, error) {
+	path, body, err := pelicanPayload(call)
 	if err != nil {
 		return nil, err
 	}
@@ -103,11 +138,11 @@ func (g *PelicanGateway) Generate(ctx context.Context, base, key string, v *repo
 	// Messages 用与模型检测同一套 CLI 指纹：部分上游对浏览器 UA 的 Messages 请求回 HTML 404。
 	// Responses / Chat Completions 保持浏览器 UA，现有 GPT 渠道在用的就是它。
 	ua := browserUA
-	if v.Protocol == "messages" {
+	if call.Protocol == "messages" {
 		ua = modeldetect.ClaudeCLIUA
 	}
 	req.Header.Set("User-Agent", ua)
-	if v.Protocol == "messages" {
+	if call.Protocol == "messages" {
 		req.Header.Set("x-api-key", key)
 		req.Header.Set("anthropic-version", "2023-06-01")
 	} else {
@@ -124,7 +159,7 @@ func (g *PelicanGateway) Generate(ctx context.Context, base, key string, v *repo
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("gateway HTTP %d", resp.StatusCode)
 	}
-	output, err := parsePelicanReply(resp.Body, resp.Header.Get("Content-Type"), v.Protocol)
+	output, err := parsePelicanReply(resp.Body, resp.Header.Get("Content-Type"), call.Protocol)
 	if err != nil && key != "" {
 		err = errors.New(strings.ReplaceAll(err.Error(), key, "[REDACTED]"))
 	}
@@ -135,7 +170,6 @@ func (g *PelicanGateway) Generate(ctx context.Context, base, key string, v *repo
 			output.Text = strings.ReplaceAll(output.Text, key, "[REDACTED]")
 			output.Usage = bytes.ReplaceAll(output.Usage, []byte(key), []byte("[REDACTED]"))
 		}
-		output.Document, output.Kind = modeldetect.ExtractArtwork(output.Text)
 	}
 	return output, err
 }

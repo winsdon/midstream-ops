@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { artifactHasScript, artifactPreviewDocument } from '@/utils/detectArtifact'
+import { artifactPreviewDocument } from '@/utils/detectArtifact'
 
 const SVG = '<svg viewBox="0 0 10 10"><animate attributeName="x"/></svg>'
 
@@ -36,18 +36,5 @@ describe('artifactPreviewDocument', () => {
     expect(doc.endsWith(html)).toBe(true)
     expect(doc.indexOf('Content-Security-Policy')).toBeLessThan(doc.indexOf(html))
     expect(doc).not.toContain('body>svg')
-  })
-})
-
-describe('artifactHasScript', () => {
-  it('识别 script 标签与内联事件属性', () => {
-    expect(artifactHasScript('<svg><script>go()</script></svg>')).toBe(true)
-    expect(artifactHasScript('<svg><SCRIPT type="text/javascript">go()</SCRIPT></svg>')).toBe(true)
-    expect(artifactHasScript('<svg onload="go()"></svg>')).toBe(true)
-  })
-
-  it('纯 SMIL / CSS 动画不算带脚本', () => {
-    expect(artifactHasScript('<svg><animateTransform attributeName="transform"/></svg>')).toBe(false)
-    expect(artifactHasScript('<svg><style>@keyframes a{}</style><g data-once="1"/></svg>')).toBe(false)
   })
 })

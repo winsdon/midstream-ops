@@ -1,24 +1,18 @@
 import { describe, it, expect } from 'vitest'
 import {
-  answerOutcome,
-  checkStatusVariant,
-  checkSuite,
-  checksOfSuite,
   countStatuses,
   estimateRequests,
   findCheck,
   groupChecks,
   gradeVariant,
   highCostSelection,
-  iqStatusIcon,
-  iqStatusVariant,
   labelVariant,
   matchingPresetId,
   progressPercent,
   sameCheckSet,
   splitReasons,
   statusIcon,
-  statusLabelKey,
+  statusVariant,
   isRequestFailed,
   targetKey,
   withDependencies
@@ -248,37 +242,9 @@ describe('matchingPresetId', () => {
   })
 })
 
-describe('测试套件', () => {
-  const mixed: DetectCheckMeta[] = [
-    ...CHECKS,
-    { id: 'iq-pelican', title: '鹈鹕测试', group: 'iq', default: true, cost: 'high', requests: 1, suite: 'iq', grading: 'visual' },
-    { id: 'iq-candy', title: '糖果题测试', group: 'iq', default: true, cost: 'medium', requests: 1, suite: 'iq', grading: 'answer' }
-  ]
-
-  it('未标 suite 的检测项都算模型真伪，两套互不混入', () => {
-    expect(checksOfSuite(mixed, 'iq').map((c) => c.id)).toEqual(['iq-pelican', 'iq-candy'])
-    expect(checksOfSuite(mixed, 'authenticity').map((c) => c.id)).toEqual(CHECKS.map((c) => c.id))
-    expect(checkSuite({})).toBe('authenticity')
-  })
-
-  it('智商题用自己的状态文案，真伪项沿用原文案', () => {
-    expect(statusLabelKey({ group: 'iq', status: 'suspicious' })).toBe('detect.iqStatus.suspicious')
-    expect(statusLabelKey({ group: 'protocol', status: 'failed' })).toBe('detect.status.failed')
-  })
-
-  it('智商题答错按不通过的红色与 × 展示，真伪项的「可疑」仍是警示色', () => {
-    expect(checkStatusVariant({ group: 'iq', status: 'suspicious' })).toBe('danger')
-    expect(checkStatusVariant({ group: 'identity', status: 'suspicious' })).toBe('warning')
-    expect(iqStatusVariant('passed')).toBe('success')
-    expect(iqStatusIcon('suspicious')).toBe('×')
+describe('单项结论配色', () => {
+  it('「可疑」是警示色与 ! 图标', () => {
+    expect(statusVariant('suspicious')).toBe('warning')
     expect(statusIcon('suspicious')).toBe('!')
-  })
-
-  it('答案对错只在解析出答案且有标准答案时判定', () => {
-    expect(answerOutcome({ answer: '21', expected: '21' })).toBe('correct')
-    expect(answerOutcome({ answer: '29', expected: '21' })).toBe('wrong')
-    expect(answerOutcome({ expected: '21' })).toBe('none')
-    expect(answerOutcome({ answer: '21' })).toBe('none')
-    expect(answerOutcome(undefined)).toBe('none')
   })
 })
