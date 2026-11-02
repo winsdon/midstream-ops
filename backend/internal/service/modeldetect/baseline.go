@@ -91,3 +91,15 @@ func withinRatio(actual, base int, ratio float64, minAbs int) bool {
 	}
 	return float64(diff) <= float64(base)*ratio
 }
+
+// responseThinkingStats 统计响应里 thinking 块的正文与签名字符数。
+func responseThinkingStats(body map[string]any) (thinkingChars, signatureChars int) {
+	for _, raw := range contentBlocks(body) {
+		block := mapOf(raw)
+		if str(block["type"]) == "thinking" {
+			thinkingChars += len(str(block["thinking"]))
+			signatureChars += len(str(block["signature"]))
+		}
+	}
+	return
+}

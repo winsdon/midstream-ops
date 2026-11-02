@@ -1290,7 +1290,7 @@ func TestAuditRejectsEmptySignedThinking(t *testing.T) {
 func TestAuditAllowsSomeEmptyThinking(t *testing.T) {
 	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true,
 		emptyThinkingOnce: true}
-	run := runAgainst(t, up, []string{"ping", "thinking-sig", "quality-baseline"})
+	run := runAgainst(t, up, []string{"ping", "thinking-sig", "param-strict"})
 
 	res := auditOf(t, run)
 	if hasEvidenceKey(res, "thinking_empty_signed") {
@@ -1572,7 +1572,7 @@ func TestAuditFutureSignatureIsDiagnosticOnly(t *testing.T) {
 	}
 }
 
-// TestSigFieldsOnlyReadForVerifiedSchema 字段含义只在 v17 / v18 上实测过，其他版本不读账号与时间。
+// TestSigFieldsOnlyReadForVerifiedSchema 字段含义只在 v17–v19 上实测过，其他版本不读账号与时间。
 func TestSigFieldsOnlyReadForVerifiedSchema(t *testing.T) {
 	got := ParseSignatureShape(buildSig(16, "claude-opus-5", "9ede73ac-10b1-49f5-b941-00353d7e6eb0", "",
 		time.Now().Add(-48*time.Hour).Unix()))

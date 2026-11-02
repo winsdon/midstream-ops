@@ -397,7 +397,7 @@ export default {
     keyNotStored: 'Key 仅在本次请求中使用：不写入库、不进报告，日志与响应原文都会脱敏。',
 
     checksTitle: '检测项目',
-    checksHint: '高成本项默认关闭，可按需补测；质量基准会记录 TTFT 与 thinking',
+    checksHint: '高成本项默认关闭，可按需补测',
     selectDefault: '推荐项',
     selectAll: '全选',
     selectNone: '清空',
@@ -423,9 +423,6 @@ export default {
     baselineMissing: '尚未生成基准',
     baselineCreated: '基准生成成功',
     baselineFailed: '基准生成失败',
-    qualityBaseline: '回复质量 / 速度 / thinking',
-    qualityBaselineHint: '固定题目校验答案与格式，记录 TTFT、总耗时和 thinking；Fable 额外对照 low/max',
-    fableEffortHint: 'Fable low/max 双档对照只依据实际 messages 响应，不检查模型列表',
     groups: {
       gateway: '连通与网关指纹',
       protocol: '协议严格性',

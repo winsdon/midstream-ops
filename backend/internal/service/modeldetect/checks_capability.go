@@ -227,59 +227,6 @@ func validateProbeSchema(v map[string]any, probeID string) []string {
 	return problems
 }
 
-// checkPromptCache 缓存正负对照：同前缀应命中，改动首部应不命中。
-//
-// 前缀长度按模型的最小可缓存阈值放大 1.5 倍——短于阈值官方会静默不缓存，
-// 那会把「前缀太短」误判成「缓存失效」。
-func checkPromptCache(ctx context.Context, c *Client, st *runState) *CheckResult {
-	meta, _ := checkByID("prompt-cache")
-	r := newResult(meta)
-	model := c.Target().Model
-	prefixID := nonce("CACHE")
-
-	// 一段约 12 token 的句子，按阈值 1.5 倍估算重复次数
-	unit := "This is a stable prompt cache probe segment that must stay byte identical. "
-	repeat := st.profile.MinCacheTokens*3/2/12 + 20
-	prefix := prefixID + " " + strings.Repeat(unit, repeat)
-
-	build := func(pfx, q string) map[string]any {
-		return map[string]any{
-			"model": model, "max_tokens": 32,
-			"system": []map[string]any{{"type": "text", "text": pfx,
-				"cache_control": map[string]any{"type": "ephemeral"}}},
-			"messages": []map[string]any{{"role": "user", "content": q}},
-		}
-	}
-	first := c.Post(ctx, KindMessages, build(prefix, "只回复 CACHE_OK。"))
-	second := c.Post(ctx, KindMessages, build(prefix, "只回复 CACHE_OK。"))
-	third := c.Post(ctx, KindMessages, build("CHANGED-"+prefixID+"-X. "+prefix, "只回复 CACHE_OK。"))
-	r.Exchanges = []*Exchange{first, second, third}
-	r.DurationMs = first.DurationMs + second.DurationMs + third.DurationMs
-
-	if !first.OK() || !second.OK() {
-		r.Status = StatusInconclusive
-		r.diagnose("缓存对照请求成功", false, describeFailure(first))
-		return r.finish("缓存对照请求失败")
-	}
-	w1 := cacheCreationTokens(usageOf(first.JSON))
-	r1 := cacheReadTokens(usageOf(first.JSON))
-	r2 := cacheReadTokens(usageOf(second.JSON))
-	w3 := cacheCreationTokens(usageOf(third.JSON))
-	r3 := cacheReadTokens(usageOf(third.JSON))
-
-	r.assert("首次请求写入缓存", w1 > 0, fmt.Sprintf("write=%d read=%d", w1, r1))
-	r.assert("相同前缀第二次命中缓存", r2 > 0, fmt.Sprintf("read=%d", r2))
-	r.diagnose("变更首部后不命中旧缓存", r3 == 0 && w3 > 0, fmt.Sprintf("write=%d read=%d", w3, r3))
-
-	if w1 > 0 && r2 > 0 {
-		r.AuthScore = 5
-	} else if w1 == 0 && r2 == 0 {
-		r.addEvidence("cache_dead", "Prompt Cache 完全不生效",
-			"cache_control 被剥离或多账号轮换导致缓存不共享", ClassWrapper, 2)
-	}
-	return r.finish(fmt.Sprintf("首次 write=%d，二次 read=%d，改首部 write=%d read=%d", w1, r2, w3, r3))
-}
-
 // checkHelloEntropy 10 次 Hello/Hi 采样。
 // 官方模型每次措辞都不同（去重 8-10）；模板化或固定回复的伪池会塌缩到 1-4 种。
 func checkHelloEntropy(ctx context.Context, c *Client, _ *runState) *CheckResult {

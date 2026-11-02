@@ -43,7 +43,8 @@ const sigClockTolerance = 30 * time.Minute
 // 必须跨请求比对才成立。
 //
 // 三类基于公开协议的判据（缓存门槛、usage 守恒、thinking 自洽）会设 AuthCapReason
-// 直接封顶真实性评分；消息 id、签名复用、签名来源与平台形态只加分类分，其中签名字段是
+// 直接封顶真实性评分；签名里的型号与请求不符同样封顶（见 auditSignatureModel）；消息 id、
+// 签名复用、签名来源与平台形态只加分类分，其中签名字段是
 // 未公开编码，解析不出来只记诊断。startedAt 是本轮检测的开始时间，签名签发时间以它为界。
 //
 // 没有任何可读响应时返回 nil，调用方直接跳过。
@@ -60,6 +61,7 @@ func AuditRun(checks []*CheckResult, profile ThinkingProfile, startedAt time.Tim
 	auditMessageIDs(r, checks)
 	auditSignatureReuse(r, checks)
 	auditSignatureProvenance(r, bodies, startedAt, time.Now())
+	auditSignatureModel(r, bodies)
 	auditPlatformShape(r, checks, bodies)
 	auditBedrockCorroboration(r, checks)
 
@@ -551,6 +553,53 @@ func auditSignatureProvenance(r *CheckResult, bodies []auditBody, startedAt, now
 		d := strings.Join(forged, "；")
 		r.assert("签名账号标识是合法 UUID", false, d)
 		r.addEvidence("sig_uuid_forged", "签名账号标识的 UUID 版本位非法（签名为编造）", d, ClassWrapper, 3)
+	}
+}
+
+// auditSignatureModel 签名里的型号必须是请求的型号。
+//
+// 签名头（schema v17–v19）明文写着签发它的型号，例如 claude-fable-5 的签名里就是 claude-fable-5。
+// 网关拿便宜型号顶替时，响应的 model 字段可以改写，签名里的型号却改不了——改一个字节签名就
+// 失效，回传会被上游拒（sig-tamper 管这一环）。所以这是少数能直接证明「换了型号」的证据：
+// 记包装证据并封顶真实性。字段虽是未公开编码，但只有读出来的值本身是合法公开型号 id、且与
+// 请求的族或版本不同才判，解析错位读到的杂串、内部代号、新格式签名（Opus 5.5 / Fable 5.1
+// 起签名头不再带型号）都读不出版本号，一律跳过。
+func auditSignatureModel(r *CheckResult, bodies []auditBody) {
+	var matched, mismatched []string
+	for _, b := range bodies {
+		want := str(b.request["model"])
+		if _, ok := parseModelVersion(want); !ok {
+			continue
+		}
+		for _, raw := range contentBlocks(b.body) {
+			blk := mapOf(raw)
+			if str(blk["type"]) != "thinking" || str(blk["signature"]) == "" {
+				continue
+			}
+			got := ParseSignatureShape(str(blk["signature"])).Model
+			if _, ok := parseModelVersion(got); !ok {
+				continue
+			}
+			if sameModel(got, want) {
+				matched = append(matched, b.checkID)
+			} else {
+				mismatched = append(mismatched, fmt.Sprintf("%s：请求 %s，签名 %s", b.checkID, want, got))
+			}
+		}
+	}
+	if len(matched)+len(mismatched) == 0 {
+		return
+	}
+	if len(mismatched) == 0 {
+		r.diagnose("签名型号与请求一致", true, fmt.Sprintf("%d 个签名的型号均与请求一致", len(matched)))
+		return
+	}
+	d := fmt.Sprintf("%d/%d 个签名的型号与请求不符：%s", len(mismatched), len(matched)+len(mismatched),
+		strings.Join(mismatched, "；"))
+	r.assert("签名型号与请求一致", false, d)
+	r.addEvidence("sig_model_mismatch", "thinking 签名的型号与请求不符（型号被顶替）", d, ClassWrapper, 4)
+	if r.AuthCapReason == "" {
+		r.AuthCapReason = "thinking 签名由其他型号签发：" + mismatched[0]
 	}
 }
 

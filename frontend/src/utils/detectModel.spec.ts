@@ -32,8 +32,7 @@ const CHECKS: DetectCheckMeta[] = [
     requests: 2,
     requires: ['thinking-sig']
   },
-  { id: 'hello-entropy', title: '采样熵', group: 'capability', default: false, cost: 'high', requests: 10 },
-  { id: 'quality-baseline', title: '回复质量 / 速度 / thinking', group: 'capability', default: true, cost: 'high', requests: 7 }
+  { id: 'hello-entropy', title: '采样熵', group: 'capability', default: false, cost: 'high', requests: 10 }
 ]
 
 function check(id: string, status: DetectCheckResult['status']): DetectCheckResult {
@@ -70,9 +69,8 @@ describe('estimateRequests', () => {
     expect(estimateRequests(CHECKS, new Set(['ping']), 0)).toBe(1)
   })
 
-  it('质量基准按 Fable 双档的最多 7 次请求估算', () => {
-    expect(estimateRequests(CHECKS, new Set(['quality-baseline']), 1)).toBe(7)
-    expect(estimateRequests(CHECKS, new Set(['quality-baseline']), 2)).toBe(14)
+  it('多请求检测项按单项请求数乘目标数', () => {
+    expect(estimateRequests(CHECKS, new Set(['hello-entropy']), 2)).toBe(20)
   })
 })
 

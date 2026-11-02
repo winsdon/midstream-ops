@@ -397,7 +397,7 @@ export default {
     keyNotStored: 'The key is used only for this run: never written to the database or the report, and redacted from logs and raw responses.',
 
     checksTitle: 'Checks',
-    checksHint: 'High-cost checks are off by default; the quality baseline records TTFT and thinking',
+    checksHint: 'High-cost checks are off by default; enable them as needed',
     selectDefault: 'Recommended',
     selectAll: 'Select all',
     selectNone: 'Clear',
@@ -423,9 +423,6 @@ export default {
     baselineMissing: 'No baseline generated',
     baselineCreated: 'Baseline created',
     baselineFailed: 'Baseline failed',
-    qualityBaseline: 'Reply quality / speed / thinking',
-    qualityBaselineHint: 'Verify fixed answers and formats, then record TTFT, total time and thinking; Fable also compares low/max',
-    fableEffortHint: 'Fable low/max is based on actual messages responses only; the model list is not checked',
     groups: {
       gateway: 'Connectivity & gateway fingerprint',
       protocol: 'Protocol strictness',

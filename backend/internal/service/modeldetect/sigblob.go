@@ -50,8 +50,9 @@ const (
 // sigSchemaVerified 字段含义实测过的 schema 版本。其他版本只读版本号与模型名：
 // v15 样本里就没有账号与时间字段，字段号的含义会随版本变化，硬读只会得到错位的值。
 // v18 于 2026-09-22 出现，两份报告里 f11 都是合法的 v4 UUID、同一账号跨请求不变，
-// f21 与本轮开始只差几秒，与 v17 同义。
-var sigSchemaVerified = map[int]bool{17: true, 18: true}
+// f21 与本轮开始只差几秒，与 v17 同义。v19 于 2026-11-02 在已知真渠道的 claude-fable-5 /
+// claude-opus-5 上实测：f6 与 f19.f1 都是公开型号 id，f11 是 v4 UUID，f21 是请求当刻。
+var sigSchemaVerified = map[int]bool{17: true, 18: true, 19: true}
 
 // 签发时间的合理区间，挡掉恰好落在这个字段号上的无关整数。
 var (

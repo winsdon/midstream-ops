@@ -219,8 +219,6 @@ var Checks = []Check{
 	{ID: "zero-injection", Title: "是否 0 注入", Group: GroupGateway, Default: true, Cost: CostMedium,
 		Requests: zeroInjectionRequests, Informational: true,
 		Note: "裸请求 / 2n+5 / 带 system / count_tokens 对账，外加 20 次并发采样看号池；只做检测，不参与分类与真实性评分"},
-	{ID: "quality-baseline", Title: "回复质量 / 速度 / thinking", Group: GroupCapability, Default: true, Cost: CostHigh, Requests: 7,
-		Note: "固定题目校验质量并记录 TTFT；Fable 额外对照 low/max", Requires: []string{}},
 
 	{ID: "param-strict", Title: "参数校验严格性", Group: GroupProtocol, Default: true, Cost: CostLow, Requests: 4,
 		Note: "四个应被官方拒绝的非法请求；只作真实性加分项，被放行不记包装 / 伪装"},
@@ -247,7 +245,6 @@ var Checks = []Check{
 		Note: "纯文本套壳会直接失败"},
 	{ID: "pdf", Title: "PDF 识别", Group: GroupCapability, Default: false, Cost: CostMedium, Requests: 1},
 	{ID: "strict-schema", Title: "严格 JSON Schema", Group: GroupCapability, Default: false, Cost: CostMedium, Requests: 1},
-	{ID: "prompt-cache", Title: "Prompt Cache 正负对照", Group: GroupCapability, Default: false, Cost: CostHigh, Requests: 3},
 	{ID: "hello-entropy", Title: "采样熵", Group: GroupCapability, Default: false, Cost: CostHigh, Requests: 10,
 		Note: "10 次 Hello/Hi，去重回复过少说明是模板响应"},
 	{ID: "baseline-quality", Title: "CCMax 基准对照", Group: GroupCapability, Default: true, Cost: CostHigh, Requests: 1, Note: "与已保存的真实 CCMax 基准比较质量、输出 token 与 thinking"},
@@ -277,11 +274,9 @@ var handlers = map[string]CheckFunc{
 	"image":             checkImage,
 	"pdf":               checkPDF,
 	"strict-schema":     checkStrictSchema,
-	"prompt-cache":      checkPromptCache,
 	"hello-entropy":     checkHelloEntropy,
 	"slope":             checkSlope,
 	"baseline-quality":  checkBaselineQuality,
-	"quality-baseline":  checkQualityBaseline,
 }
 
 // checkByID 按 id 查元信息。
@@ -320,7 +315,7 @@ var Presets = []Preset{
 		Checks: []string{
 			"models", "ping", "ping-again", "zero-injection",
 			"param-strict", "max-tokens-strict", "thinking-sig", "sig-tamper", "stream", "count-tokens",
-			"persona-cc", "env-leak", "sys-dump", "caller-system", "model-meta", "quality-baseline", "baseline-quality",
+			"persona-cc", "env-leak", "sys-dump", "caller-system", "model-meta", "baseline-quality",
 		},
 	},
 	{
