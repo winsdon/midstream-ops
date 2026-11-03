@@ -92,7 +92,7 @@ func TestModelDetectJobLifecycle(t *testing.T) {
 	jobID, err := svc.Start(context.Background(), DetectRunRequest{
 		Targets: []DetectTargetInput{{Name: "手填目标", BaseURL: srv.URL, APIKey: key}},
 		Model:   "claude-opus-5",
-		Checks:  []string{"models", "ping"},
+		Checks:  []string{"ping", "max-tokens-strict"},
 	})
 	if err != nil {
 		t.Fatalf("发起检测失败: %v", err)
@@ -142,8 +142,8 @@ func TestModelDetectCancelUnknownJob(t *testing.T) {
 // TestCancelledRunIsNotPersisted 被取消或缺计分项的一轮不落库：在途请求都以 context canceled 失败，
 // 判定会变成「渠道不可用」（#77 就是这样进的历史）；取消后只补跑一部分，判定又只建立在半截证据上。
 func TestCancelledRunIsNotPersisted(t *testing.T) {
-	selected := []string{"ping", "stream"}
-	full := []*modeldetect.CheckResult{{ID: "ping", Status: modeldetect.StatusPassed}, {ID: "stream", Status: modeldetect.StatusPassed}}
+	selected := []string{"ping", "max-tokens-strict"}
+	full := []*modeldetect.CheckResult{{ID: "ping", Status: modeldetect.StatusPassed}, {ID: "max-tokens-strict", Status: modeldetect.StatusPassed}}
 	if persistable(nil, selected) {
 		t.Fatal("空结果不应落库")
 	}
@@ -161,9 +161,9 @@ func TestCancelledRunIsNotPersisted(t *testing.T) {
 // TestRetryAfterCancelRunsMissingChecks 取消后「重试失败项」要把还没轮到的项一起补跑。
 func TestRetryAfterCancelRunsMissingChecks(t *testing.T) {
 	job := &detectJob{
-		snap: DetectJob{Status: DetectJobCancelled, Checks: []string{"models", "ping", "stream"},
+		snap: DetectJob{Status: DetectJobCancelled, Checks: []string{"tool-use", "ping", "max-tokens-strict"},
 			Targets: []*modeldetect.TargetRun{{Error: modeldetect.RunCancelled, Checks: []*modeldetect.CheckResult{
-				{ID: "models", Status: modeldetect.StatusPassed},
+				{ID: "tool-use", Status: modeldetect.StatusPassed},
 				{ID: "ping", Status: modeldetect.StatusInconclusive, Exchanges: []*modeldetect.Exchange{{NetworkError: "context canceled"}}},
 			}}}},
 		targets: []modeldetect.Target{{Name: "t"}},
@@ -172,8 +172,8 @@ func TestRetryAfterCancelRunsMissingChecks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("应能规划重试：%v", err)
 	}
-	if len(plan.items) != 1 || strings.Join(plan.items[0].checks, ",") != "ping,stream" {
-		t.Fatalf("应补跑失败的 ping 与没轮到的 stream，实际 %+v", plan.items)
+	if len(plan.items) != 1 || strings.Join(plan.items[0].checks, ",") != "ping,max-tokens-strict" {
+		t.Fatalf("应补跑失败的 ping 与没轮到的 max-tokens-strict，实际 %+v", plan.items)
 	}
 }
 
@@ -442,7 +442,7 @@ func TestModelDetectConcurrencyRunsTargetsInParallel(t *testing.T) {
 	defer srv.Close()
 
 	svc := newDetectService()
-	req := DetectRunRequest{Model: "claude-opus-5", Checks: []string{"models"}, Concurrency: 3}
+	req := DetectRunRequest{Model: "claude-opus-5", Checks: []string{"max-tokens-strict"}, Concurrency: 3}
 	for i := 0; i < 3; i++ {
 		req.Targets = append(req.Targets, DetectTargetInput{
 			Name: fmt.Sprintf("t%d", i), BaseURL: srv.URL, APIKey: "sk-xxxxxxxxxx",

@@ -227,6 +227,24 @@ func validateProbeSchema(v map[string]any, probeID string) []string {
 	return problems
 }
 
+// isRefusal 安全分类器拒答：HTTP 200、stop_reason=refusal、没有正文。它不是渠道的回复，
+// 不能当成样本参与「回复是否模板化」之类的统计。
+func isRefusal(ex *Exchange) bool {
+	return ex != nil && ex.OK() && str(ex.JSON["stop_reason"]) == "refusal"
+}
+
+// refusalCategory 拒答的类别（stop_details.category），取第一个读得到的。
+func refusalCategory(exs []*Exchange) string {
+	for _, ex := range exs {
+		if isRefusal(ex) {
+			if cat := str(mapOf(ex.JSON["stop_details"])["category"]); cat != "" {
+				return cat
+			}
+		}
+	}
+	return "未注明类别"
+}
+
 // checkHelloEntropy 10 次 Hello/Hi 采样。
 // 官方模型每次措辞都不同（去重 8-10）；模板化或固定回复的伪池会塌缩到 1-4 种。
 func checkHelloEntropy(ctx context.Context, c *Client, _ *runState) *CheckResult {
@@ -234,7 +252,7 @@ func checkHelloEntropy(ctx context.Context, c *Client, _ *runState) *CheckResult
 	r := newResult(meta)
 	const rounds = 10
 	seen := map[string]bool{}
-	okCount := 0
+	okCount, refused := 0, 0
 	for i := 0; i < rounds; i++ {
 		word := "Hello"
 		if i%2 == 1 {
@@ -249,6 +267,10 @@ func checkHelloEntropy(ctx context.Context, c *Client, _ *runState) *CheckResult
 		if !ex.OK() {
 			continue
 		}
+		if isRefusal(ex) {
+			refused++
+			continue
+		}
 		okCount++
 		if text := squash(contentText(ex.JSON)); text != "" {
 			seen[text] = true
@@ -256,7 +278,12 @@ func checkHelloEntropy(ctx context.Context, c *Client, _ *runState) *CheckResult
 	}
 	if okCount < rounds/2 {
 		r.Status = StatusInconclusive
-		r.diagnose("采样请求成功", false, fmt.Sprintf("仅 %d/%d 次成功", okCount, rounds))
+		r.diagnose("采样请求成功", false, fmt.Sprintf("仅 %d/%d 次拿到正常回复", okCount, rounds))
+		if refused > 0 {
+			// 拒答没有正文，算进去就成了「0 种回复」：2026-11 实测 Fable 5 有渠道把 Hello 一律按 cyber 拒答。
+			r.diagnose("未被安全分类器拒答", false, fmt.Sprintf("%d 次 stop_reason=refusal（%s）", refused, refusalCategory(r.Exchanges)))
+			return r.finish(fmt.Sprintf("%d/%d 次被安全分类器拒答，采样样本不足", refused, rounds))
+		}
 		return r.finish("采样样本不足")
 	}
 	unique := len(seen)
@@ -272,64 +299,3 @@ func checkHelloEntropy(ctx context.Context, c *Client, _ *runState) *CheckResult
 }
 
 func helloEntropyPassed(unique int) bool { return unique >= 4 }
-
-// checkSlope 正文 token 与词数之比。
-//
-// 输出 token 先扣掉 usage 拆出的 thinking_tokens（官方字段）再比：Opus / Sonnet 5 起与 Fable 5
-// 起不传 thinking 也会思考，思考本就计入输出，不扣就把官方行为当成「强制注入 thinking」——同一题在
-// 干净的 Bedrock 渠道上思考也有上千 token。扣完正文仍明显偏高，说明有看不见的输出被计了费。
-// 真正的「强制 thinking」是默认不思考的型号（Opus 4.6–4.8、Sonnet 4.6 及更早）在没请求时返回了
-// thinking 块，单独判。
-func checkSlope(ctx context.Context, c *Client, st *runState) *CheckResult {
-	meta, _ := checkByID("slope")
-	r := newResult(meta)
-	ex := c.Post(ctx, KindMessages, map[string]any{
-		"model": c.Target().Model, "max_tokens": 1200,
-		"messages": []map[string]any{{"role": "user",
-			"content": "Write exactly 150 words about the ocean. Plain prose, no lists, no headings."}},
-	})
-	r.Exchanges = []*Exchange{ex}
-	r.DurationMs = ex.DurationMs
-	if !ex.OK() {
-		r.Status = StatusInconclusive
-		r.diagnose("斜率请求成功", false, describeFailure(ex))
-		return r.finish("斜率请求失败")
-	}
-
-	thought := hasThinkingOutput(ex.JSON)
-	if thought && st.profile.Recognized && !st.profile.DefaultThinking {
-		r.addEvidence("forced_thinking", "未请求 thinking 却返回了 thinking 块",
-			"该型号默认不思考，是网关替调用方打开了 thinking（思考按输出计费）", ClassWrapper, 2)
-	}
-
-	text := contentText(ex.JSON)
-	words := len(strings.Fields(text))
-	usage := usageOf(ex.JSON)
-	out := intOf(usage["output_tokens"])
-	if words == 0 || out == 0 {
-		r.Status = StatusInconclusive
-		return r.finish("无法计算斜率（无文本或无用量）")
-	}
-	thinking, split := thinkingTokens(usage)
-	if thought && !split {
-		r.Status = StatusInconclusive
-		r.diagnose("usage 拆出了 thinking_tokens", false, "响应含 thinking 块，但 usage 没有 output_tokens_details.thinking_tokens，分不开思考与正文")
-		return r.finish("无法计算正文斜率（usage 未拆分 thinking）")
-	}
-
-	visible := out - thinking
-	ratio := float64(visible) / float64(words)
-	detail := fmt.Sprintf("%.2f tok/word（正文 %d tokens = 输出 %d − thinking %d，%d 词）", ratio, visible, out, thinking, words)
-	if ratio < 1.0 {
-		// 每个词至少一个 token：比值不到 1 是 usage 自相矛盾（thinking 报多了或输出报少了），不是斜率问题。
-		r.Status = StatusInconclusive
-		r.diagnose("usage 与正文自洽", false, detail)
-		return r.finish("usage 与正文对不上，无法计算斜率")
-	}
-	r.assert("正文 token/词 比例在正常区间", ratio <= 3.0, detail)
-	if ratio > 3.0 {
-		r.addEvidence("hidden_output", "扣掉 thinking 后正文 token 仍远超可见文本",
-			fmt.Sprintf("%.2f tok/word：有看不见的输出被计入 output_tokens", ratio), ClassWrapper, 2)
-	}
-	return r.finish(fmt.Sprintf("%.2f tok/word（已扣 thinking %d）", ratio, thinking))
-}

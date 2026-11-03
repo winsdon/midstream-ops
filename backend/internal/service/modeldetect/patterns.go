@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode"
 )
 
 // 身份与人设识别正则。移植自 cctest-awsb / cctest-ccmax 两个参考脚本，
@@ -21,35 +20,13 @@ var (
 	codeToolVocabRe = regexp.MustCompile(`(?i)\b(todowrite|webfetch|websearch|notebookedit|claude\.md|system-reminder)\b`)
 
 	// kiroStampRe Kiro 钢印句与其 spec 三件套。
-	kiroStampRe  = regexp.MustCompile(`(?i)(ai-powered development environment|kiro\.dev)`)
-	kiroSpecRe   = regexp.MustCompile(`(?i)(requirements\.md.*design\.md|design\.md.*tasks\.md|\bEARS\b)`)
-	kiroDisownRe = regexp.MustCompile(`(?i)(not mine|not something i natively|not\s+(?:an?\s+)?(?:kiro|ide)\b|not\s+(?:my|a|an)\s+(?:built[- ]in\s+)?native\s+(?:workflow|feature|process)|don'?t\s+have\s+(?:\w+\s+){0,5}(?:as\s+)?(?:a\s+)?built[- ]in\s+native\s+(?:workflow|feature|process)|不属于|belongs?\s+to\s+(?:aws\s+)?kiro|that'?s\s+(?:aws\s+)?kiro)`)
-	// affirmLeadRe 回答以肯定开头（配合 answerLead 使用）。中文不用 \b：「是的，」里「的」与「，」
-	// 之间没有 ASCII 词边界；也不能只认一个「对」字，否则「对于……」会被当成肯定。
-	affirmLeadRe = regexp.MustCompile(`(?i)^(` + affirmLead + `)`)
-	// kiroOwnRe 以肯定句式开头地据为己有。只认「是 / 原生使用 / 作为 Kiro」，不认泛泛的「I use」：
-	// 「I use them only when you ask」是在否认原生流程。
-	kiroOwnRe = regexp.MustCompile(`(?i)^(` + affirmLead + `|i\s+(?:do\s+)?natively\s+use\b|i\s+natively\b|as\s+kiro\b)`)
-	// leadNegationRe 回答以否定开头（配合 answerLead 使用）。
-	leadNegationRe = regexp.MustCompile(`(?i)^(no\b|nope\b|not\b|none\b|never\b|i\s+do\s+not\b|i\s+don't\b|i\s+am\s+not\b|i'm\s+not\b|i\s+have\s+no\b|不|没有|否)`)
-	amazonQRe      = regexp.MustCompile(`(?i)(amazon q|aws toolkit)`)
+	kiroStampRe    = regexp.MustCompile(`(?i)(ai-powered development environment|kiro\.dev)`)
+	kiroSpecRe     = regexp.MustCompile(`(?i)(requirements\.md.*design\.md|design\.md.*tasks\.md|\bEARS\b)`)
 	bedrockClaimRe = regexp.MustCompile(`(?i)(aws bedrock|amazon bedrock|\bbedrock\b)`)
 	vertexClaimRe  = regexp.MustCompile(`(?i)(vertex ai|google vertex|antigravity)`)
 
 	// foreignBrandRe 其他家的模型/IDE 品牌词。出现在系统提示或自我介绍里 = 后端不是 Claude。
 	foreignBrandRe = regexp.MustCompile(`(?i)(通义|千问|qwen|deepseek|kimi|moonshot|智谱|chatglm|\bglm-|minimax|豆包|doubao|文心|ernie|讯飞|星火|spark desk|gpt-4|gpt-5|openai|gemini|llama|mistral|grok|cursor|windsurf|trae|copilot)`)
-
-	// pathLeakRe 本机路径泄露：Claude Code 号池的模板工作区特征。
-	pathLeakRe = regexp.MustCompile(`(/Users/[\w.\-]+(?:/[\w.\-]+)+|/home/[\w.\-]+(?:/[\w.\-]+)+|[A-Za-z]:\\[\w.\-\\]+|~/\.claude(?:/[\w.\-]+)+)`)
-
-	// noWorkspaceRe 明确报告没有工作区。
-	noWorkspaceRe = regexp.MustCompile(`(?i)(no_workspace|no workspace|没有工作区|无法访问文件系统)`)
-
-	// withholdRe 拒绝复述 system 里的内容。拒答说明模型看到了那段内容，不是「没送达」。
-	// 匹配前先用 normalizeQuotes 把弯引号撇号换成直引号。
-	withholdRe = regexp.MustCompile(`(?i)((?:can'?t|cannot|can not|won'?t|unable to|not able to|not allowed to|shouldn'?t)\s+(?:\w+\s+){0,2}(?:share|reveal|disclose|provide|give|tell)|keep (?:it|that|this|them) (?:to myself|private|confidential|secret)|meant to (?:keep|stay)|locked up|confidential|不能(?:透露|提供|告诉|分享)|无法(?:透露|提供|告诉|分享)|不便(?:透露|提供))`)
-	// absentRe 声称上下文里根本没有这项信息：这是真没送达，不能当拒答放过。
-	absentRe = regexp.MustCompile(`(?i)(don'?t (?:have|see)|do not (?:have|see)|can'?t (?:find|see)|cannot (?:find|see)|there(?:'s| is| was) no|no (?:session|such)\b|none (?:was|were|is|has)|(?:isn'?t|aren'?t|wasn'?t|weren'?t)\s+(?:\w+\s+){0,2}(?:given|provided|included|present|mentioned|available)|not (?:been )?(?:given|provided|included|present|mentioned)|nothing (?:like (?:that|this) |of the sort )?(?:appears|is present|was (?:given|provided|included))|not (?:in|present in|part of) (?:my|the|this) (?:context|conversation|system prompt|instructions)|没有|并无|未提供|看不到)`)
 
 	// modelIDRe / modelAliasRe 自报模型名。
 	modelIDRe    = regexp.MustCompile(`(?i)\b(claude-(?:opus|sonnet|haiku|fable|mythos)-[\w.\-]+)\b`)
@@ -160,34 +137,6 @@ func sameModel(got, want string) bool {
 
 // squash 把多余空白压成单个空格，便于把长回复塞进摘要。
 func squash(s string) string { return strings.TrimSpace(whitespaceOnly.ReplaceAllString(s, " ")) }
-
-// answerLead 回答的开头：去掉前导的 Markdown、引号、标点、列表序号与「Short answer:」这类标签
-// （模型常以 **No.**、「不，」、「1. No…」开头），弯引号换成直引号并小写，供 leadNegationRe /
-// affirmLeadRe / kiroOwnRe 从头匹配。
-func answerLead(text string) string {
-	s := strings.ToLower(normalizeQuotes(text))
-	for i := 0; i < 3; i++ { // 标点、序号、标签可能层层叠着
-		s = strings.TrimLeftFunc(s, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
-		t := answerLabelRe.ReplaceAllString(listMarkerRe.ReplaceAllString(s, ""), "")
-		if t == s {
-			break
-		}
-		s = t
-	}
-	return s
-}
-
-// normalizeQuotes 弯引号换成直引号：模型常输出 don’t / can’t，正则按直引号写。
-func normalizeQuotes(s string) string { return quoteReplacer.Replace(s) }
-
-var (
-	quoteReplacer = strings.NewReplacer("’", "'", "‘", "'", "“", `"`, "”", `"`)
-	listMarkerRe  = regexp.MustCompile(`^\d+[.)、]\s*`)
-	answerLabelRe = regexp.MustCompile(`(?i)^(short answer|answer|tl;?dr|in short|简短回答|简答|回答|答)\s*[:：]\s*`)
-)
-
-// affirmLead 肯定开头的几种说法（affirmLeadRe / kiroOwnRe 共用）。
-const affirmLead = `yes\b|yeah\b|yep\b|correct\b|是的|(?:是|对)(?:[，,。！!\s]|$)`
 
 // clip 截断展示文本。
 func clip(s string, n int) string {

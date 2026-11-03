@@ -54,6 +54,9 @@ type Exchange struct {
 	Headers        map[string]string `json:"headers"`
 	Raw            string            `json:"raw"`
 	NetworkError   string            `json:"network_error,omitempty"`
+	// Reference 这次请求发给的是真实基准账号而不是被测目标（反向交叉验证）。跨请求审计跳过它，
+	// 免得把基准账号的消息 id、签名算到被测渠道头上。
+	Reference bool `json:"reference,omitempty"`
 
 	// JSON 与 Events 只在进程内供 check 判读，不进报告。
 	JSON   map[string]any `json:"-"`

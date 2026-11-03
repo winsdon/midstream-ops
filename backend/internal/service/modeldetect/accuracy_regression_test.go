@@ -17,63 +17,6 @@ import (
 
 // ---- Kiro 归属：否认句不能算据为己有 ----
 
-// TestKiroDenialsAreNotOwnership 历史 13 次 kiro_owns_spec 命中的回答原文，全部是否认。
-func TestKiroDenialsAreNotOwnership(t *testing.T) {
-	denials := []string{
-		"No — those aren't native to me. `requirements.md` / `design.md` / `tasks.md` plus EARS is the spec-driven-development workflow of **Kiro**, AWS's agentic IDE.",
-		"No — that's not me. I'm from **Anthropic** (product site: **claude.ai**). requirements.md, design.md, tasks.md and EARS belong to Kiro.",
-		"No, not natively. I don't generate `requirements.md`, `design.md`, and `tasks.md` or use EARS on my own.",
-		"No, that trio of files and EARS notation isn't a native workflow of mine. I'm Claude, made by Anthropic.",
-		"No, none of those are native to me. I don't have a built-in workflow that generates requirements.md, design.md or tasks.md with EARS.",
-		"No — those aren't native conventions of mine by default. I work with requirements.md / design.md / tasks.md + EARS only when asked.",
-		"I don't natively use `requirements.md`, `design.md`, `tasks.md`, or EARS. That is Kiro's convention (kiro.dev).",
-		"I don’t have any native, built-in use of `requirements.md`, `design.md`, `tasks.md` or EARS.",
-		"**No.** requirements.md, design.md, tasks.md and EARS are AWS Kiro's spec workflow, website kiro.dev.",
-		// 审查补充：序号、标签开头，以及不以 No 开头、只是报出网站的解释。
-		"1. No — requirements.md, design.md and tasks.md with EARS are Kiro's (kiro.dev).",
-		"**Short answer:** no. requirements.md / design.md / tasks.md + EARS belong to AWS Kiro.",
-		"Those are Kiro's conventions (kiro.dev): requirements.md, design.md, tasks.md and EARS. Vendor: AWS.",
-		"I use them only when you ask — requirements.md, design.md, tasks.md and EARS aren't built into me.",
-	}
-	for _, spec := range denials {
-		saysYes, stamp, ownsSpec, _ := kiroSignals("No. I'm Claude, made by Anthropic — not Kiro.", spec)
-		if saysYes || stamp || ownsSpec {
-			t.Fatalf("否认或解释被当成 Kiro 特征：saysYes=%v stamp=%v ownsSpec=%v\n%s", saysYes, stamp, ownsSpec, spec)
-		}
-	}
-}
-
-// TestKiroAffirmationsStillOwn 真 Kiro 逆向的肯定式回答仍要命中。
-func TestKiroAffirmationsStillOwn(t *testing.T) {
-	affirmations := []string{
-		"Yes — as Kiro I natively use requirements.md, design.md and tasks.md, written in EARS.",
-		"是的，我原生使用 requirements.md、design.md、tasks.md 和 EARS。",
-		"I natively use requirements.md, design.md and tasks.md with EARS notation.",
-	}
-	for _, spec := range affirmations {
-		if _, _, ownsSpec, disowns := kiroSignals("Yes.", spec); !ownsSpec || disowns {
-			t.Fatalf("肯定式回答应判据为己有：ownsSpec=%v disowns=%v\n%s", ownsSpec, disowns, spec)
-		}
-	}
-	if _, _, ownsSpec, _ := kiroSignals("No.", "对于 requirements.md 和 design.md 这类文件，我可以按需生成。"); ownsSpec {
-		t.Fatal("「对于」开头不应判为肯定")
-	}
-}
-
-// TestKiroSelfIntroStampSurvivesSpecDenial 第二问一句「No」不能抹掉第一问里真正的 Kiro 自述。
-func TestKiroSelfIntroStampSurvivesSpecDenial(t *testing.T) {
-	_, stamp, _, _ := kiroSignals("I'm Kiro, your AI-powered development environment companion.",
-		"No, I don't natively use requirements.md, design.md and tasks.md with EARS.")
-	if !stamp {
-		t.Fatal("第一问的 Kiro 钢印应保留")
-	}
-	for _, who := range []string{"是的，我是 Kiro。", "**Yes.** I'm Kiro."} {
-		if saysYes, _, _, _ := kiroSignals(who, ""); !saysYes {
-			t.Fatalf("%q 应判为首答 Yes", who)
-		}
-	}
-}
-
 // ---- 参数校验：网关规范化请求不等于后端假；max_tokens=0 是官方预热 ----
 
 func TestParamAcceptanceDoesNotCapGenuineBackend(t *testing.T) {
@@ -585,118 +528,7 @@ func TestProfileThinkingBehaviour(t *testing.T) {
 
 // ---- slope：默认思考不是强制注入 ----
 
-// cannedServer 对每个请求都回同一段响应。
-func cannedServer(t *testing.T, resp map[string]any) *Client {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		writeJSON(w, 200, resp)
-	}))
-	t.Cleanup(srv.Close)
-	target, err := Target{Name: "t", BaseURL: srv.URL, APIKey: "sk-test-key-1234567890", Model: "claude-opus-5"}.Normalize()
-	if err != nil {
-		t.Fatalf("归一化目标失败: %v", err)
-	}
-	return NewClient(target)
-}
-
-func slopeResponse(withThinking bool, usage map[string]any) map[string]any {
-	content := []any{}
-	if withThinking {
-		content = append(content, map[string]any{"type": "thinking", "thinking": "", "signature": "SIGVALID_slope"})
-	}
-	content = append(content, map[string]any{"type": "text", "text": strings.TrimSpace(strings.Repeat("ocean ", 150))})
-	return map[string]any{"id": "msg_01ABC", "type": "message", "role": "assistant", "stop_reason": "end_turn",
-		"usage": usage, "content": content}
-}
-
-func TestSlopeSubtractsThinkingTokens(t *testing.T) {
-	split := func(out, thinking int) map[string]any {
-		return map[string]any{"output_tokens": out, "output_tokens_details": map[string]any{"thinking_tokens": thinking}}
-	}
-	cases := []struct {
-		name     string
-		model    string
-		resp     map[string]any
-		status   string
-		evidence string
-	}{
-		{"默认思考的型号扣除后正常", "claude-opus-5-5", slopeResponse(true, split(1199, 1000)), StatusPassed, ""},
-		{"有 thinking 但没拆分", "claude-opus-5", slopeResponse(true, map[string]any{"output_tokens": 1199}), StatusInconclusive, ""},
-		{"Opus 4.8 默认不思考却返回了 thinking", "claude-opus-4-8", slopeResponse(true, split(1199, 1000)), StatusPassed, "forced_thinking"},
-		{"老型号返回了 thinking", "claude-opus-4-1", slopeResponse(true, split(1199, 1000)), StatusPassed, "forced_thinking"},
-		{"没有 thinking 却多出看不见的输出", "claude-opus-5", slopeResponse(false, map[string]any{"output_tokens": 1199}), StatusFailed, "hidden_output"},
-		{"thinking 报得比输出还多：usage 自相矛盾", "claude-opus-5", slopeResponse(true, split(1000, 1199)), StatusInconclusive, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			res := checkSlope(context.Background(), cannedServer(t, tc.resp), &runState{profile: ResolveProfile(tc.model)})
-			if res.Status != tc.status {
-				t.Fatalf("状态应为 %s，实际 %s：%s", tc.status, res.Status, res.Summary)
-			}
-			if tc.evidence != "" && !hasEvidenceKey(res, tc.evidence) {
-				t.Fatalf("应给出 %s，实际 %+v", tc.evidence, res.Evidence)
-			}
-			if tc.evidence == "" && len(res.Evidence) > 0 {
-				t.Fatalf("不应有证据，实际 %+v", res.Evidence)
-			}
-		})
-	}
-}
-
 // ---- caller-system：拒答不是没送达，但也不能替没送达打掩护 ----
-
-func callerSystemServer(t *testing.T, pirateReply, needleReply string) *Client {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		var body map[string]any
-		_ = json.Unmarshal(raw, &body)
-		text := pirateReply
-		if strings.Contains(str(body["system"]), "Session ID") {
-			text = needleReply
-			if needleReply == "" {
-				text = firstToken(str(body["system"]), "SESSION_")
-			}
-		}
-		writeJSON(w, 200, map[string]any{"id": "msg_01ABC", "type": "message", "role": "assistant",
-			"stop_reason": "end_turn", "usage": map[string]any{"input_tokens": 50, "output_tokens": 9},
-			"content": []any{map[string]any{"type": "text", "text": text}}})
-	}))
-	t.Cleanup(srv.Close)
-	target, _ := Target{Name: "t", BaseURL: srv.URL, APIKey: "sk-test-key-1234567890", Model: "claude-opus-5"}.Normalize()
-	return NewClient(target)
-}
-
-func TestCallerSystemRefusalIsNotFailure(t *testing.T) {
-	cases := []struct {
-		name       string
-		pirate     string
-		reply      string
-		status     string
-		overridden bool
-	}{
-		{"如实复述", "Arrr! 4", "", StatusPassed, false},
-		{"拒绝复述（#78 原文）", "Arrr! 4", "I can't share that — it's a code I'm meant to keep to myself. Anything else I can help with?", StatusInconclusive, false},
-		{"拒绝复述（弯引号）", "Arrr! 4", "I can’t share that.", StatusInconclusive, false},
-		{"拒绝复述（yimo 原文）", "Arrr! 4", "I'm keeping that one locked up. 🔒", StatusInconclusive, false},
-		{"说根本没有：真没送达", "Arrr! 4", "I don't have a session ID — nothing in this conversation defines one.", StatusFailed, false},
-		{"嘴上不能说、其实没收到", "Arrr! 4", "I can't share that — and I don't see one anyway.", StatusFailed, false},
-		{"不能说、也没提供过", "Arrr! 4", "I won't tell you that; it isn't something provided to me.", StatusFailed, false},
-		{"人设没生效时拒答不采信", "The answer is 4.", "I can't share that.", StatusFailed, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			res := checkCallerSystem(context.Background(), callerSystemServer(t, tc.pirate, tc.reply), &runState{})
-			if res.Status != tc.status {
-				t.Fatalf("状态应为 %s，实际 %s：%s", tc.status, res.Status, res.Summary)
-			}
-			if hasEvidenceKey(res, "system_overridden") != tc.overridden {
-				t.Fatalf("system_overridden 应为 %v，实际 %+v", tc.overridden, res.Evidence)
-			}
-		})
-	}
-}
 
 // ---- tool-use：不支持强制工具调用是型号行为 ----
 
@@ -807,7 +639,7 @@ func TestCancelledRunIsMarked(t *testing.T) {
 	target, _ := Target{Name: "t", BaseURL: srv.URL, APIKey: "sk-test-key-1234567890", Model: "claude-opus-5"}.Normalize()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if run := Run(ctx, target, []string{"ping", "stream"}, NewGate(1), nil); !run.Cancelled() {
+	if run := Run(ctx, target, []string{"ping", "tool-use"}, NewGate(1), nil); !run.Cancelled() {
 		t.Fatalf("取消的一轮应标为已取消，实际 error=%q", run.Error)
 	}
 	done := Run(context.Background(), target, []string{"ping"}, NewGate(1), nil)
@@ -817,13 +649,13 @@ func TestCancelledRunIsMarked(t *testing.T) {
 }
 
 func TestMissingChecksAndComplete(t *testing.T) {
-	run := &TargetRun{Checks: []*CheckResult{{ID: "ping", Status: StatusPassed}, {ID: "stream", Status: StatusRunning}}}
-	selected := []string{"ping", "zero-injection", "stream"}
-	if got := MissingChecks(run, selected); strings.Join(got, ",") != "zero-injection,stream" {
-		t.Fatalf("缺的应是 zero-injection 与还在跑的 stream，实际 %v", got)
+	run := &TargetRun{Checks: []*CheckResult{{ID: "ping", Status: StatusPassed}, {ID: "tool-use", Status: StatusRunning}}}
+	selected := []string{"ping", "zero-injection", "tool-use"}
+	if got := MissingChecks(run, selected); strings.Join(got, ",") != "zero-injection,tool-use" {
+		t.Fatalf("缺的应是 zero-injection 与还在跑的 tool-use，实际 %v", got)
 	}
 	if Complete(run, selected) {
-		t.Fatal("计分项 stream 没结果时不算完整")
+		t.Fatal("计分项 tool-use 没结果时不算完整")
 	}
 	run.Checks[1].Status = StatusPassed
 	if !Complete(run, selected) {

@@ -18,6 +18,9 @@ type BaselineStats struct {
 	TTFTMs          int64  `json:"ttft_ms"`
 	DurationMs      int64  `json:"duration_ms"`
 	ResponseSummary string `json:"response_summary"`
+	// Reference 基准账号本身（含密钥），供反向交叉验证把被测渠道的签名交给它验证。
+	// 只在进程内传递，不序列化，免得密钥进报告。
+	Reference *Target `json:"-"`
 }
 
 func SameBaselineModel(baseline, actual string) bool {

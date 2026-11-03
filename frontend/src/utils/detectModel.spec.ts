@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  buildAuthChain,
   countStatuses,
   estimateRequests,
   findCheck,
@@ -246,3 +247,51 @@ describe('单项结论配色', () => {
     expect(statusIcon('suspicious')).toBe('!')
   })
 })
+
+describe('buildAuthChain', () => {
+  const catalog: DetectCheckMeta[] = [
+    { id: 'sig-tamper', title: '签名完整性', group: 'protocol', default: true, cost: 'medium', requests: 2, auth_max: 40 },
+    { id: 'baseline-quality', title: 'CCMax 基准对照', group: 'capability', default: true, cost: 'high', requests: 1, auth_max: 30 },
+    { id: 'max-tokens-strict', title: 'max_tokens 硬上限', group: 'protocol', default: true, cost: 'low', requests: 1, auth_max: 10 },
+    { id: 'ping', title: '基础请求', group: 'gateway', default: true, cost: 'low', requests: 1 }
+  ]
+  const result = (id: string, extra: Partial<DetectCheckResult>): DetectCheckResult => ({
+    id, title: id, group: 'protocol', status: 'passed', summary: id + ' 摘要', duration_ms: 1, ...extra
+  })
+
+  it('加分、扣分、未得分与封顶按顺序排好，并给出原始合计', () => {
+    const run: DetectTargetRun = {
+      name: 't', base_url: '', model: '', auth_mode: '', started_at: '', finished_at: '',
+      checks: [
+        result('ping', {}),
+        result('max-tokens-strict', { status: 'inconclusive' }),
+        result('sig-tamper', { auth_score: 40 }),
+        result('cross-audit', { auth_score: -30 }),
+        result('baseline-quality', { auth_score: 30 }),
+        result('model-meta', { auth_cap_reason: '自报型号里出现非 Claude 品牌' }),
+        result('zero-injection', { informational: true, auth_score: 5 })
+      ]
+    }
+    const chain = buildAuthChain(run, catalog)
+    expect(chain.items.map((i) => [i.id, i.kind])).toEqual([
+      ['model-meta', 'cap'],
+      ['sig-tamper', 'plus'],
+      ['baseline-quality', 'plus'],
+      ['cross-audit', 'minus'],
+      ['max-tokens-strict', 'miss']
+    ])
+    expect(chain.raw).toBe(40)
+    expect(chain.items.find((i) => i.id === 'sig-tamper')?.max).toBe(40)
+  })
+
+  it('历史报告里已下线的检测项照样列出，只是没有满分', () => {
+    const run = {
+      name: 't', base_url: '', model: '', auth_mode: '', started_at: '', finished_at: '',
+      checks: [result('count-tokens', { auth_score: 5 })]
+    } as DetectTargetRun
+    const [item] = buildAuthChain(run, catalog).items
+    expect(item).toMatchObject({ id: 'count-tokens', points: 5, kind: 'plus' })
+    expect(item.max).toBeUndefined()
+  })
+})
+

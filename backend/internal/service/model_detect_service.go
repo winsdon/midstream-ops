@@ -289,6 +289,7 @@ func (s *ModelDetectService) Start(ctx context.Context, req DetectRunRequest) (s
 		if b, e := s.baselineRepo.Get(ctx, req.Owner); e == nil && b.Status == "passed" {
 			baselineID = &b.ID
 			baseline = baselineStatsFromRow(b)
+			baseline.Reference = s.referenceTarget(ctx, b, req)
 		}
 	}
 
@@ -323,6 +324,27 @@ func (s *ModelDetectService) Start(ctx context.Context, req DetectRunRequest) (s
 
 	go s.run(runCtx, job, targets, checks)
 	return jobID, nil
+}
+
+// referenceTarget 把基准账号解析成反向交叉验证用的参照目标（含密钥，只在进程内使用）。
+// 型号先取本轮检测型号，没指定时用基准自己的型号；检测项里还会按每个目标的型号覆盖。
+// 解析失败（账号已删、PG 不可用）只是少做一项验证，不阻断检测。
+func (s *ModelDetectService) referenceTarget(ctx context.Context, b *repository.ModelDetectionBaseline, req DetectRunRequest) *modeldetect.Target {
+	if b.AccountID == nil || *b.AccountID <= 0 {
+		return nil
+	}
+	model := req.Model
+	if model == "" {
+		model = b.Model
+	}
+	targets, err := s.resolveTargets(ctx, DetectRunRequest{
+		Targets: []DetectTargetInput{{AccountID: b.AccountID}}, Model: model, TimeoutMs: req.TimeoutMs,
+	})
+	if err != nil {
+		log.Printf("[model-detect] 基准账号 %d 解析失败，跳过反向交叉验证: %v", *b.AccountID, err)
+		return nil
+	}
+	return &targets[0]
 }
 
 // resolveTargets 把请求里的目标解析成可执行的 Target（含密钥）。

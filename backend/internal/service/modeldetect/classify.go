@@ -31,7 +31,17 @@ const (
 	GradeLikely   = "likely"   // 大概率为真
 	GradeDoubtful = "doubtful" // 存疑
 	GradeFake     = "fake"     // 疑似伪装
+	// GradeInsufficient 计分项几乎都没得出结论（请求失败、被拒答、不支持），分数说明不了真伪。
+	GradeInsufficient = "insufficient"
 )
+
+// minConclusive 计分项至少这么多个得出明确结论，真实性等级才有意义。
+const minConclusive = 3
+
+// conclusiveStatus 观察通过 / 协议失败 / 结果可疑算得出结论；证据不足与不支持不算。
+func conclusiveStatus(status string) bool {
+	return status == StatusPassed || status == StatusFailed || status == StatusSuspicious
+}
 
 // authCapScore 触发造假硬证据后真实性评分的上限。
 const authCapScore = 30
@@ -82,6 +92,7 @@ func Classify(results []*CheckResult) Verdict {
 	seenEvidence := map[string]bool{}
 	auth := Authenticity{}
 	usable := false
+	conclusive := 0 // 得出明确结论的计分项数
 
 	for _, res := range results {
 		if res == nil || res.Status == StatusRunning || res.Informational {
@@ -102,6 +113,9 @@ func Classify(results []*CheckResult) Verdict {
 			}
 			reasons = append(reasons, ev)
 		}
+		if meta, ok := checkByID(res.ID); ok && meta.AuthMax > 0 && conclusiveStatus(res.Status) {
+			conclusive++
+		}
 		auth.Score += res.AuthScore
 		if res.AuthCapReason != "" {
 			auth.Capped = true
@@ -112,10 +126,18 @@ func Classify(results []*CheckResult) Verdict {
 	if auth.Score > 100 {
 		auth.Score = 100
 	}
+	if auth.Score < 0 { // 回放扣分可能扣成负数
+		auth.Score = 0
+	}
 	if auth.Capped && auth.Score > authCapScore {
 		auth.Score = authCapScore
 	}
 	auth.Grade = gradeOf(auth.Score, auth.Capped)
+	// 没有封顶、又只有不到 minConclusive 个计分项得出结论：低分是「没测到」，不是「测出了问题」。
+	// 实测 2026-11-03 一条渠道整轮大面积 Cloudflare 502，旧口径显示「0 分 · 存疑」，读起来像查出了造假。
+	if !auth.Capped && conclusive < minConclusive {
+		auth.Grade = GradeInsufficient
+	}
 
 	// 证据按权重降序，前端「为什么这么判」直接取前几条
 	sort.SliceStable(reasons, func(i, j int) bool { return reasons[i].Weight > reasons[j].Weight })

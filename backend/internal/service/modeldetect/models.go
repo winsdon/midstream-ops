@@ -130,22 +130,6 @@ func thinkingTokens(usage map[string]any) (int, bool) {
 	return int(v), ok
 }
 
-// hasThinkingOutput 响应里有没有 thinking / redacted_thinking 块。
-func hasThinkingOutput(body map[string]any) bool {
-	for _, raw := range contentBlocks(body) {
-		switch str(mapOf(raw)["type"]) {
-		case "thinking", "redacted_thinking":
-			return true
-		}
-	}
-	return false
-}
-
-// errorType 取标准错误响应的 error.type。
-func errorType(body map[string]any) string {
-	return str(mapOf(body["error"])["type"])
-}
-
 // errorMessage 取标准错误响应的 error.message。
 func errorMessage(body map[string]any) string {
 	return str(mapOf(body["error"])["message"])

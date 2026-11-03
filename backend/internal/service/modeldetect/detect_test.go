@@ -184,11 +184,18 @@ const (
 // 第 n 次请求读前 n-1 段之和、写第 n 段。三次都非零 —— 这正是被测的形态。
 var fakeProbeSegments = []int{2400, 900, 900}
 
-// 是缓存探针请求：本次检测里只有 ping-again 会打显式 cache_control。
+// 是缓存探针请求：本次检测里只有 ping-again 会打显式 cache_control（在消息块上）。
 func isCacheProbeBody(body map[string]any) bool {
 	for _, raw := range sliceOf(body["system"]) {
 		if mapOf(raw)["cache_control"] != nil {
 			return true
+		}
+	}
+	for _, msg := range sliceOf(body["messages"]) {
+		for _, raw := range sliceOf(mapOf(msg)["content"]) {
+			if mapOf(raw)["cache_control"] != nil {
+				return true
+			}
 		}
 	}
 	return false
@@ -311,7 +318,7 @@ func validateParams(body map[string]any) error {
 	}
 	known := map[string]bool{"model": true, "max_tokens": true, "messages": true, "system": true,
 		"thinking": true, "tools": true, "tool_choice": true, "stream": true, "temperature": true,
-		"output_config": true}
+		"output_config": true, "metadata": true}
 	for k := range body {
 		if !known[k] {
 			return errText("probe_unknown_field: Extra inputs are not permitted")
@@ -582,8 +589,8 @@ func runAgainst(t *testing.T, up *fakeUpstream, checks []string) *TargetRun {
 
 func TestClassifyOfficialAPI(t *testing.T) {
 	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true}
-	run := runAgainst(t, up, []string{"models", "ping", "ping-again", "param-strict",
-		"max-tokens-strict", "tool-use", "thinking-sig", "sig-tamper", "count-tokens"})
+	run := runAgainst(t, up, []string{"ping", "ping-again", "param-strict",
+		"max-tokens-strict", "tool-use", "thinking-sig", "sig-tamper"})
 
 	if run.Verdict.Label != LabelOfficial {
 		t.Fatalf("期望判定 %s，实际 %s（分数 %v）", LabelOfficial, run.Verdict.Label, run.Verdict.Scores)
@@ -591,8 +598,9 @@ func TestClassifyOfficialAPI(t *testing.T) {
 	if run.Verdict.Authenticity.Capped {
 		t.Fatalf("干净官方后端不应触发真实性封顶：%v", run.Verdict.Authenticity.CapReason)
 	}
-	if run.Verdict.Authenticity.Score < 60 {
-		t.Fatalf("期望真实性分 >= 60，实际 %d", run.Verdict.Authenticity.Score)
+	// 签名的 40 分在 sig-crossverify 上，要真 Anthropic 签名才拿得到，替身做不出来；这里只验其余各项。
+	if run.Verdict.Authenticity.Score < 40 {
+		t.Fatalf("期望真实性分 >= 40，实际 %d", run.Verdict.Authenticity.Score)
 	}
 }
 
@@ -702,39 +710,66 @@ func TestCacheProbeGrowsPrefixEachRequest(t *testing.T) {
 		t.Fatalf("带 cache_control 的探针请求应为 3 条，实际 %d", len(bodies))
 	}
 
-	var prev []string
-	var prevTotal int
+	var prev []any
+	session := ""
 	for i, body := range bodies {
-		blocks := sliceOf(body["system"])
-		if len(blocks) != i+1 {
-			t.Fatalf("第 %d 条探针应有 %d 个 system 块（前缀逐次加长），实际 %d", i+1, i+1, len(blocks))
+		msgs := sliceOf(body["messages"])
+		if len(msgs) != 2*i+1 {
+			t.Fatalf("第 %d 条探针应有 %d 条消息（多轮对话逐轮追加），实际 %d", i+1, 2*i+1, len(msgs))
 		}
-		if mapOf(blocks[len(blocks)-1])["cache_control"] == nil {
-			t.Fatalf("第 %d 条探针的 cache_control 不在末段：%+v", i+1, blocks)
-		}
-		texts := make([]string, 0, len(blocks))
-		total := 0
-		for j, raw := range blocks {
-			text := str(mapOf(raw)["text"])
-			texts = append(texts, text)
-			total += len(text)
-			if j < i && mapOf(raw)["cache_control"] != nil {
-				t.Fatalf("第 %d 条探针给旧段打了 cache_control，前缀就不再是纯增长：%+v", i+1, blocks)
-			}
-		}
-		// 前面的段必须逐字节保留，否则前缀不是字节前缀，缓存也不可能命中。
+		// 上一次请求的全部消息必须逐字节保留在本次的开头：网关把断点挪到末尾时，
+		// 只有这样上一次写入的缓存才是本次的前缀。
 		for j, old := range prev {
-			if texts[j] != old {
-				t.Fatalf("第 %d 条探针的第 %d 段被改写，前缀不再是增长的前缀", i+1, j+1)
+			if probeMessageText(old) != probeMessageText(msgs[j]) {
+				t.Fatalf("第 %d 条探针的第 %d 条消息被改写，前缀不再是增长的前缀", i+1, j+1)
 			}
 		}
-		if total <= prevTotal {
-			t.Fatalf("第 %d 条探针前缀没有变长（%d → %d）", i+1, prevTotal, total)
+		for j, msg := range msgs {
+			for _, raw := range sliceOf(mapOf(msg)["content"]) {
+				hasCC := mapOf(raw)["cache_control"] != nil
+				if hasCC != (j == len(msgs)-1) {
+					t.Fatalf("第 %d 条探针的 cache_control 应只在最后一条用户消息上：第 %d 条 cache_control=%v", i+1, j+1, hasCC)
+				}
+			}
 		}
-		if i == 0 && len(texts[0]) < 1024 {
-			t.Fatalf("首段只有 %d 字符，短于最小可缓存长度会被官方静默跳过", len(texts[0]))
+		uid := str(mapOf(body["metadata"])["user_id"])
+		if !strings.Contains(uid, "_account__session_") || (session != "" && uid != session) {
+			t.Fatalf("三次探针应共用一个 Claude Code 形态的会话标识，实际 %q / %q", session, uid)
 		}
-		prev, prevTotal = texts, total
+		session = uid
+		if i == 0 {
+			first := str(mapOf(sliceOf(mapOf(msgs[0])["content"])[0])["text"])
+			if len(first) < 1024 {
+				t.Fatalf("首段只有 %d 字符，短于最小可缓存长度会被官方静默跳过", len(first))
+			}
+		}
+		prev = msgs
+	}
+}
+
+// probeMessageText 一条消息的角色与正文（不含 cache_control：断点随末轮移动，正文必须逐字节不变）。
+func probeMessageText(msg any) string {
+	m := mapOf(msg)
+	if text, ok := m["content"].(string); ok {
+		return str(m["role"]) + ":" + text
+	}
+	var parts []string
+	for _, raw := range sliceOf(m["content"]) {
+		parts = append(parts, str(mapOf(raw)["text"]))
+	}
+	return str(m["role"]) + ":" + strings.Join(parts, "|")
+}
+
+// TestCacheChainAllowsInjectedPrefix 实测 #107 号池：网关注入的系统提示每次命中 12368，
+// 探针链在它后面逐级推进。首轮读到的是网关前缀，不是「首轮就命中」。
+func TestCacheChainAllowsInjectedPrefix(t *testing.T) {
+	ch := cacheChain{write1: 6758, read1: 12368, read2: 19126, write2: 3129, read3: 22255, write3: 3109}
+	if got, reason := ch.outcome(); got != cacheChainPassed {
+		t.Fatalf("网关前缀之后的链逐级推进应通过，实际 %s（%s）", got, reason)
+	}
+	broken := cacheChain{write1: 5726, read1: 12374, read2: 12368, write2: 6899, read3: 645, write3: 4407}
+	if got, _ := broken.outcome(); got != cacheChainPreHit {
+		t.Fatalf("首轮有读取且链断开应报 pre_hit，实际 %s", got)
 	}
 }
 
@@ -777,7 +812,7 @@ func TestUnavailableTarget(t *testing.T) {
 	}))
 	defer srv.Close()
 	target, _ := Target{BaseURL: srv.URL, APIKey: "sk-test-key-1234567890", Model: "claude-opus-5"}.Normalize()
-	run := Run(context.Background(), target, []string{"models", "ping"}, NewGate(2), nil)
+	run := Run(context.Background(), target, []string{"ping", "max-tokens-strict"}, NewGate(2), nil)
 	if run.Verdict.Label != LabelUnavailable {
 		t.Fatalf("全部请求 401 应判不可用，实际 %s", run.Verdict.Label)
 	}
@@ -853,12 +888,12 @@ func TestExpandRetryIDsFollowsSkippedDependents(t *testing.T) {
 		{ID: "ping", Status: StatusInconclusive, Exchanges: []*Exchange{{Status: 502}}},
 		{ID: "ping-again", Status: StatusInconclusive},
 	}
-	got := ExpandRetryIDs([]string{"ping"}, existing, []string{"ping", "ping-again", "stream"})
+	got := ExpandRetryIDs([]string{"ping"}, existing, []string{"ping", "ping-again", "tool-use"})
 	if indexOf(got, "ping") < 0 || indexOf(got, "ping-again") < 0 {
 		t.Fatalf("重试 ping 应带上因前置失败而没发出请求的 ping-again，实际 %v", got)
 	}
-	if indexOf(got, "stream") >= 0 {
-		t.Fatalf("未跑过的 stream 不应被带上: %v", got)
+	if indexOf(got, "tool-use") >= 0 {
+		t.Fatalf("未跑过的 tool-use 不应被带上: %v", got)
 	}
 }
 
@@ -972,7 +1007,7 @@ func TestRunIndependentChecksOverlap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := Run(context.Background(), target, []string{"models", "ping"}, NewGate(2), nil)
+	run := Run(context.Background(), target, []string{"ping", "max-tokens-strict"}, NewGate(2), nil)
 	if run.Verdict == nil {
 		t.Fatal("缺少判定")
 	}
@@ -1109,33 +1144,6 @@ func TestResolveProfile(t *testing.T) {
 			t.Fatalf("%s: 期望 adaptive=%v minCache=%d recognized=%v，实际 %+v",
 				tc.model, tc.adaptive, tc.minCache, tc.recognize, p)
 		}
-	}
-}
-
-func TestValidateSSERejectsBrokenFlow(t *testing.T) {
-	good := parseSSE(strings.Join([]string{
-		`event: message_start` + "\n" + `data: {"type":"message_start","message":{"usage":{"input_tokens":3}}}`,
-		`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0}`,
-		`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
-		`event: content_block_stop` + "\n" + `data: {"type":"content_block_stop","index":0}`,
-		`event: message_delta` + "\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
-		`event: message_stop` + "\n" + `data: {"type":"message_stop"}`,
-	}, "\n\n"))
-	if flow := validateSSE(good); !flow.valid || !flow.startHasUsage {
-		t.Fatalf("合法 SSE 流被判非法: %s", flow.detail())
-	}
-
-	broken := parseSSE(strings.Join([]string{
-		`event: message_start` + "\n" + `data: {"type":"message_start"}`,
-		`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
-		`event: message_stop` + "\n" + `data: {"type":"message_stop"}`,
-	}, "\n\n"))
-	flow := validateSSE(broken)
-	if flow.valid {
-		t.Fatal("缺 content_block_start / message_delta 的流应被判非法")
-	}
-	if flow.startHasUsage {
-		t.Fatal("message_start 无 usage 时不应报告 startHasUsage")
 	}
 }
 
@@ -1503,7 +1511,7 @@ func TestAuditFlagsDuplicateMessageIDs(t *testing.T) {
 // TestAuditPassesUniqueOfficialIDs 每条响应一个官方形态 id，不得告警。
 func TestAuditPassesUniqueOfficialIDs(t *testing.T) {
 	up := &fakeUpstream{behaviour: "official", strictParams: true, signatureChecked: true}
-	run := runAgainst(t, up, []string{"ping", "max-tokens-strict", "stream"})
+	run := runAgainst(t, up, []string{"ping", "max-tokens-strict", "tool-use"})
 	res := auditOf(t, run)
 	for _, key := range []string{"msg_id_rewritten", "msg_id_duplicate"} {
 		if hasEvidenceKey(res, key) {
@@ -1512,17 +1520,29 @@ func TestAuditPassesUniqueOfficialIDs(t *testing.T) {
 	}
 }
 
-// TestAuditFlagsStaleSignature 签名签发时间早于本轮开始，说明 thinking 块是回放的。
-func TestAuditFlagsStaleSignature(t *testing.T) {
+// TestAuditStaleSignatureFieldIsDiagnosticOnly 签名时间字段早于本轮只记诊断：2026-11-03 实测真渠道
+// 现场生成的 thinking（逐字复述当场的校验串）带的 v17 签名，这个字段在 54–68 天前。
+func TestAuditStaleSignatureFieldIsDiagnosticOnly(t *testing.T) {
 	stale := buildSig(17, "claude-opus-5", "54a0d54a-e856-4dd3-9019-65a8aabaa28d", "",
-		time.Now().Add(-8*time.Hour).Unix())
+		time.Now().Add(-60*24*time.Hour).Unix())
 	run := runAgainst(t, &fakeUpstream{behaviour: "official", signature: stale}, []string{"ping", "thinking-sig"})
 	res := auditOf(t, run)
-	if !hasEvidenceKey(res, "sig_stale") {
-		t.Fatalf("应指出签名签发时间不在本轮内，实际 %+v", res.Evidence)
+	for _, ev := range res.Evidence {
+		if ev.Weight > 0 {
+			t.Fatalf("时间字段偏早不应加分类分：%+v", ev)
+		}
 	}
-	if res.AuthCapReason != "" {
-		t.Fatalf("签名字段是未公开编码，不应封顶真实性：%s", res.AuthCapReason)
+	if res.AuthScore != 0 || res.AuthCapReason != "" {
+		t.Fatalf("时间字段偏早不应影响真实性，实际 %d / %q", res.AuthScore, res.AuthCapReason)
+	}
+	found := false
+	for _, a := range res.Assertions {
+		if strings.Contains(a.Label, "签名时间字段早于本轮开始") {
+			found = a.Diagnostic && !a.OK
+		}
+	}
+	if !found {
+		t.Fatalf("应留下一条未通过的诊断，实际 %+v", res.Assertions)
 	}
 }
 
@@ -1531,7 +1551,7 @@ func TestAuditRecordsFreshSignatureAccount(t *testing.T) {
 	fresh := buildSig(17, "claude-opus-5", "1548b6db-46e0-4854-94f7-cd5b29b949b1", "", time.Now().Unix())
 	run := runAgainst(t, &fakeUpstream{behaviour: "official", signature: fresh}, []string{"ping", "thinking-sig"})
 	res := auditOf(t, run)
-	for _, key := range []string{"sig_stale", "sig_uuid_forged"} {
+	for _, key := range []string{"sig_uuid_forged"} {
 		if hasEvidenceKey(res, key) {
 			t.Fatalf("新签发的合法签名不应出现 %s：%+v", key, res.Evidence)
 		}

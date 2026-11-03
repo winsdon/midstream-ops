@@ -61,6 +61,9 @@ func AuditRun(checks []*CheckResult, profile ThinkingProfile, startedAt time.Tim
 	auditMessageIDs(r, checks)
 	auditSignatureReuse(r, checks)
 	auditSignatureProvenance(r, bodies, startedAt, time.Now())
+	auditSignatureLength(r, bodies)
+	auditSignatureFloor(r, bodies)
+	scoreSignatureReplay(r)
 	auditSignatureModel(r, bodies)
 	auditPlatformShape(r, checks, bodies)
 	auditBedrockCorroboration(r, checks)
@@ -130,7 +133,7 @@ func auditBodies(checks []*CheckResult) []auditBody {
 			continue
 		}
 		for _, ex := range c.Exchanges {
-			if ex == nil || !ex.OK() {
+			if ex == nil || !ex.OK() || ex.Reference {
 				continue
 			}
 			body := ex.JSON
@@ -353,7 +356,7 @@ func auditMessageIDs(r *CheckResult, checks []*CheckResult) {
 			continue
 		}
 		for _, ex := range c.Exchanges {
-			if ex == nil || !ex.OK() || ex.Kind != KindMessages {
+			if ex == nil || !ex.OK() || ex.Kind != KindMessages || ex.Reference {
 				continue
 			}
 			id := messageIDOf(ex)
@@ -429,7 +432,8 @@ func tallyLabels(labels []string) string {
 // 签名内含逐次随机的 nonce 与数据密钥：2026-09 回扫 687 个签名，同一请求体发多次的 38 组里
 // 34 组签名全不同，重复只出现在三条回放渠道上。回放时网关每次重写消息 id、延迟也与真实生成
 // 相当，按 id 去重与看耗时都认不出；签名它造不出来，只能原样复用。回放说明渠道不纯、按次计费
-// 却没有生成，不说明后端是假的——被回放的内容本来就出自真后端，所以只加分类分、不封顶真实性。
+// 却没有生成，不说明后端是假的——被回放的内容本来就出自真后端，所以不封顶真实性，
+// 由 scoreSignatureFreshness 扣分。
 func auditSignatureReuse(r *CheckResult, checks []*CheckResult) {
 	where := map[string][]string{}
 	var order []string
@@ -439,7 +443,7 @@ func auditSignatureReuse(r *CheckResult, checks []*CheckResult) {
 			continue
 		}
 		for _, ex := range c.Exchanges {
-			if ex == nil || ex.Kind != KindMessages {
+			if ex == nil || ex.Kind != KindMessages || ex.Reference {
 				continue
 			}
 			for _, sig := range exchangeSignatures(ex) {
@@ -473,11 +477,14 @@ func auditSignatureReuse(r *CheckResult, checks []*CheckResult) {
 // auditSignatureProvenance 签名来源：账号标识、签发时间、标识合法性。
 //
 // 签名里的账号标识同一账号跨请求不变：整轮只有一个就是单账号，多个就是号池——只记录，
-// 不打分。签发时间早于本轮开始，说明 thinking 块不是为这次请求生成的，网关在回放缓存的
-// 响应；账号标识外形像 UUID 而版本位非法，是签名被凭空编造。后两条依赖未公开字段，
-// 所以只加分类分、不封顶真实性。签发时间在未来不可能是回放，只能是解析错位或编造，
-// 只记诊断、不打分。签名头里读不出这些字段时（2026-09-28 起有渠道的签名头只剩版本号）
-// 记一条未通过的诊断，免得报告对「这项其实没核对」只字不提。
+// 不打分。账号标识外形像 UUID 而版本位非法，是签名被凭空编造（依赖未公开字段，只加分类分、
+// 不封顶真实性）。
+//
+// f21 早于本轮开始**只记诊断、不打分**：它不是签发时间。2026-11-03 在已知真渠道上实测，
+// thinking 正文逐字复述了当场生成的校验串（现场生成无疑），v17 签名的 f21 却在 54–68 天前，
+// 且 7 个签名来自 7 个账号、互不相同。早先据此判「回放」误伤了真渠道；回放只认逐字节相同的
+// 签名（auditSignatureReuse）。签名头里读不出这些字段时（2026-09-28 起有渠道的签名头只剩
+// 版本号）记一条未通过的诊断，免得报告对「这项其实没核对」只字不提。
 func auditSignatureProvenance(r *CheckResult, bodies []auditBody, startedAt, now time.Time) {
 	accounts := map[string]bool{}
 	signed, oauth := 0, 0
@@ -541,9 +548,8 @@ func auditSignatureProvenance(r *CheckResult, bodies []auditBody, startedAt, now
 	r.addEvidence("sig_accounts", fmt.Sprintf("thinking 签名来自 %d 个账号", len(accounts)), detail, ClassInfo, 0)
 
 	if len(stale) > 0 {
-		d := fmt.Sprintf("签发时间比本轮开始（%s，本机时钟）早：%s", startedAt.Format(time.DateTime), strings.Join(stale, "；"))
-		r.assert("thinking 签名为本轮新签发", false, d)
-		r.addEvidence("sig_stale", "thinking 签名早于本轮签发（回放缓存的响应）", d, ClassWrapper, 4)
+		d := fmt.Sprintf("时间字段比本轮开始（%s，本机时钟）早：%s", startedAt.Format(time.DateTime), strings.Join(stale, "；"))
+		r.diagnose("签名时间字段早于本轮开始（该字段不等于签发时间，只作记录）", false, d)
 	}
 	if len(future) > 0 {
 		r.diagnose("签名签发时间不在未来", false,
@@ -553,6 +559,28 @@ func auditSignatureProvenance(r *CheckResult, bodies []auditBody, startedAt, now
 		d := strings.Join(forged, "；")
 		r.assert("签名账号标识是合法 UUID", false, d)
 		r.addEvidence("sig_uuid_forged", "签名账号标识的 UUID 版本位非法（签名为编造）", d, ClassWrapper, 3)
+	}
+}
+
+// sigReplayPenalty 签名不是本次生成的（回放或贴签名）：按次计费却没有生成，或者思考被偷偷关掉。
+// 回复本身可能仍出自真后端，所以扣分而不封顶成「伪造」。
+const sigReplayPenalty = 30
+
+// scoreSignatureReplay 签名不是本次生成时扣一次真实性分。两条判据都是字节级的硬证据：
+// 签名逐字节重复（sig_replayed，签名里带逐次随机的 nonce，两次独立生成不可能相同），
+// 或签名长度超出本次输出所能容纳的思考（sig_pasted）。两者同源，只扣一次。
+func scoreSignatureReplay(r *CheckResult) {
+	var why []string
+	if hasEvidence([]*CheckResult{r}, "sig_replayed") {
+		why = append(why, "签名重复")
+	}
+	if hasEvidence([]*CheckResult{r}, "sig_pasted") {
+		why = append(why, "签名长度与输出不相容")
+	}
+	if len(why) > 0 {
+		r.AuthScore -= sigReplayPenalty
+		r.diagnose("签名回放计入真实性", false,
+			fmt.Sprintf("thinking 签名不是本次生成（%s），真实性 −%d", strings.Join(why, "、"), sigReplayPenalty))
 	}
 }
 
@@ -719,7 +747,7 @@ func tamperErrFamily(checks []*CheckResult) string {
 			continue
 		}
 		for _, ex := range c.Exchanges {
-			if ex == nil || ex.OK() {
+			if ex == nil || ex.OK() || ex.Reference {
 				continue
 			}
 			text := ex.Raw + " " + ex.NetworkError

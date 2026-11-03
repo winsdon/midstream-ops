@@ -206,55 +206,49 @@ type Check struct {
 	Requires []string `json:"requires,omitempty"`
 	// Informational 只做检测、不参与分类与真实性评分。
 	Informational bool `json:"informational,omitempty"`
+	// AuthMax 本项对真实性评分的满分（0 = 不加分）。前端据此把没拿到分的计分项也列进证据链。
+	AuthMax int `json:"auth_max,omitempty"`
 }
 
 // Checks 全部检测项，顺序即执行顺序。
 var Checks = []Check{
-	{ID: "models", Title: "模型列表", Group: GroupGateway, Default: true, Cost: CostLow, Requests: 1,
-		Note: "拉 /v1/models，看模型 id 是否泄露 Bedrock 前缀"},
 	{ID: "ping", Title: "基础请求与网关指纹", Group: GroupGateway, Default: true, Cost: CostLow, Requests: 1,
 		Note: "消息 id 形态、注入量、限流头、service_tier"},
 	{ID: "ping-again", Title: "官方缓存链路", Group: GroupGateway, Default: true, Cost: CostLow, Requests: 3,
-		Note: "3 次前缀逐级增长的探针：每次都必须读到上次写入并写入新段（readₙ₊₁ = readₙ + writeₙ）", Requires: []string{"ping"}},
+		Note: "3 轮追加的多轮对话（同一会话标识）：每次都必须读到上次写入并写入新段（readₙ₊₁ = readₙ + writeₙ）", Requires: []string{"ping"}},
 	{ID: "zero-injection", Title: "是否 0 注入", Group: GroupGateway, Default: true, Cost: CostMedium,
 		Requests: zeroInjectionRequests, Informational: true,
 		Note: "裸请求 / 2n+5 / 带 system / count_tokens 对账，外加 20 次并发采样看号池；只做检测，不参与分类与真实性评分"},
 
-	{ID: "param-strict", Title: "参数校验严格性", Group: GroupProtocol, Default: true, Cost: CostLow, Requests: 4,
+	{ID: "param-strict", Title: "参数校验严格性", Group: GroupProtocol, Default: true, Cost: CostLow, Requests: 4, AuthMax: 15,
 		Note: "四个应被官方拒绝的非法请求；只作真实性加分项，被放行不记包装 / 伪装"},
-	{ID: "max-tokens-strict", Title: "max_tokens 硬上限", Group: GroupProtocol, Default: true, Cost: CostLow, Requests: 1},
-	{ID: "tool-use", Title: "强制工具调用", Group: GroupProtocol, Default: true, Cost: CostMedium, Requests: 2,
+	{ID: "max-tokens-strict", Title: "max_tokens 硬上限", Group: GroupProtocol, Default: true, Cost: CostLow, Requests: 1, AuthMax: 10},
+	{ID: "tool-use", Title: "强制工具调用", Group: GroupProtocol, Default: true, Cost: CostMedium, Requests: 2, AuthMax: 10,
 		Note: "tool_use id 前缀是区分 Bedrock / Vertex 的强指纹"},
 	{ID: "thinking-sig", Title: "thinking 签名", Group: GroupProtocol, Default: true, Cost: CostMedium, Requests: 1},
-	{ID: "sig-tamper", Title: "签名完整性", Group: GroupProtocol, Default: true, Cost: CostMedium, Requests: 2,
-		Note: "原样回传可续写、改一个字符必须被拒；识别网关回放缓存与剥离 thinking 块", Requires: []string{"thinking-sig"}},
-	{ID: "stream", Title: "SSE 流式协议", Group: GroupProtocol, Default: true, Cost: CostLow, Requests: 1},
-	{ID: "count-tokens", Title: "count_tokens 一致性", Group: GroupProtocol, Default: true, Cost: CostLow, Requests: 3,
-		Note: "稳定性、单调性，并与基础请求的 input_tokens 对齐", Requires: []string{"ping"}},
+	{ID: "sig-tamper", Title: "签名完整性", Group: GroupProtocol, Default: true, Cost: CostMedium, Requests: 2, AuthMax: 10,
+		Note: "只能证明后端会校验它自己签发的签名（伪造后端也做得到），真伪看「官方签名交叉验证」；原样回传可续写、改一个字符必须被拒；识别网关回放缓存与剥离 thinking 块", Requires: []string{"thinking-sig"}},
+	{ID: "sig-crossverify", Title: "官方签名交叉验证", Group: GroupProtocol, Default: true, Cost: CostMedium, Requests: 5, AuthMax: 40,
+		Note: "正向：内置的已知真签名交给目标续写；反向（需先生成基准）：目标签的签名交给真实基准账号续写。真 Anthropic 互认签名，伪造后端会以签名无效拒绝；只对第一方渠道成立"},
+	{ID: "tokenizer", Title: "分词器指纹", Group: GroupProtocol, Default: true, Cost: CostLow, Requests: 4, AuthMax: 10,
+		Note: "四段固定文本的输入量差值必须与该代 Claude 一致（只比差值，注入量不影响）"},
 
 	{ID: "persona-cc", Title: "Claude Code 人设", Group: GroupIdentity, Default: true, Cost: CostLow, Requests: 1},
-	{ID: "persona-kiro", Title: "非 Kiro 归属", Group: GroupIdentity, Default: true, Cost: CostMedium, Requests: 2,
-		Note: "排除 CC Max 是 Kiro 逆向；命中 Kiro 特征时失败"},
-	{ID: "env-leak", Title: "工作区泄露", Group: GroupIdentity, Default: true, Cost: CostLow, Requests: 1},
 	{ID: "sys-dump", Title: "系统提示泄露", Group: GroupIdentity, Default: true, Cost: CostMedium, Requests: 1,
 		Note: "泄露出别家品牌词即判伪装", Requires: []string{"ping"}},
 	{ID: "model-meta", Title: "型号与知识截止", Group: GroupIdentity, Default: true, Cost: CostMedium, Requests: 1},
-	{ID: "caller-system", Title: "system 穿透", Group: GroupIdentity, Default: true, Cost: CostLow, Requests: 2},
 
-	{ID: "image", Title: "图片识别", Group: GroupCapability, Default: false, Cost: CostMedium, Requests: 1,
+	{ID: "image", Title: "图片识别", Group: GroupCapability, Default: false, Cost: CostMedium, Requests: 1, AuthMax: 5,
 		Note: "纯文本套壳会直接失败"},
-	{ID: "pdf", Title: "PDF 识别", Group: GroupCapability, Default: false, Cost: CostMedium, Requests: 1},
-	{ID: "strict-schema", Title: "严格 JSON Schema", Group: GroupCapability, Default: false, Cost: CostMedium, Requests: 1},
-	{ID: "hello-entropy", Title: "采样熵", Group: GroupCapability, Default: false, Cost: CostHigh, Requests: 10,
+	{ID: "pdf", Title: "PDF 识别", Group: GroupCapability, Default: false, Cost: CostMedium, Requests: 1, AuthMax: 5},
+	{ID: "strict-schema", Title: "严格 JSON Schema", Group: GroupCapability, Default: false, Cost: CostMedium, Requests: 1, AuthMax: 5},
+	{ID: "hello-entropy", Title: "采样熵", Group: GroupCapability, Default: false, Cost: CostHigh, Requests: 10, AuthMax: 1,
 		Note: "10 次 Hello/Hi，去重回复过少说明是模板响应"},
-	{ID: "baseline-quality", Title: "CCMax 基准对照", Group: GroupCapability, Default: true, Cost: CostHigh, Requests: 1, Note: "与已保存的真实 CCMax 基准比较质量、输出 token 与 thinking"},
-	{ID: "slope", Title: "输出斜率", Group: GroupCapability, Default: false, Cost: CostMedium, Requests: 1,
-		Note: "扣掉 thinking_tokens 后的正文 token/词 比例；偏高说明有看不见的输出被计费"},
+	{ID: "baseline-quality", Title: "CCMax 基准对照", Group: GroupCapability, Default: true, Cost: CostHigh, Requests: 1, AuthMax: 30, Note: "与已保存的真实 CCMax 基准比较质量、输出 token 与 thinking"},
 }
 
 // handlers 检测项 id → 执行体。
 var handlers = map[string]CheckFunc{
-	"models":            checkModels,
 	"ping":              checkPing,
 	"ping-again":        checkPingAgain,
 	"zero-injection":    checkZeroInjection,
@@ -263,19 +257,15 @@ var handlers = map[string]CheckFunc{
 	"tool-use":          checkToolUse,
 	"thinking-sig":      checkThinkingSignature,
 	"sig-tamper":        checkSignatureTamper,
-	"stream":            checkStream,
-	"count-tokens":      checkCountTokens,
+	"sig-crossverify":   checkSignatureCrossVerify,
+	"tokenizer":         checkTokenizer,
 	"persona-cc":        checkPersonaClaudeCode,
-	"persona-kiro":      checkPersonaKiro,
-	"env-leak":          checkEnvLeak,
 	"sys-dump":          checkSystemDump,
 	"model-meta":        checkModelMeta,
-	"caller-system":     checkCallerSystem,
 	"image":             checkImage,
 	"pdf":               checkPDF,
 	"strict-schema":     checkStrictSchema,
 	"hello-entropy":     checkHelloEntropy,
-	"slope":             checkSlope,
 	"baseline-quality":  checkBaselineQuality,
 }
 
@@ -313,18 +303,18 @@ var Presets = []Preset{
 		ID:    "cc_max",
 		Title: "CC Max",
 		Checks: []string{
-			"models", "ping", "ping-again", "zero-injection",
-			"param-strict", "max-tokens-strict", "thinking-sig", "sig-tamper", "stream", "count-tokens",
-			"persona-cc", "env-leak", "sys-dump", "caller-system", "model-meta", "baseline-quality",
+			"ping", "ping-again", "zero-injection",
+			"param-strict", "max-tokens-strict", "thinking-sig", "sig-tamper", "sig-crossverify", "tokenizer",
+			"persona-cc", "sys-dump", "model-meta", "baseline-quality",
 		},
 	},
 	{
 		ID:    "aws_bedrock",
 		Title: "AWS Bedrock",
 		Checks: []string{
-			"models", "ping",
-			"param-strict", "max-tokens-strict", "tool-use", "thinking-sig", "sig-tamper", "stream",
-			"persona-cc", "persona-kiro", "model-meta",
+			"ping",
+			"param-strict", "max-tokens-strict", "tool-use", "thinking-sig", "sig-tamper", "tokenizer",
+			"persona-cc", "model-meta",
 		},
 	},
 }

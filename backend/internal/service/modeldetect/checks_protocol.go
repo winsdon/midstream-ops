@@ -170,7 +170,9 @@ func checkMaxTokens(ctx context.Context, c *Client, _ *runState) *CheckResult {
 	r.assert(fmt.Sprintf("输出不超过 max_tokens=%d", limit), within, fmt.Sprintf("output_tokens=%d", out))
 	r.diagnose("因触顶而停止", stop == "max_tokens", "stop_reason="+stop)
 
-	if within {
+	// 只有真的触顶停下才加分：有网关把 max_tokens 很小的请求当探活拦下、回固定的「OK」，
+	// 输出自然不超限，却什么也没证明。
+	if within && stop == "max_tokens" {
 		r.AuthScore = 10
 	} else if out > limit {
 		r.AuthCapReason = fmt.Sprintf("max_tokens=%d 被忽略，实际输出 %d tokens", limit, out)
@@ -404,12 +406,14 @@ func checkSignatureTamper(ctx context.Context, c *Client, st *runState) *CheckRe
 
 	switch {
 	case positiveOK && rejected:
-		r.AuthScore = 40
+		// 只证明后端校验它自己签发的签名：伪造后端用自己的密钥同样做得到（2026-11-03 实测），
+		// 所以只给 10 分，「签名出自 Anthropic」由 sig-crossverify 负责。
+		r.AuthScore = 10
 		r.addEvidence("signature_verified", "签名可原样回传且篡改被拒",
 			"后端持有 Anthropic 签名密钥", ClassInfo, 0)
-		return r.finish("签名完整性验证通过（真实性最强证据）")
+		return r.finish("签名完整性通过（只证明后端校验自己签发的签名）")
 	case positiveOK && looseReject:
-		r.AuthScore = 30
+		r.AuthScore = 5
 		r.Status = StatusInconclusive
 		return r.finish("篡改被拒但报错未提签名，证据略弱")
 	case positiveOK && negative.OK():
@@ -578,197 +582,4 @@ func tamperSignature(blocks []any, idx int) []any {
 		out = append(out, cp)
 	}
 	return out
-}
-
-// checkStream SSE 协议完整性。OpenAI 格式转换层最常在这里露馅：
-// 缺 message_start.usage、块索引不闭合、事件名与 data.type 对不上。
-func checkStream(ctx context.Context, c *Client, _ *runState) *CheckResult {
-	meta, _ := checkByID("stream")
-	r := newResult(meta)
-	challenge := nonce("SSE")
-	ex := c.PostStream(ctx, KindMessages, map[string]any{
-		"model": c.Target().Model, "max_tokens": 512, "stream": true,
-		"messages": []map[string]any{{"role": "user",
-			"content": fmt.Sprintf("请把校验串 %s 连续重复 20 次，每次之间用一个空格分隔，不要输出其他内容。", challenge)}},
-	})
-	r.Exchanges = []*Exchange{ex}
-	r.DurationMs = ex.DurationMs
-
-	if !ex.OK() {
-		r.assert("流式请求成功", false, describeFailure(ex))
-		return r.finish("流式请求失败")
-	}
-	r.assert("流式请求成功", true, fmt.Sprintf("HTTP %d", ex.Status))
-	r.assert("Content-Type 为 text/event-stream",
-		strings.Contains(ex.Headers["content-type"], "event-stream"), ex.Headers["content-type"])
-
-	flow := validateSSE(ex.Events)
-	r.assert("SSE 核心状态机完整", flow.valid, flow.detail())
-
-	var text strings.Builder
-	for _, ev := range ex.Events {
-		delta := mapOf(ev.Data["delta"])
-		if str(delta["type"]) == "text_delta" {
-			text.WriteString(str(delta["text"]))
-		}
-	}
-	occurrences := strings.Count(text.String(), challenge)
-	r.assert("随机校验串通过流式返回", occurrences >= 20, fmt.Sprintf("观察到 %d/20 次", occurrences))
-	r.diagnose("message_start 携带 usage", flow.startHasUsage, "OpenAI 转换层常缺此字段")
-	r.diagnose("观察到多个网络数据块", ex.ChunkCount >= 2,
-		fmt.Sprintf("chunks=%d，首字节 %s", ex.ChunkCount, fmtMsPtr(ex.TTFTMs)))
-
-	if flow.valid && occurrences >= 20 {
-		r.AuthScore = 10
-	}
-	if !flow.startHasUsage && flow.valid {
-		r.addEvidence("sse_missing_usage", "message_start 缺少 usage", "疑似格式转换层重组", ClassWrapper, 1)
-	}
-	return r.finish(fmt.Sprintf("%d 个事件，校验串 %d/20 次", len(ex.Events), occurrences))
-}
-
-// sseFlow SSE 状态机校验结果。
-type sseFlow struct {
-	valid         bool
-	startHasUsage bool
-	violations    []string
-	blocks        int
-}
-
-func (f sseFlow) detail() string {
-	if len(f.violations) == 0 {
-		return fmt.Sprintf("%d 个内容块均闭合", f.blocks)
-	}
-	return strings.Join(f.violations, "；")
-}
-
-// validateSSE 校验事件顺序与块闭合。ping 与未知控制事件按官方兼容规则放过。
-func validateSSE(events []SSEEvent) sseFlow {
-	f := sseFlow{}
-	open := map[int]bool{}
-	closed := map[int]bool{}
-	starts, stops, deltas := 0, 0, 0
-	startPos, stopPos := -1, -1
-
-	for i, ev := range events {
-		if ev.Data == nil {
-			f.violations = append(f.violations, fmt.Sprintf("第 %d 个事件 data 不是 JSON", i+1))
-			continue
-		}
-		if ev.Event != "" && ev.Type != "" && ev.Event != ev.Type {
-			f.violations = append(f.violations, fmt.Sprintf("事件名 %s 与 data.type=%s 不一致", ev.Event, ev.Type))
-		}
-		switch ev.Type {
-		case "message_start":
-			starts++
-			startPos = i
-			if msg := mapOf(ev.Data["message"]); msg != nil && mapOf(msg["usage"]) != nil {
-				f.startHasUsage = true
-			}
-		case "content_block_start":
-			idx := intOf(ev.Data["index"])
-			if open[idx] {
-				f.violations = append(f.violations, fmt.Sprintf("index=%d 重复 start", idx))
-			}
-			open[idx] = true
-		case "content_block_delta":
-			idx := intOf(ev.Data["index"])
-			if !open[idx] || closed[idx] {
-				f.violations = append(f.violations, fmt.Sprintf("index=%d 的 delta 不在开放块内", idx))
-			}
-		case "content_block_stop":
-			idx := intOf(ev.Data["index"])
-			if !open[idx] || closed[idx] {
-				f.violations = append(f.violations, fmt.Sprintf("index=%d 非法 stop", idx))
-			}
-			closed[idx] = true
-		case "message_delta":
-			deltas++
-		case "message_stop":
-			stops++
-			stopPos = i
-		case "error":
-			f.violations = append(f.violations, "流内出现 error 事件")
-		}
-	}
-
-	for idx := range open {
-		if !closed[idx] {
-			f.violations = append(f.violations, fmt.Sprintf("index=%d 未闭合", idx))
-		}
-	}
-	f.blocks = len(open)
-	if starts != 1 {
-		f.violations = append(f.violations, fmt.Sprintf("message_start 数量=%d", starts))
-	}
-	if stops != 1 {
-		f.violations = append(f.violations, fmt.Sprintf("message_stop 数量=%d", stops))
-	}
-	if deltas == 0 {
-		f.violations = append(f.violations, "缺少 message_delta")
-	}
-	if startPos >= 0 && stopPos >= 0 && startPos > stopPos {
-		f.violations = append(f.violations, "message_start 出现在 message_stop 之后")
-	}
-	f.valid = len(f.violations) == 0 && f.blocks > 0
-	return f
-}
-
-// checkCountTokens count_tokens 端点的稳定性、单调性，以及与基础请求 input_tokens 的一致性。
-// 后者能证明计数与推理走的是同一个 tokenizer——套壳国产模型通常对不上。
-func checkCountTokens(ctx context.Context, c *Client, st *runState) *CheckResult {
-	meta, _ := checkByID("count-tokens")
-	r := newResult(meta)
-	model := c.Target().Model
-	shortBody := map[string]any{"model": model,
-		"messages": []map[string]any{{"role": "user", "content": "Reply with exactly PONG only."}}}
-	longBody := map[string]any{"model": model,
-		"messages": []map[string]any{{"role": "user",
-			"content": "长文本 " + strings.Repeat("token counting monotonicity probe. ", 200)}}}
-
-	first := c.Post(ctx, KindCountTokens, shortBody)
-	repeat := c.Post(ctx, KindCountTokens, shortBody)
-	long := c.Post(ctx, KindCountTokens, longBody)
-	r.Exchanges = []*Exchange{first, repeat, long}
-	r.DurationMs = first.DurationMs + repeat.DurationMs + long.DurationMs
-
-	if !first.OK() {
-		r.Status = StatusUnsupported
-		r.diagnose("count_tokens 可用", false, describeFailure(first))
-		return r.finish("目标未提供 count_tokens（网关常不透传，单独不作判据）")
-	}
-
-	a := intOf(first.JSON["input_tokens"])
-	b := intOf(repeat.JSON["input_tokens"])
-	long1 := intOf(long.JSON["input_tokens"])
-	r.assert("count_tokens 可用", true, fmt.Sprintf("短文本=%d", a))
-	r.assert("相同输入计数稳定", a > 0 && a == b, fmt.Sprintf("%d vs %d", a, b))
-	r.assert("长文本计数严格更大", long1 > a, fmt.Sprintf("短=%d，长=%d", a, long1))
-
-	aligned := true
-	if st.pingSeen && st.pingInput > 0 && st.pingCacheWrite == 0 {
-		diff := st.pingInput - a
-		if diff < 0 {
-			diff = -diff
-		}
-		aligned = diff <= 3
-		r.diagnose("与基础请求 input_tokens 对齐", aligned,
-			fmt.Sprintf("count=%d，基础请求 input=%d（差 %d）", a, st.pingInput, diff))
-		if !aligned && st.pingInput > a {
-			r.addEvidence("tokenizer_gap", "推理路径比计数多出 token（system 注入或不同 tokenizer）",
-				fmt.Sprintf("count=%d，实际 input=%d", a, st.pingInput), ClassWrapper, 1)
-		}
-	}
-	if a > 0 && a == b && long1 > a {
-		r.AuthScore = 5
-	}
-	return r.finish(fmt.Sprintf("短=%d 重复=%d 长=%d", a, b, long1))
-}
-
-// fmtMsPtr 格式化可空毫秒。
-func fmtMsPtr(v *int64) string {
-	if v == nil {
-		return "-"
-	}
-	return fmt.Sprintf("%dms", *v)
 }

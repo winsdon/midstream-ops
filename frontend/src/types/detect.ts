@@ -23,7 +23,7 @@ export type DetectClass =
 export type DetectLabel = DetectClass | 'unknown' | 'unavailable'
 
 /** 真实性等级。 */
-export type AuthenticityGrade = 'genuine' | 'likely' | 'doubtful' | 'fake'
+export type AuthenticityGrade = 'genuine' | 'likely' | 'doubtful' | 'fake' | 'insufficient'
 
 export interface DetectCheckMeta {
   id: string
@@ -36,6 +36,8 @@ export interface DetectCheckMeta {
   requires?: string[]
   /** 只做检测，不参与分类与真实性评分（如「是否 0 注入」） */
   informational?: boolean
+  /** 本项对真实性评分的满分；没有表示不加分 */
+  auth_max?: number
 }
 
 export interface DetectAccount {

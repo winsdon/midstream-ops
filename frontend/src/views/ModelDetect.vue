@@ -73,7 +73,7 @@
           />
           <template v-else>
             <div class="grid gap-4 xl:grid-cols-2">
-              <DetectVerdictCard v-for="(run, i) in displayRuns" :key="i" :run="run" />
+              <DetectVerdictCard v-for="(run, i) in displayRuns" :key="i" :run="run" :checks="checks" />
             </div>
             <DetectCheckMatrix
               :runs="displayRuns"

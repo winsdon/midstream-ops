@@ -27,6 +27,7 @@ func checkBaselineQuality(ctx context.Context, c *Client, st *runState) *CheckRe
 		return r.finish("基准对照请求失败")
 	}
 	actual := StatsFromExchange(ex)
+	actual.ResponseSummary = clip(contentText(ex.JSON), 1000)
 	actual.QualityOK = actual.ResponseSummary != "" && str(ex.JSON["stop_reason"]) == "end_turn"
 	qualityOK, tokenOK, thinkingOK, detail := compareBaseline(actual, st.baseline)
 	r.assert("基准题回复质量通过", qualityOK, detail)

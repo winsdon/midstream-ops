@@ -21,60 +21,6 @@ func nonce(prefix string) string {
 // bedrockModelRe Bedrock 的模型 id 形态（含跨区推理前缀）。
 var bedrockModelRe = regexp.MustCompile(`(?i)^(us|eu|apac|global)?\.?anthropic\.claude`)
 
-// checkModels 拉模型列表。它是最便宜的一次探测：既验证连通性，
-// 又能在列表里直接看到 Bedrock 风格的模型 id。
-func checkModels(ctx context.Context, c *Client, _ *runState) *CheckResult {
-	meta, _ := checkByID("models")
-	r := newResult(meta)
-	ex := c.Get(ctx, KindModels)
-	r.Exchanges = []*Exchange{ex}
-	r.DurationMs = ex.DurationMs
-
-	if !ex.OK() {
-		r.Status = StatusUnsupported
-		r.diagnose("模型列表可读", false, describeFailure(ex))
-		return r.finish("目标未提供 /v1/models（不少中转会关掉，单独不作判据）")
-	}
-
-	var ids []string
-	data := sliceOf(ex.JSON["data"])
-	if data == nil {
-		data = sliceOf(ex.JSON["models"])
-	}
-	for _, raw := range data {
-		if m := mapOf(raw); m != nil {
-			if id := str(m["id"]); id != "" {
-				ids = append(ids, id)
-			}
-			continue
-		}
-		if s := str(raw); s != "" {
-			ids = append(ids, s)
-		}
-	}
-
-	r.assert("模型列表可读", true, fmt.Sprintf("%d 个模型", len(ids)))
-	wanted := c.Target().Model
-	hasWanted := false
-	var bedrockStyle []string
-	for _, id := range ids {
-		if strings.EqualFold(id, wanted) {
-			hasWanted = true
-		}
-		if bedrockModelRe.MatchString(id) {
-			bedrockStyle = append(bedrockStyle, id)
-		}
-	}
-	r.diagnose("列表包含所测模型", hasWanted || len(ids) == 0, wanted)
-
-	if len(bedrockStyle) > 0 {
-		r.addEvidence("bedrock_model_ids", "模型列表出现 Bedrock 形态 id",
-			clip(strings.Join(bedrockStyle, ", "), 120), ClassBedrock, 3)
-	}
-	collectGatewayFingerprint(r, ex)
-	return r.finish(fmt.Sprintf("拉到 %d 个模型", len(ids)))
-}
-
 // pingBody 最小非流请求：只要一个精确回声，成本极低但足以看清 usage 与响应头。
 func pingBody(model string) map[string]any {
 	return map[string]any{
@@ -278,27 +224,53 @@ func cacheProbeSegments(st *runState) []string {
 	return segs
 }
 
-// cacheProbeBody 拼第 turn 次（1 基）请求的体：system 为前 turn 段，cache_control 落在末段。
+// cacheProbeBody 拼第 turn 次（1 基）请求的体：一段多轮对话，第 i 轮用户消息是第 i 段探针，
+// 轮与轮之间是固定的助手回复，cache_control 只打在最后一轮的用户消息上。
 //
-// 断点始终压在最后一段上，于是可缓存前缀逐次加长：第 2 次请求读第 1 次写的量、
-// 再写第 2 段；第 3 次请求读前两段之和、再写第 3 段。「本次写入」因此永远非零。
+// 每次请求都完整包含上一次请求的全部内容（prefixₙ 是 prefixₙ₊₁ 的字节前缀），这就是
+// Claude Code 的真实用法。早先把新段插在 system 里、末尾那句提问之前，上一次请求就不再是
+// 下一次的前缀：官方直连靠我们自己打的断点还能命中，可号池网关普遍像 Claude Code 一样把
+// 断点挪到请求末尾，2026-11-03 实测一条官方缓存正常的号池因此三次都读不回探针段。
+//
+// sessionID 放进 metadata.user_id：号池按它做粘性路由，不带时内容一变就换账号，缓存按账号
+// 隔离，链条同样推不动（同一实测里不带 metadata 的三次落在不同的注入前缀上）。
 //
 // 必须显式打 cache_control。裸请求（不带 cache_control）官方根本不写缓存，
 // 拿它比两次只会得到 "0 == 0" —— 既证明不了官方缓存，也证明不了网关没做缓存。
-func cacheProbeBody(model string, segments []string, turn int) map[string]any {
-	blocks := make([]map[string]any, 0, turn)
+func cacheProbeBody(model string, segments []string, turn int, sessionID string) map[string]any {
+	messages := make([]map[string]any, 0, 2*turn-1)
 	for i, seg := range segments[:turn] {
-		block := map[string]any{"type": "text", "text": seg}
+		block := map[string]any{"type": "text", "text": seg + "\n" + cacheProbeAsk}
 		if i == turn-1 {
 			block["cache_control"] = map[string]any{"type": "ephemeral"}
 		}
-		blocks = append(blocks, block)
+		messages = append(messages, map[string]any{"role": "user", "content": []map[string]any{block}})
+		if i < turn-1 {
+			messages = append(messages, map[string]any{"role": "assistant", "content": cacheProbeReply})
+		}
 	}
 	return map[string]any{
-		"model": model, "max_tokens": 32,
-		"system":   blocks,
-		"messages": []map[string]any{{"role": "user", "content": "只回复 CACHE_OK。"}},
+		"model": model, "max_tokens": 64,
+		"metadata": map[string]any{"user_id": sessionID},
+		"messages": messages,
 	}
+}
+
+// 探针每轮的提问与固定的助手回复。助手回复由我们送上去，不必与模型实际输出一致。
+const (
+	cacheProbeAsk   = "只回复 CACHE_OK。"
+	cacheProbeReply = "CACHE_OK"
+)
+
+// cacheProbeSessionID Claude Code 形态的 metadata.user_id，同一轮三次探针共用一个。
+func cacheProbeSessionID() string {
+	b := make([]byte, 48)
+	if _, err := rand.Read(b); err != nil {
+		return "user_" + strings.Repeat("0", 64) + "_account__session_00000000-0000-4000-8000-000000000000"
+	}
+	u := hex.EncodeToString(b[32:])
+	return fmt.Sprintf("user_%s_account__session_%s-%s-4%s-8%s-%s",
+		hex.EncodeToString(b[:32]), u[:8], u[8:12], u[13:16], u[17:20], u[20:32])
 }
 
 // checkPingAgain 官方缓存链路：前缀逐级增长地发 3 次请求，看缓存链有没有真的推进。
@@ -319,10 +291,11 @@ func checkPingAgain(ctx context.Context, c *Client, st *runState) *CheckResult {
 	}
 
 	segments := cacheProbeSegments(st)
+	session := cacheProbeSessionID()
 
 	var chain cacheChain
 	for turn := 1; turn <= cacheProbeTurns; turn++ {
-		ex := c.Post(ctx, KindMessages, cacheProbeBody(c.Target().Model, segments, turn))
+		ex := c.Post(ctx, KindMessages, cacheProbeBody(c.Target().Model, segments, turn, session))
 		r.Exchanges = append(r.Exchanges, ex)
 		r.DurationMs += ex.DurationMs
 		if !ex.OK() {
@@ -354,6 +327,10 @@ func checkPingAgain(ctx context.Context, c *Client, st *runState) *CheckResult {
 
 	case cacheChainPassed:
 		r.Status = StatusPassed
+		if chain.read1 > 0 {
+			r.diagnose("首轮读到网关注入的前缀（非本次探针内容）", true,
+				fmt.Sprintf("read_1=%d：探针段带新 nonce，只可能命中它前面网关拼进去的系统提示", chain.read1))
+		}
 		// 这里只给 1 分弱正面证据。链子干净说明这条链路支持前缀缓存且没有改写
 		// 请求，但它证明不了后端身份 —— 缓存内容是我们自己送上去的前缀，不是
 		// 网关注入的系统提示，所以不能像旧版那样据此加号池分。
@@ -425,10 +402,23 @@ const (
 // 天然成立），而那说明三次请求测的是同一件事 —— 网关根本没把新增内容写进去，
 // 前缀没有增长。反过来只查「有没有写入」也不行：写入量对不上就说明每次拼进去的
 // 内容不同，那条链根本没有被复用。
+//
+// 首轮 read > 0 本身不算异常：号池网关在我们的内容前面注入了一段固定的系统提示，那一段
+// 每次都命中官方缓存（实测 12368 tokens、1h TTL）。我们的探针段带新 nonce，只可能被读到
+// 它前面的那段，所以只要后面的不变式成立，首轮读到的就只是网关前缀。不变式不成立时才按
+// 「首轮就命中」报：那更像网关自建缓存在报假读数。
 func (ch cacheChain) outcome() (string, string) {
 	if ch.read1 > 0 {
-		return cacheChainPreHit, fmt.Sprintf("首轮 read=%d 且前缀为每轮新 nonce", ch.read1)
+		if got, reason := ch.chainOutcome(); got != cacheChainPassed {
+			return cacheChainPreHit, fmt.Sprintf("首轮 read=%d 且后续链没有按它推进（%s）", ch.read1, reason)
+		}
+		return cacheChainPassed, ""
 	}
+	return ch.chainOutcome()
+}
+
+// chainOutcome 链式不变式本身，不看首轮读取的来源。
+func (ch cacheChain) chainOutcome() (string, string) {
 	if ch.write1 == 0 && ch.read2 == 0 && ch.read3 == 0 {
 		return cacheChainUnavailable, "3 次请求均未返回 cache_read/cache_creation"
 	}

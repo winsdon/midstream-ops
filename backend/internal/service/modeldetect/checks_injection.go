@@ -32,6 +32,11 @@ const (
 	zeroInjectionRequests = zeroInjectionSamples + len(digitProbeSizes) + 4
 )
 
+// ziShortMaxTokens 数字序列与带 system 探针的 max_tokens。只要输入计量、回复很短，但不能太小：
+// 实测有网关把 max_tokens=16 的请求当探活拦下，不管问什么都回固定的「OK」、input 恒为 33，
+// 数字序列因此「不线性」、人设题因此「没说 Arrr」，两条都是假信号。
+const ziShortMaxTokens = 64
+
 // digitProbeSizes 数字序列的三档长度（n 个空格分隔的数字）。
 var digitProbeSizes = [3]int{1, 20, 100}
 
@@ -136,11 +141,11 @@ func zeroInjectionProbes(model string, profile ThinkingProfile) []ziProbe {
 	}
 	for _, n := range digitProbeSizes {
 		probes = append(probes, ziProbe{KindMessages, map[string]any{
-			"model": model, "max_tokens": 16,
+			"model": model, "max_tokens": ziShortMaxTokens,
 			"messages": []map[string]any{{"role": "user", "content": digitProbeText(n)}},
 		}})
 	}
-	probes = append(probes, ziProbe{KindMessages, pirateBody(model, 16)})
+	probes = append(probes, ziProbe{KindMessages, pirateBody(model, ziShortMaxTokens)})
 	probes = append(probes,
 		ziProbe{KindCountTokens, map[string]any{"model": model, "messages": pingBody(model)["messages"]}},
 		ziProbe{KindCountTokens, map[string]any{"model": model,
@@ -242,6 +247,8 @@ type ziObservation struct {
 
 	hidden hiddenProbe
 	replay ziReplay
+	// canned 短探针被网关拦截、回了固定回复：数字序列与人设题都作废。
+	canned string
 }
 
 // ziReplay 本项响应里的 thinking 签名复用情况。
@@ -296,11 +303,35 @@ func observeZeroInjection(exs []*Exchange) ziObservation {
 		o.system, _, o.systemOK = ziInputTotal(sys)
 		o.obeyed = o.systemOK && pirateObeyed(contentText(sys.JSON))
 	}
+	if reply, ok := cannedShortReplies(exs[ziDigitsAt : ziSystemAt+1]); ok {
+		o.canned = reply
+		o.digitsOK = [3]bool{}
+		o.systemOK, o.obeyed = false, false
+	}
 	o.countBare, o.countBareOK = countTokensValue(exs[ziCountBareAt])
 	o.countDigits, o.countDigitsOK = countTokensValue(exs[ziCountDigitsAt])
 	o.hidden = judgeHiddenProbe(exs[ziHiddenAt])
 	o.replay = observeReplay(exs)
 	return o
+}
+
+// cannedShortReplies 内容、长度各不相同的短探针拿到逐字相同的回复与相同的输入计量：
+// 1 个数字和 100 个数字不可能计成同样多的 token，只能是网关没转发、直接回了固定响应。
+func cannedShortReplies(exs []*Exchange) (string, bool) {
+	var reply string
+	input := -1
+	for _, ex := range exs {
+		total, _, ok := ziInputTotal(ex)
+		if !ok {
+			return "", false
+		}
+		text := strings.TrimSpace(contentText(ex.JSON))
+		if input >= 0 && (total != input || text != reply) {
+			return "", false
+		}
+		reply, input = text, total
+	}
+	return fmt.Sprintf("%d 个内容不同的短请求都回「%s」、输入都记 %d", len(exs), clip(reply, 20), input), len(exs) > 1
 }
 
 // ziInputTotal 一次响应的全部输入：input + cache_creation + cache_read。
@@ -531,7 +562,9 @@ func judgeZeroInjection(r *CheckResult, o ziObservation, base injectionBaseline)
 	} else if bare >= grossBareInput {
 		f.inject(fmt.Sprintf("裸请求输入 %d 远超正常范围", bare), 0)
 	}
-	if !o.systemOK {
+	if o.canned != "" {
+		r.diagnose("短探针拿到真实回复", false, "网关拦截了短请求、回固定响应（数字序列与人设题不作判据）："+o.canned)
+	} else if !o.systemOK {
 		r.diagnose("带 system 请求成功", false, "请求失败或被拒答")
 	} else if base.System > 0 {
 		f.reconcile(r, "带 system", o.system, base.System)

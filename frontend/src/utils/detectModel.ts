@@ -78,7 +78,8 @@ const GRADE_VARIANT: Record<AuthenticityGrade, BadgeVariant> = {
   genuine: 'success',
   likely: 'primary',
   doubtful: 'warning',
-  fake: 'danger'
+  fake: 'danger',
+  insufficient: 'gray'
 }
 
 export function gradeVariant(grade: AuthenticityGrade): BadgeVariant {
@@ -94,6 +95,8 @@ export function scoreBarClass(grade: AuthenticityGrade): string {
       return 'bg-primary-500'
     case 'doubtful':
       return 'bg-amber-500'
+    case 'insufficient':
+      return 'bg-gray-400'
     default:
       return 'bg-red-500'
   }
@@ -245,6 +248,63 @@ export function splitReasons<T extends { class: DetectClass; weight: number }>(
     else others.push(r)
   }
   return { primary, others }
+}
+
+/** 真实性证据链上的一条：哪一项、拿了几分、满分多少、为什么。 */
+export interface AuthChainItem {
+  id: string
+  title: string
+  points: number
+  /** 满分；历史报告里已下线的检测项没有 */
+  max?: number
+  detail: string
+  /** 非空表示这一项触发了真实性封顶 */
+  cap?: string
+  kind: 'cap' | 'plus' | 'minus' | 'miss'
+}
+
+export interface AuthChain {
+  items: AuthChainItem[]
+  /** 各项分数的代数和（封顶、截断到 0–100 之前） */
+  raw: number
+}
+
+const AUTH_KIND_ORDER: Record<AuthChainItem['kind'], number> = { cap: 0, plus: 1, minus: 2, miss: 3 }
+
+/**
+ * 把一轮结果展开成真实性得分的证据链。
+ *
+ * 直接读每项落库的 auth_score / auth_cap_reason，所以历史报告按它当时的规则原样展开，
+ * 不必重算。满分来自检测项目录：本轮跑过、有满分却没拿到分的项也列出来（kind=miss），
+ * 「为什么没拿到」与「拿到了什么」同样是证据。只检测不计分的项与还在跑的项不列。
+ * 顺序：封顶 → 加分（高的在前）→ 扣分 → 未得分（满分高的在前）。
+ */
+export function buildAuthChain(run: DetectTargetRun | undefined, catalog: DetectCheckMeta[]): AuthChain {
+  const maxOf = new Map(catalog.map((c) => [c.id, c.auth_max ?? 0]))
+  const items: AuthChainItem[] = []
+  let raw = 0
+  for (const c of run?.checks ?? []) {
+    if (c.status === 'running' || c.informational) continue
+    const points = c.auth_score ?? 0
+    const max = maxOf.get(c.id) || undefined
+    if (points === 0 && !c.auth_cap_reason && !max) continue
+    raw += points
+    const kind: AuthChainItem['kind'] = c.auth_cap_reason
+      ? 'cap'
+      : points > 0
+        ? 'plus'
+        : points < 0
+          ? 'minus'
+          : 'miss'
+    items.push({ id: c.id, title: c.title, points, max, detail: c.summary, cap: c.auth_cap_reason || undefined, kind })
+  }
+  items.sort(
+    (a, b) =>
+      AUTH_KIND_ORDER[a.kind] - AUTH_KIND_ORDER[b.kind] ||
+      Math.abs(b.points) - Math.abs(a.points) ||
+      (b.max ?? 0) - (a.max ?? 0)
+  )
+  return { items, raw }
 }
 
 /** 目标同一性 key：优先账号 id，手填目标退回「地址 + 名称」。 */
