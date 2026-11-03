@@ -52,6 +52,9 @@ type providerDTO struct {
 	UpstreamUserID      string  `json:"upstream_user_id"`
 	LowBalanceThreshold float64 `json:"low_balance_threshold"`
 	RechargeRate        float64 `json:"recharge_rate"`
+	CostMaxConcurrency  int     `json:"cost_max_concurrency"`
+	CostIntervalMS      int     `json:"cost_interval_ms"`
+	CostSyncPaused      bool    `json:"cost_sync_paused"`
 	// CredentialsReady 凭据是否齐备。false 时该站点不进采集队列（见 ListCollectable），
 	// 前端据此把「待配置凭据」与「采集失败」画成两种健康态。
 	CredentialsReady   bool     `json:"credentials_ready"`
@@ -141,6 +144,9 @@ func toDTO(p *repository.Provider, accountCount int, loc *time.Location) provide
 		UpstreamUserID:      p.UpstreamUserID,
 		LowBalanceThreshold: p.LowBalanceThreshold,
 		RechargeRate:        p.RechargeRate,
+		CostMaxConcurrency:  p.CostMaxConcurrency,
+		CostIntervalMS:      p.CostIntervalMS,
+		CostSyncPaused:      p.CostSyncPaused,
 		CredentialsReady:    p.CredentialsReady(),
 		ProbeEnabled:        p.ProbeEnabled,
 		ProbeModel:          p.ProbeModel,
@@ -214,6 +220,9 @@ type providerRequest struct {
 	UpstreamUserID      string  `json:"upstream_user_id"`
 	LowBalanceThreshold float64 `json:"low_balance_threshold"`
 	RechargeRate        float64 `json:"recharge_rate"`
+	CostMaxConcurrency  int     `json:"cost_max_concurrency"`
+	CostIntervalMS      int     `json:"cost_interval_ms"`
+	CostSyncPaused      bool    `json:"cost_sync_paused"`
 	ProbeEnabled        bool    `json:"probe_enabled"`
 	ProbeModel          *string `json:"probe_model"`
 	IgnoreBalanceAlert  bool    `json:"ignore_balance_alert"`
@@ -255,6 +264,14 @@ func (h *ProviderHandler) Create(c *gin.Context) {
 		response.BadRequest(c, "balance_type 须为 sub2api|manual|none")
 		return
 	}
+	if req.CostMaxConcurrency < 0 || req.CostMaxConcurrency > 32 {
+		response.BadRequest(c, "cost_max_concurrency 须为 0-32")
+		return
+	}
+	if req.CostIntervalMS < 0 || req.CostIntervalMS > 60000 {
+		response.BadRequest(c, "cost_interval_ms 须为 0-60000")
+		return
+	}
 	if msg := validatePlatformAuth(req.Platform, req.AuthMode); msg != "" {
 		response.BadRequest(c, msg)
 		return
@@ -294,6 +311,9 @@ func (h *ProviderHandler) Create(c *gin.Context) {
 		ProbeModel:          req.ProbeModel,
 		IgnoreBalanceAlert:  req.IgnoreBalanceAlert,
 		SelfOperated:        req.SelfOperated,
+		CostMaxConcurrency:  req.CostMaxConcurrency,
+		CostIntervalMS:      req.CostIntervalMS,
+		CostSyncPaused:      req.CostSyncPaused,
 	})
 	if err != nil {
 		response.InternalError(c, "创建失败: "+err.Error())
@@ -325,6 +345,14 @@ func (h *ProviderHandler) Update(c *gin.Context) {
 		response.BadRequest(c, "balance_type 须为 sub2api|manual|none")
 		return
 	}
+	if req.CostMaxConcurrency < 0 || req.CostMaxConcurrency > 32 {
+		response.BadRequest(c, "cost_max_concurrency 须为 0-32")
+		return
+	}
+	if req.CostIntervalMS < 0 || req.CostIntervalMS > 60000 {
+		response.BadRequest(c, "cost_interval_ms 须为 0-60000")
+		return
+	}
 	if msg := validatePlatformAuth(req.Platform, req.AuthMode); msg != "" {
 		response.BadRequest(c, msg)
 		return
@@ -347,6 +375,9 @@ func (h *ProviderHandler) Update(c *gin.Context) {
 		ProbeModel:          req.ProbeModel,
 		IgnoreBalanceAlert:  req.IgnoreBalanceAlert,
 		SelfOperated:        req.SelfOperated,
+		CostMaxConcurrency:  req.CostMaxConcurrency,
+		CostIntervalMS:      req.CostIntervalMS,
+		CostSyncPaused:      req.CostSyncPaused,
 	})
 	if err != nil {
 		response.InternalError(c, "更新失败: "+err.Error())

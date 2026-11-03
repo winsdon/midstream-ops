@@ -188,6 +188,11 @@ func (s *CostSyncService) SyncOne(
 	}
 	state.KeysTotal = int64(len(keys))
 	state.KeysMatched = matched
+	// 今日结果先落库：补齐可能很长（受限站点 90 天要近一小时）并被超时打断，
+	// 不能让它拖住、甚至吞掉本轮今日同步的状态。
+	if saveErr := s.costRepo.SaveSyncState(ctx, state); saveErr != nil {
+		return saveErr
+	}
 
 	yesterday := time.Now().In(s.cfg.Location).AddDate(0, 0, -1).Format("2006-01-02")
 	switch {
@@ -213,6 +218,10 @@ func (s *CostSyncService) SyncOne(
 				log.Printf("[cost-sync] 供应商 %s 已补齐近 %d 天成本（终结到 %s）", p.Name, days, yesterday)
 			}
 		}
+	}
+	if state.BackfilledAt == nil && state.FinalizedThrough == nil {
+		// 补齐无进展（未触发或被打断）：今日状态已保存，逐日断点已由回补自行推进
+		return fetchErr
 	}
 	if saveErr := s.costRepo.SaveSyncState(ctx, state); saveErr != nil {
 		return saveErr
@@ -279,6 +288,7 @@ func (s *CostSyncService) backfillNewAPIHistory(
 	mappings []repository.UpstreamKeyMapping,
 	days int,
 ) error {
+	s.configureNewAPILimit(p)
 	sess, err := s.tokens.ensure(ctx, p)
 	if err != nil {
 		return err
@@ -328,6 +338,12 @@ func (s *CostSyncService) backfillNewAPIHistory(
 		}
 		if err := s.costRepo.UpsertCosts(ctx, costs); err != nil {
 			return err
+		}
+		// 已过去的日期补完即记断点；今天（offset 0）尚未结束，不能终结
+		if offset > 0 {
+			if err := s.costRepo.AdvanceFinalized(ctx, p.ID, date); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -387,6 +403,7 @@ func (s *CostSyncService) fetchKeysAndUsage(ctx context.Context, p *repository.P
 }
 
 func (s *CostSyncService) fetchNewAPIKeysAndUsage(ctx context.Context, p *repository.Provider) ([]ProviderAPIKey, map[int64]APIKeyUsage, error) {
+	s.configureNewAPILimit(p)
 	sess, err := s.tokens.ensure(ctx, p)
 	if err != nil {
 		return nil, nil, err
@@ -434,6 +451,31 @@ func (s *CostSyncService) fetchNewAPIKeysAndUsage(ctx context.Context, p *reposi
 		return fetch(sess.NewAPI)
 	}
 	return keys, usage, err
+}
+
+// configureNewAPILimit applies the provider override before every cost-sync
+// path. Provider fields are authoritative when set; deployment config remains
+// a fallback for existing installations that have not populated the fields.
+func (s *CostSyncService) configureNewAPILimit(p *repository.Provider) {
+	if p == nil || s.newapiClient == nil {
+		return
+	}
+	maxConcurrency, intervalMS := p.CostMaxConcurrency, p.CostIntervalMS
+	if s.cfg != nil && (maxConcurrency <= 0 || intervalMS <= 0) {
+		limit, ok := s.cfg.Cost.ProviderLimits[p.Name]
+		if !ok {
+			limit, ok = s.cfg.Cost.ProviderLimits[p.BaseURL]
+		}
+		if ok {
+			if maxConcurrency <= 0 {
+				maxConcurrency = limit.MaxConcurrency
+			}
+			if intervalMS <= 0 {
+				intervalMS = limit.IntervalMS
+			}
+		}
+	}
+	s.newapiClient.SetTokenUsageLimit(p.BaseURL, maxConcurrency, intervalMS)
 }
 
 func (s *CostSyncService) storedKeyFingerprints(ctx context.Context, providerID int64) map[int64]string {

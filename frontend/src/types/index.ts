@@ -37,6 +37,11 @@ export interface Provider {
   upstream_user_id: string
   low_balance_threshold: number
   recharge_rate: number
+  /** new-api 成本同步限流；0 表示使用系统默认 */
+  cost_max_concurrency?: number
+  cost_interval_ms?: number
+  /** 暂停自动成本同步；余额采集继续 */
+  cost_sync_paused?: boolean
   /** 凭据是否齐备。false 时不进采集队列，健康点显示「待配置凭据」而非采集异常 */
   credentials_ready: boolean
   probe_enabled: boolean

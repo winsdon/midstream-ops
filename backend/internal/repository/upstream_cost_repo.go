@@ -411,6 +411,19 @@ func (r *UpstreamCostRepo) SaveSyncState(ctx context.Context, st CostSyncState) 
 	return err
 }
 
+// AdvanceFinalized 把已终结日期推进到 date（只进不退），供逐日回补记断点：
+// 回补被超时打断时，下一轮从断点继续，而不是每轮从窗口起点重来、永远补不完。
+func (r *UpstreamCostRepo) AdvanceFinalized(ctx context.Context, providerID int64, date string) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO cost_sync_state (provider_id, finalized_through, updated_at)
+		VALUES (?,?,?)
+		ON CONFLICT(provider_id) DO UPDATE SET
+			finalized_through = GREATEST(excluded.finalized_through, cost_sync_state.finalized_through),
+			updated_at        = excluded.updated_at`,
+		providerID, date, nowUTC())
+	return err
+}
+
 // SyncStates 返回所有供应商的同步状态。
 func (r *UpstreamCostRepo) SyncStates(ctx context.Context) (map[int64]CostSyncState, error) {
 	rows, err := r.db.QueryContext(ctx, `

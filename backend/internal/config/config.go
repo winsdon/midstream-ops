@@ -138,6 +138,16 @@ type CostConfig struct {
 	TimeoutSeconds  int `mapstructure:"timeout_seconds"`
 	Concurrency     int `mapstructure:"concurrency"`
 	RetentionDays   int `mapstructure:"retention_days"`
+	// ProviderLimits 覆盖单个供应商的 new-api token 用量请求节奏。
+	// key 优先按供应商名称匹配，也支持填写 BaseURL。
+	ProviderLimits map[string]CostProviderLimit `mapstructure:"provider_limits"`
+}
+
+// CostProviderLimit 控制单个 new-api 供应商的统计请求。
+// MaxConcurrency <= 0 和 IntervalMS <= 0 分别表示使用客户端默认值。
+type CostProviderLimit struct {
+	MaxConcurrency int `mapstructure:"max_concurrency"`
+	IntervalMS     int `mapstructure:"interval_ms"`
 }
 
 type ProbeConfig struct {

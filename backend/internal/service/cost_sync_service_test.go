@@ -517,3 +517,91 @@ func TestResolveUpstreamKeyRate(t *testing.T) {
 }
 
 func floatPtr(v float64) *float64 { return &v }
+
+// TestCostSyncCatchUpCheckpointsAcrossInterruptions 复现 ant：站点查询受限、90 天补齐
+// 一轮跑不完。被打断时今日状态须已落库，已补完的日期须记断点，下一轮从断点续补。
+func TestCostSyncCatchUpCheckpointsAcrossInterruptions(t *testing.T) {
+	var statCalls atomic.Int64
+	var failAt atomic.Int64 // 第几次 stat 调用起返回 500；0 = 不失败
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/status":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota_per_unit":100000}}`))
+		case "/api/token/":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"items":[{"id":42,"name":"kimi","group":"vip","status":1,"key":"sk-kimi-plaintext-key"}],"total":1}}`))
+		case "/api/log/self/stat":
+			n := statCalls.Add(1)
+			if f := failAt.Load(); f > 0 && n >= f {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":100000,"rpm":1}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	store := newTestStore(t)
+	providerRepo := repository.NewProviderRepo(store, &secretbox.Box{})
+	p, err := providerRepo.Create(context.Background(), repository.CreateParams{
+		Name: "ant", BalanceType: "sub2api", Platform: "new-api", AuthMode: "user_key",
+		BaseURL: srv.URL, AccessToken: "pat", UpstreamUserID: "7",
+	})
+	if err != nil {
+		t.Fatalf("Create provider: %v", err)
+	}
+	costRepo := repository.NewUpstreamCostRepo(store)
+	loc := time.FixedZone("CST", 8*60*60)
+	svc := NewCostSyncService(providerRepo, costRepo, nil, &config.Config{
+		Location: loc,
+		Cost:     config.CostConfig{TimeoutSeconds: 3},
+	})
+	// 已首次回补、从未终结，且上一轮留下 429 错误
+	backfilledAt := time.Now().Add(-90 * 24 * time.Hour)
+	oldErr := "rate limited: token 用量请求失败 HTTP 429"
+	if err := costRepo.SaveSyncState(context.Background(), repository.CostSyncState{
+		ProviderID: p.ID, BackfilledAt: &backfilledAt, LastError: &oldErr,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	readState := func() (lastSynced, lastErr, finalized *string) {
+		t.Helper()
+		if err := store.DB().QueryRow(`SELECT last_synced_at::text, last_error, finalized_through::text FROM cost_sync_state WHERE provider_id=?`, p.ID).
+			Scan(&lastSynced, &lastErr, &finalized); err != nil {
+			t.Fatalf("sync state: %v", err)
+		}
+		return
+	}
+	now := time.Now().In(loc)
+
+	// 第一轮：今日 1 次 + 补齐 10 天成功，第 12 次调用起失败（模拟超时打断）
+	failAt.Store(12)
+	if err := svc.SyncOne(context.Background(), p, nil, false); err != nil {
+		t.Fatalf("SyncOne round 1 should not fail when only catch-up is interrupted: %v", err)
+	}
+	lastSynced, lastErr, finalized := readState()
+	if lastSynced == nil || lastErr != nil {
+		t.Fatalf("today state not saved: last_synced=%v last_error=%v", lastSynced, lastErr)
+	}
+	wantCheckpoint := now.AddDate(0, 0, -(backfillDays - 10)).Format("2006-01-02")
+	if finalized == nil || *finalized != wantCheckpoint {
+		t.Fatalf("finalized_through=%v, want checkpoint %s", finalized, wantCheckpoint)
+	}
+
+	// 第二轮：从断点续补剩余天数（含今天在内只查 1 + (90-10) 次今日以外的窗口）
+	failAt.Store(0)
+	statCalls.Store(0)
+	if err := svc.SyncOne(context.Background(), p, nil, false); err != nil {
+		t.Fatalf("SyncOne round 2: %v", err)
+	}
+	_, _, finalized = readState()
+	if yesterday := now.AddDate(0, 0, -1).Format("2006-01-02"); finalized == nil || *finalized != yesterday {
+		t.Fatalf("finalized_through=%v, want %s", finalized, yesterday)
+	}
+	if got, want := statCalls.Load(), int64(1+backfillDays-10); got != want {
+		t.Fatalf("round 2 stat calls=%d, want %d (resume from checkpoint, not full window)", got, want)
+	}
+}

@@ -714,6 +714,27 @@
           <input v-model.number="siteRechargeRate" type="number" min="0.01" step="0.01" class="input !w-32" />
           <p class="mt-1 text-xs text-gray-400">{{ t('provider.rechargeRateHint') }}</p>
         </div>
+        <div v-if="currentProvider?.platform === 'new-api'" class="border-t border-gray-200 pt-4 dark:border-dark-700">
+          <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('provider.costRateLimit') }}</p>
+          <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">{{ t('provider.costRateLimitHint') }}</p>
+          <div class="mt-3 flex items-center justify-between gap-4 rounded-lg bg-gray-50 p-3 dark:bg-dark-800/50">
+            <div>
+              <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('provider.pauseCostSync') }}</p>
+              <p class="mt-0.5 text-xs text-gray-500 dark:text-dark-400">{{ t('provider.pauseCostSyncHint') }}</p>
+            </div>
+            <ToggleSwitch v-model="siteCostSyncPaused" />
+          </div>
+          <div class="mt-3 grid grid-cols-2 gap-4">
+            <div>
+              <label class="input-label">{{ t('provider.costMaxConcurrency') }}</label>
+              <input v-model.number="siteCostMaxConcurrency" type="number" min="0" max="32" step="1" class="input" />
+            </div>
+            <div>
+              <label class="input-label">{{ t('provider.costIntervalMs') }}</label>
+              <input v-model.number="siteCostIntervalMs" type="number" min="0" max="60000" step="100" class="input" />
+            </div>
+          </div>
+        </div>
         <div class="flex items-center justify-between gap-4 rounded-lg bg-gray-50 p-3 dark:bg-dark-800/50">
           <div>
             <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('provider.ignoreBalanceAlert') }}</p>
@@ -892,6 +913,7 @@ const emptyForm = (): ProviderPayload & {
   name: '', note: '', balance_type: 'sub2api', platform: 'sub2api', auth_mode: 'password',
   base_url: '', login_email: '', login_password: '', access_token: '', refresh_token: '',
   upstream_user_id: '', low_balance_threshold: 0, recharge_rate: 1,
+  cost_max_concurrency: 0, cost_interval_ms: 0,
   probe_enabled: false, probe_model: '', ignore_balance_alert: false, self_operated: false
 })
 const form = ref(emptyForm())
@@ -1068,6 +1090,7 @@ function openEdit(p: Provider) {
     base_url: p.base_url, login_email: p.login_email, login_password: '',
     access_token: '', refresh_token: '', upstream_user_id: p.upstream_user_id || '',
     low_balance_threshold: p.low_balance_threshold, recharge_rate: p.recharge_rate || 1,
+    cost_max_concurrency: p.cost_max_concurrency || 0, cost_interval_ms: p.cost_interval_ms || 0,
     probe_enabled: p.probe_enabled, probe_model: p.probe_model || '',
     ignore_balance_alert: p.ignore_balance_alert, self_operated: p.self_operated
   }
@@ -1087,6 +1110,9 @@ async function saveForm() {
       upstream_user_id: form.value.upstream_user_id,
       low_balance_threshold: form.value.low_balance_threshold,
       recharge_rate: form.value.recharge_rate,
+      cost_max_concurrency: form.value.cost_max_concurrency,
+      cost_interval_ms: form.value.cost_interval_ms,
+      cost_sync_paused: editing.value?.cost_sync_paused || false,
       probe_enabled: form.value.probe_enabled,
       probe_model: form.value.probe_model || null,
       ignore_balance_alert: form.value.ignore_balance_alert,
@@ -1356,6 +1382,9 @@ const showSiteSettings = ref(false)
 const useCustomThreshold = ref(false)
 const siteThreshold = ref(0)
 const siteRechargeRate = ref(1)
+const siteCostMaxConcurrency = ref(0)
+const siteCostIntervalMs = ref(0)
+const siteCostSyncPaused = ref(false)
 const siteIgnoreBalanceAlert = ref(false)
 const siteSelfOperated = ref(false)
 
@@ -1373,6 +1402,9 @@ function openSiteSettings(p: Provider) {
   useCustomThreshold.value = p.low_balance_threshold > 0
   siteThreshold.value = p.low_balance_threshold || 0
   siteRechargeRate.value = p.recharge_rate || 1
+  siteCostMaxConcurrency.value = p.cost_max_concurrency || 0
+  siteCostIntervalMs.value = p.cost_interval_ms || 0
+  siteCostSyncPaused.value = p.cost_sync_paused || false
   siteIgnoreBalanceAlert.value = p.ignore_balance_alert
   siteSelfOperated.value = p.self_operated
   showSiteSettings.value = true
@@ -1395,6 +1427,9 @@ async function saveSiteSettings() {
       upstream_user_id: p.upstream_user_id,
       low_balance_threshold: useCustomThreshold.value ? siteThreshold.value : 0,
       recharge_rate: siteRechargeRate.value,
+      cost_max_concurrency: siteCostMaxConcurrency.value,
+      cost_interval_ms: siteCostIntervalMs.value,
+      cost_sync_paused: siteCostSyncPaused.value,
       probe_enabled: p.probe_enabled,
       probe_model: p.probe_model || null,
       ignore_balance_alert: siteIgnoreBalanceAlert.value,

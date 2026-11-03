@@ -30,6 +30,174 @@ type NewAPIClient struct {
 	httpClient *http.Client
 }
 
+// tokenUsageLimiter throttles the per-token usage endpoint for one upstream.
+// The registry below is process-wide so separately constructed clients still
+// share the same upstream budget.
+type tokenUsageLimiter struct {
+	mu          sync.Mutex
+	active      int
+	concurrency int
+	changed     chan struct{}
+	interval    time.Duration
+	// learned 由短暂 429 学到的站点最小查询间隔，与 interval 取大者；进程内持续有效。
+	learned     time.Duration
+	nextAllowed time.Time
+	cooldown    time.Time
+}
+
+const defaultTokenUsageConcurrency = 4
+
+var tokenUsageLimiters = struct {
+	sync.Mutex
+	m map[string]*tokenUsageLimiter
+}{m: make(map[string]*tokenUsageLimiter)}
+
+func tokenUsageLimiterFor(baseURL string) *tokenUsageLimiter {
+	key := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	tokenUsageLimiters.Lock()
+	defer tokenUsageLimiters.Unlock()
+	if l := tokenUsageLimiters.m[key]; l != nil {
+		return l
+	}
+	l := &tokenUsageLimiter{concurrency: defaultTokenUsageConcurrency, changed: make(chan struct{})}
+	tokenUsageLimiters.m[key] = l
+	return l
+}
+
+// SetTokenUsageLimit configures the token usage request budget for baseURL.
+// Non-positive values retain the defaults (4 concurrent, no interval).
+func (c *NewAPIClient) SetTokenUsageLimit(baseURL string, maxConcurrency, intervalMS int) {
+	l := tokenUsageLimiterFor(baseURL)
+	if maxConcurrency <= 0 {
+		maxConcurrency = defaultTokenUsageConcurrency
+	}
+	if maxConcurrency > 32 {
+		maxConcurrency = 32
+	}
+	if intervalMS < 0 {
+		intervalMS = 0
+	}
+	if intervalMS > 60000 {
+		intervalMS = 60000
+	}
+	l.mu.Lock()
+	l.concurrency = maxConcurrency
+	l.interval = time.Duration(intervalMS) * time.Millisecond
+	l.signalLocked()
+	l.mu.Unlock()
+}
+
+func (l *tokenUsageLimiter) acquire(ctx context.Context) (func(), error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		l.mu.Lock()
+		now := time.Now()
+		if now.Before(l.cooldown) {
+			delay := l.cooldown.Sub(now)
+			l.mu.Unlock()
+			return nil, &RateLimitError{RetryAfter: delay, Message: "token 用量请求处于限流冷却中"}
+		}
+		if l.active < l.concurrency && !now.Before(l.nextAllowed) {
+			l.active++
+			l.nextAllowed = now.Add(max(l.interval, l.learned))
+			l.mu.Unlock()
+			return l.release, nil
+		}
+		changed := l.changed
+		wait := time.Until(l.nextAllowed)
+		available := l.active < l.concurrency
+		l.mu.Unlock()
+		if available && wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-timer.C:
+			case <-changed:
+			case <-ctx.Done():
+			}
+			timer.Stop()
+		} else {
+			select {
+			case <-changed:
+			case <-ctx.Done():
+			}
+		}
+	}
+}
+
+func (l *tokenUsageLimiter) signalLocked() {
+	close(l.changed)
+	l.changed = make(chan struct{})
+}
+
+func (l *tokenUsageLimiter) release() {
+	l.mu.Lock()
+	l.active--
+	l.signalLocked()
+	l.mu.Unlock()
+}
+
+// 部分 new-api 站点按用户限制日志统计：同一时刻只允许一个查询（LOG_QUERY_BUSY），
+// 两次查询之间须间隔数秒（LOG_QUERY_RATE_LIMITED），均以 429 + 短 Retry-After 返回。
+// Retry-After 不超过 maxTransientRetryAfter 视为短暂限流：推迟后重试同一请求；
+// 缺失、更长或重试耗尽才按硬限流处理（冷却并放弃本轮）。
+// 站点的间隔从上一次请求（含被拒的）起算；只靠逐个重试，同批其他请求会抢在
+// 刚放行之后继续撞墙，故把 Retry-After 记为后续所有请求的最小间隔。
+const (
+	maxTransientRetryAfter = 10 * time.Second
+	maxTransientRetries    = 3
+	// transientRetryMargin 抵消 Retry-After 秒级取整与网络抖动。
+	transientRetryMargin = 300 * time.Millisecond
+)
+
+// do 在限流器内执行一次日志统计查询，短暂 429 按 Retry-After 推迟后重试。
+func (l *tokenUsageLimiter) do(ctx context.Context, query func() error) error {
+	for attempt := 0; ; attempt++ {
+		release, err := l.acquire(ctx)
+		if err != nil {
+			return err
+		}
+		err = query()
+		var rateErr *RateLimitError
+		retry := errors.As(err, &rateErr) && attempt < maxTransientRetries &&
+			rateErr.RetryAfter > 0 && rateErr.RetryAfter <= maxTransientRetryAfter
+		if retry {
+			// 先推迟再释放槽位，避免同批其他请求抢在 Retry-After 之内发出
+			l.delay(rateErr.RetryAfter)
+		}
+		release()
+		if !retry {
+			return err
+		}
+	}
+}
+
+// delay 把下一次放行时刻推迟到至少 d 之后，并把 d 记为最小查询间隔，不进入冷却。
+func (l *tokenUsageLimiter) delay(d time.Duration) {
+	d += transientRetryMargin
+	l.mu.Lock()
+	l.learned = max(l.learned, d)
+	if until := time.Now().Add(d); until.After(l.nextAllowed) {
+		l.nextAllowed = until
+	}
+	l.signalLocked()
+	l.mu.Unlock()
+}
+
+func (l *tokenUsageLimiter) backoff(d time.Duration) {
+	if d <= 0 {
+		d = time.Minute
+	}
+	l.mu.Lock()
+	until := time.Now().Add(d)
+	if until.After(l.cooldown) {
+		l.cooldown = until
+	}
+	l.signalLocked()
+	l.mu.Unlock()
+}
+
 // NewNewAPIClient 创建客户端。
 func NewNewAPIClient(timeout time.Duration) *NewAPIClient {
 	if timeout <= 0 {
@@ -313,7 +481,12 @@ func (c *NewAPIClient) GetTodayStat(ctx context.Context, baseURL string, auth Ne
 		Rpm   int64   `json:"rpm"`
 		Tpm   int64   `json:"tpm"`
 	}
-	if err := c.getJSON(ctx, url, auth, "用量统计", &data); err != nil {
+	// 与 token 用量同为 /api/log/self/stat，须共用同一限流器，否则余额采集刚查完、
+	// 紧随其后的成本同步首个请求就会撞上站点的查询间隔。
+	err = tokenUsageLimiterFor(baseURL).do(ctx, func() error {
+		return c.getJSON(ctx, url, auth, "用量统计", &data)
+	})
+	if err != nil {
 		return 0, 0, err
 	}
 	return data.Quota, data.Rpm, nil
@@ -478,7 +651,8 @@ func (c *NewAPIClient) GetTokenUsage(
 	return NewAPITokenUsage{ActualCost: data.Quota / quotaPerUnit, Requests: data.Rpm}, nil
 }
 
-// GetTokensUsage 并发拉取多个 token 的区间用量，并发上限固定为 4。
+// GetTokensUsage 并发拉取多个 token 的区间用量。请求节奏按 baseURL 的
+// SetTokenUsageLimit 配置；短暂 429 推迟重试，硬 429 则取消尚未发出的请求。
 // 部分失败时同时返回成功项与错误，调用方必须显式处理错误，不能把缺失项当作零用量。
 func (c *NewAPIClient) GetTokensUsage(
 	ctx context.Context,
@@ -492,7 +666,9 @@ func (c *NewAPIClient) GetTokensUsage(
 	if len(tokens) == 0 {
 		return out, nil
 	}
-	sem := make(chan struct{}, 4)
+	limiter := tokenUsageLimiterFor(baseURL)
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var firstErr error
@@ -501,23 +677,24 @@ func (c *NewAPIClient) GetTokensUsage(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = ctx.Err()
-				}
-				mu.Unlock()
-				return
-			}
-			usage, err := c.GetTokenUsage(ctx, baseURL, auth, token.Name, token.Group, start, end, quotaPerUnit)
+			var usage NewAPITokenUsage
+			err := limiter.do(workCtx, func() error {
+				var queryErr error
+				usage, queryErr = c.GetTokenUsage(workCtx, baseURL, auth, token.Name, token.Group, start, end, quotaPerUnit)
+				return queryErr
+			})
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				if firstErr == nil {
+				if firstErr == nil || errors.Is(err, ErrRateLimited) {
 					firstErr = err
+				}
+				if errors.Is(err, ErrRateLimited) {
+					var rateErr *RateLimitError
+					if errors.As(err, &rateErr) {
+						limiter.backoff(rateErr.RetryAfter)
+					}
+					cancel()
 				}
 				return
 			}
@@ -596,6 +773,38 @@ type newAPIHTTPError struct{ Status int }
 
 func (e *newAPIHTTPError) Error() string { return fmt.Sprintf("new-api HTTP %d", e.Status) }
 
+// RateLimitError carries an optional upstream Retry-After hint while retaining
+// errors.Is(err, ErrRateLimited) compatibility.
+type RateLimitError struct {
+	RetryAfter time.Duration
+	Message    string
+}
+
+func (e *RateLimitError) Error() string {
+	if e.Message == "" {
+		return ErrRateLimited.Error()
+	}
+	return ErrRateLimited.Error() + ": " + e.Message
+}
+
+func (e *RateLimitError) Unwrap() error { return ErrRateLimited }
+
+func retryAfter(resp *http.Response) time.Duration {
+	raw := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if raw == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(raw); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if when, err := http.ParseTime(raw); err == nil {
+		if d := time.Until(when); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
 func (c *NewAPIClient) requestBodyJSON(ctx context.Context, method, url string, auth NewAPIAuth, body []byte, what string, dst any) error {
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
@@ -628,7 +837,7 @@ func (c *NewAPIClient) requestBodyJSON(ctx context.Context, method, url string, 
 		return errUnauthorized
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return fmt.Errorf("%w: %s请求失败 HTTP %d", ErrRateLimited, what, resp.StatusCode)
+		return &RateLimitError{RetryAfter: retryAfter(resp), Message: fmt.Sprintf("%s请求失败 HTTP %d", what, resp.StatusCode)}
 	}
 	if resp.StatusCode != http.StatusOK {
 		return &newAPIHTTPError{Status: resp.StatusCode}

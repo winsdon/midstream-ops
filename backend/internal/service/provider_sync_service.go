@@ -219,7 +219,7 @@ func (s *ProviderSyncService) SyncOne(ctx context.Context, providerID int64, man
 		// 上游分组倍率：复用余额侧刚建立的会话（余额成功说明会话可用）
 		s.syncUpstreamRates(ctx, p)
 
-		if s.pg.Available() {
+		if s.pg.Available() && (!p.CostSyncPaused || manual) {
 			// 成本同步失败不记站点失败：单个 token 的 /log/self/stat 超时
 			// 若写入 collector_state，会把健康点打红，并触发退避把余额采集一并推迟。
 			if costErr := s.syncCost(ctx, p, backfill); costErr != nil {

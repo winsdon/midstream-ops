@@ -42,6 +42,10 @@ type Provider struct {
 	LoginFailures       int     // 连续登录被拒次数（4xx）
 	LoginCooldownUntil  *time.Time
 	IgnoreBalanceAlert  bool // 站点级静音：不推余额告警（采集照常）
+	// CostMaxConcurrency/CostIntervalMS 控制 new-api 成本统计请求；0 表示使用系统默认。
+	CostMaxConcurrency int
+	CostIntervalMS     int
+	CostSyncPaused     bool
 	// SelfOperated 自营站：本站自己经营的上游，其上游实扣是左手倒右手，
 	// 不计入成本；真实支出改由 provider_operating_costs 手工记账。
 	SelfOperated bool
@@ -79,7 +83,7 @@ const providerCols = `id, name, note, balance_type, platform, auth_mode, role, b
 	access_token, refresh_token, session_cookie, upstream_user_id, quota_per_unit,
 	token_expires_at, low_balance_threshold, probe_enabled, probe_model,
 	last_balance, last_balance_at, last_balance_error, recharge_rate, login_failures, login_cooldown_until,
-	ignore_balance_alert, self_operated, created_at, updated_at`
+	ignore_balance_alert, self_operated, cost_max_concurrency, cost_interval_ms, cost_sync_paused, created_at, updated_at`
 
 // scanProvider 扫描一行并透明解密凭据字段。
 // 注意：Scan 参数顺序与 providerCols 是手工维持的隐式契约，无编译期保护，
@@ -94,7 +98,7 @@ func (r *ProviderRepo) scanProvider(row interface{ Scan(...any) error }) (*Provi
 		&p.AccessToken, &p.RefreshToken, &p.SessionCookie, &p.UpstreamUserID, &p.QuotaPerUnit,
 		&tokenExp, &p.LowBalanceThreshold, &p.ProbeEnabled, &probeModel,
 		&lastBal, &lastBalAt, &lastBalErr, &p.RechargeRate, &p.LoginFailures, &loginCooldown,
-		&p.IgnoreBalanceAlert, &p.SelfOperated, &p.CreatedAt, &p.UpdatedAt)
+		&p.IgnoreBalanceAlert, &p.SelfOperated, &p.CostMaxConcurrency, &p.CostIntervalMS, &p.CostSyncPaused, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -241,6 +245,9 @@ type CreateParams struct {
 	ProbeModel          *string
 	IgnoreBalanceAlert  bool
 	SelfOperated        bool
+	CostMaxConcurrency  int
+	CostIntervalMS      int
+	CostSyncPaused      bool
 }
 
 // normalizePlatformAuth 填充平台/认证模式默认值。
@@ -265,12 +272,12 @@ func (r *ProviderRepo) Create(ctx context.Context, cp CreateParams) (*Provider, 
 		INSERT INTO providers (name, note, balance_type, platform, auth_mode, base_url, login_email, login_password,
 			access_token, refresh_token, upstream_user_id,
 			low_balance_threshold, recharge_rate, probe_enabled, probe_model, ignore_balance_alert,
-			self_operated, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+			self_operated, cost_max_concurrency, cost_interval_ms, cost_sync_paused, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
 		cp.Name, cp.Note, cp.BalanceType, platform, authMode, cp.BaseURL, cp.LoginEmail, r.box.Seal(cp.LoginPassword),
 		r.box.Seal(cp.AccessToken), r.box.Seal(cp.RefreshToken), cp.UpstreamUserID,
 		cp.LowBalanceThreshold, cp.RechargeRate, cp.ProbeEnabled, cp.ProbeModel, cp.IgnoreBalanceAlert,
-		cp.SelfOperated, nowUTC(), nowUTC()).Scan(&id)
+		cp.SelfOperated, cp.CostMaxConcurrency, cp.CostIntervalMS, cp.CostSyncPaused, nowUTC(), nowUTC()).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -296,6 +303,9 @@ type UpdateParams struct {
 	ProbeModel          *string
 	IgnoreBalanceAlert  bool
 	SelfOperated        bool
+	CostMaxConcurrency  int
+	CostIntervalMS      int
+	CostSyncPaused      bool
 }
 
 // Update 编辑供应商。任一凭据变化时清 token 缓存与登录冷却（须重新建立会话）。
@@ -309,11 +319,11 @@ func (r *ProviderRepo) Update(ctx context.Context, id int64, up UpdateParams) (*
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE providers SET name=?, note=?, balance_type=?, platform=?, auth_mode=?, base_url=?, login_email=?,
 			upstream_user_id=?, low_balance_threshold=?, recharge_rate=?, probe_enabled=?, probe_model=?,
-			ignore_balance_alert=?, self_operated=?, updated_at=?
+			ignore_balance_alert=?, self_operated=?, cost_max_concurrency=?, cost_interval_ms=?, cost_sync_paused=?, updated_at=?
 		WHERE id=?`,
 		up.Name, up.Note, up.BalanceType, platform, authMode, up.BaseURL, up.LoginEmail,
 		up.UpstreamUserID, up.LowBalanceThreshold, up.RechargeRate, up.ProbeEnabled, up.ProbeModel,
-		up.IgnoreBalanceAlert, up.SelfOperated, nowUTC(), id)
+		up.IgnoreBalanceAlert, up.SelfOperated, up.CostMaxConcurrency, up.CostIntervalMS, up.CostSyncPaused, nowUTC(), id)
 	if err != nil {
 		return nil, err
 	}

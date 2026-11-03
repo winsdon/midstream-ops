@@ -96,6 +96,10 @@ export interface ProviderPayload {
   upstream_user_id?: string
   low_balance_threshold?: number
   recharge_rate?: number
+  /** new-api 成本同步限流；0 表示使用系统默认 */
+  cost_max_concurrency?: number
+  cost_interval_ms?: number
+  cost_sync_paused?: boolean
   probe_enabled?: boolean
   probe_model?: string | null
   ignore_balance_alert?: boolean
