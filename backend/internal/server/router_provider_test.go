@@ -16,7 +16,7 @@ func newProviderTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 	h := &Handlers{
 		Auth:        handler.NewAuthHandler(nil),
-		Provider:    handler.NewProviderHandler(nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+		Provider:    handler.NewProviderHandler(nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil),
 		PGAvailable: func() bool { return false },
 	}
 	return NewRouter(&config.Config{}, nil, h)

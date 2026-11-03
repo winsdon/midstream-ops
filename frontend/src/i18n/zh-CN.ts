@@ -295,7 +295,6 @@ export default {
   // 成本口径：actual = 上游倍率折后实扣（真实付出，参与利润）；official = 上游未打折对照成本（仅对照）
   cost: {
     actual: '实扣成本',
-    official: '上游成本',
     actualHint: '上游 sub2api 按 key 记录的倍率折后实扣金额，即真实付给供应商的钱',
     profitOverstated: '部分账号未匹配到上游 key，成本偏低、利润被高估',
     upperBound: '⚠ 利润上限值（成本不完整）',
@@ -315,7 +314,10 @@ export default {
     noData: '该区间暂无上游成本记录',
     keyName: '上游 key',
     mappedAccount: '对应账号',
-    saved: '折扣节省'
+    upstreamCost: '上游成本',
+    upstreamCostHint: '上游按 key 记录的倍率折后实扣，按充值倍率折成人民币',
+    revenueHint: '本站经该 key 对应账号向客户收到的钱，口径同统计页；多个上游 key 对应同一账号时按上游成本占比分摊',
+    revenueUnavailable: '收益暂不可用（线上库查询失败），仅显示上游成本'
   },
   // 自营站运营成本：买号/订阅/服务器等站外支出，与上游实扣同为真实成本
   opcost: {

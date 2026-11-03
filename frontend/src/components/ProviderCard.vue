@@ -79,6 +79,20 @@
           <Icon name="refresh" size="sm" :class="refreshing ? 'animate-spin' : ''" />
         </button>
         <button
+          v-if="provider.balance_type === 'manual'"
+          class="icon-btn" :title="t('provider.manualSet')"
+          @click="$emit('manual', provider)"
+        >
+          <Icon name="calculator" size="sm" />
+        </button>
+        <button
+          v-if="provider.balance_type !== 'none'"
+          class="icon-btn" :title="t('provider.history')"
+          @click="$emit('history', provider)"
+        >
+          <Icon name="clock" size="sm" />
+        </button>
+        <button
           v-if="provider.balance_type === 'sub2api'"
           class="icon-btn" :title="t('cost.keyDetail')"
           @click="$emit('costs', provider)"
@@ -132,6 +146,10 @@ const props = defineProps<{
 
 defineEmits<{
   refresh: [p: Provider]
+  /** 手动录入余额（仅 balance_type=manual） */
+  manual: [p: Provider]
+  /** 余额历史 */
+  history: [p: Provider]
   settings: [p: Provider]
   link: [p: Provider]
   edit: [p: Provider]

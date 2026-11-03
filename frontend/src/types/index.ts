@@ -426,6 +426,8 @@ export interface KeyCostRow {
   actual_cost: number
   official_cost: number
   matched: boolean
+  /** 本站经对应账号收到的钱；未匹配账号或收益不可用时为 null */
+  revenue?: number | null
 }
 
 export interface CostSyncState {

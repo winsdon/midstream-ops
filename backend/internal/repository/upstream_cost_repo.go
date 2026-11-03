@@ -273,6 +273,8 @@ type KeyCostRow struct {
 	ActualCost     float64  `json:"actual_cost"`
 	OfficialCost   float64  `json:"official_cost"`
 	Matched        bool     `json:"matched"`
+	// Revenue 本站经该 key 对应账号收到的钱，由服务层挂上；未匹配账号时为 nil。
+	Revenue *float64 `json:"revenue"`
 }
 
 // KeyCosts 返回某供应商在区间内的 per-key 成本明细（按实扣降序）。

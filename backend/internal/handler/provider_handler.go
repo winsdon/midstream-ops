@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -25,15 +27,16 @@ type ProviderHandler struct {
 	rateRepo   *repository.RateRepo
 	cfg        *config.Config
 	pg         *repository.PG
+	statsSvc   *service.StatsService // 成本明细的收益列，口径同统计页
 }
 
 // NewProviderHandler 创建 ProviderHandler。
 func NewProviderHandler(svc *service.ProviderService, balanceSvc *service.BalanceService,
 	costSvc *service.CostSyncService, syncSvc *service.ProviderSyncService,
 	syncSched *service.SyncScheduler, rateRepo *repository.RateRepo,
-	cfg *config.Config, pg *repository.PG) *ProviderHandler {
+	cfg *config.Config, pg *repository.PG, statsSvc *service.StatsService) *ProviderHandler {
 	return &ProviderHandler{svc: svc, balanceSvc: balanceSvc, costSvc: costSvc,
-		syncSvc: syncSvc, syncSched: syncSched, rateRepo: rateRepo, cfg: cfg, pg: pg}
+		syncSvc: syncSvc, syncSched: syncSched, rateRepo: rateRepo, cfg: cfg, pg: pg, statsSvc: statsSvc}
 }
 
 // providerDTO 列表/详情输出（脱敏：不回显密码/token）。
@@ -791,6 +794,17 @@ func (h *ProviderHandler) KeyCosts(c *gin.Context) {
 		actual += k.ActualCost
 		official += k.OfficialCost
 	}
+	// 收益读线上库：失败时成本照常返回，收益列显示不可用，不让整个弹窗报错
+	var revenue *float64
+	revenueErr := ""
+	if byAccount, err := h.accountRevenue(c.Request.Context(), start, end); err != nil {
+		log.Printf("[provider] 供应商 %s 成本明细读取收益失败: %v", p.Name, err)
+		revenueErr = "收益暂不可用（线上库查询失败）"
+	} else {
+		var total float64
+		items, total = service.AttachKeyRevenue(items, byAccount)
+		revenue = &total
+	}
 	response.Success(c, gin.H{
 		"provider":      p.Name,
 		"start":         startDate,
@@ -799,8 +813,17 @@ func (h *ProviderHandler) KeyCosts(c *gin.Context) {
 		"total":         len(items),
 		"actual_cost":   actual,
 		"official_cost": official,
+		"revenue":       revenue,
+		"revenue_error": revenueErr,
 		"sync_state":    state,
 	})
+}
+
+func (h *ProviderHandler) accountRevenue(ctx context.Context, start, end time.Time) (map[int64]float64, error) {
+	if h.statsSvc == nil || !h.pg.Available() {
+		return nil, errors.New("线上库不可用")
+	}
+	return h.statsSvc.RevenueByAccount(ctx, start, end)
 }
 
 // SyncCost POST /providers/:id/costs/sync?backfill=true

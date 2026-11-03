@@ -76,7 +76,8 @@
           v-for="(p, i) in filteredProviders" :key="p.id"
           :provider="p" :index="i" :refreshing="refreshingId === p.id"
           :default-balance-threshold="defaultBalanceThreshold"
-          @refresh="refreshBalance" @settings="openSiteSettings" @edit="openEdit"
+          @refresh="refreshBalance" @manual="openManual" @history="openHistory"
+          @settings="openSiteSettings" @edit="openEdit"
           @delete="onDelete" @groups="openGroups" @link="openLinks"
           @accounts="openAccounts" @costs="openCosts"
           @opcost="openOpCosts"
@@ -597,7 +598,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="h in historyItems" :key="h.id">
+              <tr v-for="h in historyRows" :key="h.id">
                 <td class="text-xs">{{ h.created_at }}</td>
                 <td class="font-semibold">{{ fmtMoney(h.balance) }}</td>
                 <td>{{ fmtMoney(h.today_cost) }}</td>
@@ -645,15 +646,24 @@
           </span>
         </div>
 
-        <!-- 合计 -->
-        <div v-if="costs" class="grid grid-cols-2 gap-3">
+        <!-- 合计：收益 / 上游成本 / 利润。收益读线上库，不可用时只显示成本 -->
+        <p v-if="costs?.revenue_error" class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+          {{ t('cost.revenueUnavailable') }}
+        </p>
+        <div v-if="costs" class="grid grid-cols-3 gap-3">
           <div class="rounded-lg border border-gray-200 px-3 py-2 dark:border-dark-700">
-            <p class="text-xs text-gray-500">{{ t('cost.actual') }}</p>
+            <p class="text-xs text-gray-500" :title="t('cost.revenueHint')">{{ t('stats.revenue') }}</p>
+            <p class="text-lg font-bold text-gray-900 dark:text-white">{{ fmtMoney(costs.revenue) }}</p>
+          </div>
+          <div class="rounded-lg border border-gray-200 px-3 py-2 dark:border-dark-700">
+            <p class="text-xs text-gray-500" :title="t('cost.upstreamCostHint')">{{ t('cost.upstreamCost') }}</p>
             <p class="text-lg font-bold text-gray-900 dark:text-white">{{ fmtMoney(costs.actual_cost) }}</p>
           </div>
           <div class="rounded-lg border border-gray-200 px-3 py-2 dark:border-dark-700">
-            <p class="text-xs text-gray-500">{{ t('cost.official') }}</p>
-            <p class="text-lg font-bold text-gray-400">{{ fmtMoney(costs.official_cost) }}</p>
+            <p class="text-xs text-gray-500">{{ t('stats.profit') }}</p>
+            <p class="text-lg font-bold" :class="moneyClass(costProfit(costs.revenue, costs.actual_cost))">
+              {{ fmtMoney(costProfit(costs.revenue, costs.actual_cost)) }}
+            </p>
           </div>
         </div>
 
@@ -666,9 +676,9 @@
                 <th>{{ t('cost.keyName') }}</th>
                 <th>{{ t('cost.mappedAccount') }}</th>
                 <th>{{ t('stats.rateMultiplier') }}</th>
-                <th class="text-right">{{ t('cost.actual') }}</th>
-                <th class="text-right">{{ t('cost.official') }}</th>
-                <th class="text-right">{{ t('cost.saved') }}</th>
+                <th class="text-right" :title="t('cost.revenueHint')">{{ t('stats.revenue') }}</th>
+                <th class="text-right" :title="t('cost.upstreamCostHint')">{{ t('cost.upstreamCost') }}</th>
+                <th class="text-right">{{ t('stats.profit') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -679,9 +689,12 @@
                   <span v-else class="text-xs text-amber-600 dark:text-amber-400" :title="t('cost.keyUnmatchedHint')">{{ t('cost.keyUnmatched') }}</span>
                 </td>
                 <td class="text-xs">{{ k.rate_multiplier !== null && k.rate_multiplier !== undefined ? '×' + k.rate_multiplier : '-' }}</td>
-                <td class="text-right font-semibold">{{ fmtMoney(k.actual_cost) }}</td>
-                <td class="text-right text-gray-400">{{ fmtMoney(k.official_cost) }}</td>
-                <td class="text-right text-xs text-emerald-600 dark:text-emerald-400">{{ fmtMoney(k.official_cost - k.actual_cost) }}</td>
+                <td class="text-right font-semibold">{{ fmtMoney(k.revenue) }}</td>
+                <td class="text-right">{{ fmtMoney(k.actual_cost) }}</td>
+                <!-- 颜色放在 span 上：.table td 的全局文字色会盖过 td 自身的颜色类 -->
+                <td class="text-right font-semibold">
+                  <span :class="moneyClass(costProfit(k.revenue, k.actual_cost))">{{ fmtMoney(costProfit(k.revenue, k.actual_cost)) }}</span>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -814,7 +827,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { providerApi, settingsApi, type KeyCostsResult, type ProviderPayload, type RefreshAllFailure, type TestConnectionPayload } from '@/api'
 import { errorMessage } from '@/api/client'
-import { fmtDateTime, fmtMoney, fmtNum, todayStr } from '@/utils/format'
+import { fmtDateTime, fmtMoney, fmtNum, moneyClass, todayStr } from '@/utils/format'
 import { useAppStore } from '@/stores/app'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -994,9 +1007,14 @@ const historyPage = ref(1)
 const historyPages = ref(1)
 const historyTotal = ref(0)
 
-const historyLabels = computed(() => [...historyItems.value].reverse().map((h) => (h.created_at || '').slice(5, 16)))
+// 时间线显式按时间排序，不依赖接口返回顺序：图表左旧右新，表格最新在上
+const historyAsc = computed(() =>
+  [...historyItems.value].sort((a, b) => (a.created_at || '').localeCompare(b.created_at || '') || a.id - b.id)
+)
+const historyRows = computed(() => [...historyAsc.value].reverse())
+const historyLabels = computed(() => historyAsc.value.map((h) => (h.created_at || '').slice(5, 16)))
 const historyDatasets = computed(() => [
-  { label: t('provider.lastBalance'), data: [...historyItems.value].reverse().map((h) => h.balance ?? 0), borderColor: '#14b8a6' }
+  { label: t('provider.lastBalance'), data: historyAsc.value.map((h) => h.balance ?? 0), borderColor: '#14b8a6' }
 ])
 
 // 上游 per-key 成本明细
@@ -1009,6 +1027,10 @@ const costStart = ref(todayStr())
 const costEnd = ref(todayStr())
 
 const costItems = computed(() => costs.value?.items || [])
+// 利润 = 收益 − 上游成本；收益缺失（未匹配账号 / 线上库不可用）时不算，显示 "-"
+function costProfit(revenue: number | null | undefined, cost: number): number | null {
+  return revenue === null || revenue === undefined ? null : revenue - cost
+}
 
 const allSelected = computed(() => {
   const items = scanItems.value
@@ -1483,9 +1505,10 @@ async function loadHistory(page: number) {
   try {
     const res = await providerApi.balanceHistory(currentProvider.value.id, page, 50)
     historyItems.value = res.items
-    historyPage.value = res.page
-    historyPages.value = res.pages
-    historyTotal.value = res.total
+    // 后端按天数一次返回、不分页（无 page/pages 字段），按单页处理
+    historyPage.value = res.page ?? 1
+    historyPages.value = res.pages ?? 1
+    historyTotal.value = res.total ?? res.items.length
   } catch (e) {
     app.showError(errorMessage(e))
   } finally {

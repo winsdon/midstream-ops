@@ -207,6 +207,9 @@ export interface KeyCostsResult {
   total: number
   actual_cost: number
   official_cost: number
+  /** 收益合计；线上库不可用时为 null，原因见 revenue_error */
+  revenue: number | null
+  revenue_error: string
   sync_state: CostSyncState
 }
 

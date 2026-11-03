@@ -15,7 +15,7 @@ func newOpCostTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 	h := &Handlers{
 		Auth:        handler.NewAuthHandler(nil),
-		Provider:    handler.NewProviderHandler(nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+		Provider:    handler.NewProviderHandler(nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil),
 		OpCost:      handler.NewOperatingCostHandler(nil, &config.Config{}),
 		PGAvailable: func() bool { return false },
 	}
@@ -63,7 +63,7 @@ func TestOperatingCostRoutesRegistered(t *testing.T) {
 func TestOperatingCostRoutesSkippedWhenNil(t *testing.T) {
 	h := &Handlers{
 		Auth:        handler.NewAuthHandler(nil),
-		Provider:    handler.NewProviderHandler(nil, nil, nil, nil, nil, nil, &config.Config{}, nil),
+		Provider:    handler.NewProviderHandler(nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil),
 		PGAvailable: func() bool { return false },
 	}
 	r := NewRouter(&config.Config{}, nil, h)

@@ -254,7 +254,7 @@ func main() {
 	handlers := &server.Handlers{
 		Auth:             handler.NewAuthHandler(authSvc),
 		Dashboard:        handler.NewDashboardHandler(statsSvc, cfg, pg),
-		Provider:         handler.NewProviderHandler(providerSvc, balanceSvc, costSvc, syncSvc, syncScheduler, rateRepo, cfg, pg),
+		Provider:         handler.NewProviderHandler(providerSvc, balanceSvc, costSvc, syncSvc, syncScheduler, rateRepo, cfg, pg, statsSvc),
 		OpCost:           handler.NewOperatingCostHandler(opCostSvc, cfg),
 		Stats:            handler.NewStatsHandler(statsSvc, cfg, pg),
 		Rate:             handler.NewRateHandler(rateSvc),

@@ -295,7 +295,6 @@ export default {
   // Cost basis: actual = upstream rate-discounted charge (real spend, drives profit); official = undiscounted upstream cost (reference only)
   cost: {
     actual: 'Actual Cost',
-    official: 'Upstream Cost',
     actualHint: 'Rate-discounted amount charged per key by upstream sub2api — the real money paid to the provider',
     profitOverstated: 'Some accounts have no matching upstream key — cost is understated and profit overstated',
     upperBound: '⚠ Upper bound (cost incomplete)',
@@ -315,7 +314,10 @@ export default {
     noData: 'No upstream cost recorded for this range',
     keyName: 'Upstream Key',
     mappedAccount: 'Mapped Account',
-    saved: 'Discount Saved'
+    upstreamCost: 'Upstream Cost',
+    upstreamCostHint: 'Rate-discounted amount charged per key by upstream, converted to CNY by the recharge rate',
+    revenueHint: 'What customers paid us through the account mapped to this key (same basis as Stats). When several upstream keys map to one account, its revenue is split by upstream cost share',
+    revenueUnavailable: 'Revenue unavailable (online database query failed); showing upstream cost only'
   },
   // Operating cost of self-run sites: account purchases, subscriptions, servers
   opcost: {
