@@ -153,7 +153,7 @@ func TestGrokImageModelsUseAspectRatio(t *testing.T) {
 
 // OpenAI 格式图片走 size，传 aspect_ratio 应被拒——端点不认这个字段。
 func TestOpenAIImageModelsUsePixelSize(t *testing.T) {
-	names := []string{"gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"}
+	names := []string{"gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.6"}
 	got := ClassifyModels("openai", true, names, nil)
 	if len(got) != len(names) {
 		t.Fatalf("应返回 %d 个 GPT 生图模型，实得 %d", len(names), len(got))
@@ -176,7 +176,7 @@ func TestOpenAIImageModelsUsePixelSize(t *testing.T) {
 		t.Fatalf("合法 size 不应被拒: %v", err)
 	}
 
-	for _, name := range []string{"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"} {
+	for _, name := range []string{"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.6"} {
 		p := base
 		p.Model = name
 		p.Size = "1024x1024"
@@ -192,7 +192,7 @@ func TestOpenAIImageModelsUsePixelSize(t *testing.T) {
 	}
 }
 
-// 空 mapping 的 openai 分组回落平台默认表，2.5 系列必须在列，
+// 空 mapping 的 openai 分组回落平台默认表，2.5 系列与 2.6 必须在列，
 // 否则用户有模型却在生图页看不到。
 func TestClassifyModelsIncludesGptImage25Defaults(t *testing.T) {
 	got := ClassifyModels("openai", true, nil, nil)
@@ -200,7 +200,7 @@ func TestClassifyModelsIncludesGptImage25Defaults(t *testing.T) {
 	for _, opt := range got {
 		seen[opt.Name] = true
 	}
-	for _, name := range []string{"gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"} {
+	for _, name := range []string{"gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.6"} {
 		if !seen[name] {
 			t.Fatalf("openai 默认模型表缺少 %s", name)
 		}

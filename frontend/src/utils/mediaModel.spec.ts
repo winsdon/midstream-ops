@@ -482,6 +482,7 @@ describe('mediaModelSelectOptions', () => {
     'media.modelHints.gptImage25': '网页/App 产品：Sketch 手绘、模板、图上评论改图、分享提示词',
     'media.modelHints.gptImage25Flare': '速度快，日常/批量',
     'media.modelHints.gptImage25Sunburst': '更准、更慢，精修/成品',
+    'media.modelHints.gptImage26': '最新一代 GPT 生图',
     'media.modelHints.grokImagineImage': '标准生图'
   }
   const translate = (key: string) => copy[key] ?? key
@@ -491,12 +492,14 @@ describe('mediaModelSelectOptions', () => {
     expect(isGptImage25Model('gpt-image-2.5-flare')).toBe(true)
     expect(isGptImage25Model('gpt-image-2.5-sunburst')).toBe(true)
     expect(isGptImage25Model('gpt-image-2')).toBe(false)
+    expect(isGptImage25Model('gpt-image-2.6')).toBe(false)
   })
 
   it('已知模型有定位文案 key，未知模型没有', () => {
     expect(mediaModelHintKey('gpt-image-2.5')).toBe('media.modelHints.gptImage25')
     expect(mediaModelHintKey('gpt-image-2.5-flare')).toBe('media.modelHints.gptImage25Flare')
     expect(mediaModelHintKey('gpt-image-2.5-sunburst')).toBe('media.modelHints.gptImage25Sunburst')
+    expect(mediaModelHintKey('gpt-image-2.6')).toBe('media.modelHints.gptImage26')
     expect(mediaModelHintKey('unknown-model')).toBe('')
   })
 
@@ -506,7 +509,8 @@ describe('mediaModelSelectOptions', () => {
         { name: 'gpt-image-2' },
         { name: 'gpt-image-2.5' },
         { name: 'gpt-image-2.5-flare' },
-        { name: 'gpt-image-2.5-sunburst' }
+        { name: 'gpt-image-2.5-sunburst' },
+        { name: 'gpt-image-2.6' }
       ],
       translate
     )
@@ -518,7 +522,8 @@ describe('mediaModelSelectOptions', () => {
         description: '网页/App 产品：Sketch 手绘、模板、图上评论改图、分享提示词'
       },
       { value: 'gpt-image-2.5-flare', label: 'gpt-image-2.5-flare', description: '速度快，日常/批量' },
-      { value: 'gpt-image-2.5-sunburst', label: 'gpt-image-2.5-sunburst', description: '更准、更慢，精修/成品' }
+      { value: 'gpt-image-2.5-sunburst', label: 'gpt-image-2.5-sunburst', description: '更准、更慢，精修/成品' },
+      { value: 'gpt-image-2.6', label: 'gpt-image-2.6', description: '最新一代 GPT 生图' }
     ])
   })
 })

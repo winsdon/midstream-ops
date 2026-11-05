@@ -1107,6 +1107,7 @@ export default {
       gptImage25: 'Web/App: sketching, templates, in-image comments, sharing prompts',
       gptImage25Flare: 'Fast — daily / batch work',
       gptImage25Sunburst: 'More accurate, slower — polish / final art',
+      gptImage26: 'Latest-gen GPT image model',
       grokImagineImage: 'Standard image generation',
       grokImagineImageQuality: 'Higher-quality images',
       grokImagine: 'High-quality images (billed as image-quality)',

@@ -46,6 +46,7 @@ var platformDefaultModels = map[string][]string{
 		"gpt-image-2.5",
 		"gpt-image-2.5-flare",
 		"gpt-image-2.5-sunburst",
+		"gpt-image-2.6",
 	},
 	"gemini": {
 		"gemini-2.0-flash",

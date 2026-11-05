@@ -160,6 +160,7 @@ var mediaModels = map[string]mediaModelSpec{
 	"gpt-image-2.5":          {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
 	"gpt-image-2.5-flare":    {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
 	"gpt-image-2.5-sunburst": {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
+	"gpt-image-2.6":          {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
 	// Gemini 图片模型走 /v1beta 原生协议，与 /v1/images/generations 不兼容，
 	// 故不纳入——列在这里只会让用户选中后收到 404。
 }

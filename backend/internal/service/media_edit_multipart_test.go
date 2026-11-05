@@ -18,7 +18,7 @@ type mediaRefRoundTripper func(*http.Request) (*http.Response, error)
 func (f mediaRefRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestEditImageGPTMultipart(t *testing.T) {
-	for _, model := range []string{"gpt-image-1.5", "gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"} {
+	for _, model := range []string{"gpt-image-1.5", "gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.6"} {
 		for _, count := range []int{1, 2} {
 			t.Run(fmt.Sprintf("%s/%d", model, count), func(t *testing.T) {
 				downloads, submissions := 0, 0

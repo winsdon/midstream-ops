@@ -372,6 +372,8 @@ export function mediaModelHintKey(name: string): string {
       return 'media.modelHints.gptImage25Flare'
     case 'gpt-image-2.5-sunburst':
       return 'media.modelHints.gptImage25Sunburst'
+    case 'gpt-image-2.6':
+      return 'media.modelHints.gptImage26'
     case 'grok-imagine-image':
       return 'media.modelHints.grokImagineImage'
     case 'grok-imagine-image-quality':

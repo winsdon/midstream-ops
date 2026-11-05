@@ -1103,6 +1103,7 @@ export default {
       gptImage25: '网页/App 产品：Sketch 手绘、模板、图上评论改图、分享提示词',
       gptImage25Flare: '速度快，日常/批量',
       gptImage25Sunburst: '更准、更慢，精修/成品',
+      gptImage26: '最新一代 GPT 生图',
       grokImagineImage: '标准生图',
       grokImagineImageQuality: '更高质量生图',
       grokImagine: '高质量生图（按 image-quality 计费）',
