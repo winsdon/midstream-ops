@@ -1,6 +1,7 @@
 package service
 
 import (
+	"slices"
 	"testing"
 
 	"sub2api-account-monitor/internal/repository"
@@ -8,6 +9,47 @@ import (
 
 // f 取地址辅助：MediaPricing 的价格字段是指针（nil 表示未配置，0 是合法价）。
 func f(v float64) *float64 { return &v }
+
+func TestClassifyModelsNewestFirst(t *testing.T) {
+	cases := []struct {
+		name     string
+		platform string
+		models   []string
+		want     []string
+	}{
+		{
+			name: "image versions and variants", platform: "openai",
+			models: []string{"gpt-image-1", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-2.6", "gpt-image-1.5", "gpt-image-2.5-flare", "gpt-image-2.5", "gpt-image-2.6"},
+			want:   []string{"gpt-image-2.6", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5", "gpt-image-1"},
+		},
+		{
+			name: "video versions", platform: "grok",
+			models: []string{"grok-imagine-video", "grok-imagine-video-1.5"},
+			want:   []string{"grok-imagine-video-1.5", "grok-imagine-video"},
+		},
+		{
+			name: "unversioned image models", platform: "grok",
+			models: []string{"grok-imagine-image-quality", "grok-imagine-image", "grok-imagine"},
+			want:   []string{"grok-imagine", "grok-imagine-image", "grok-imagine-image-quality"},
+		},
+		{
+			name: "platform defaults", platform: "openai",
+			want: []string{"gpt-image-2.6", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5", "gpt-image-1"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			options := ClassifyModels(tc.platform, true, tc.models, nil)
+			names := make([]string, 0, len(options))
+			for _, option := range options {
+				names = append(names, option.Name)
+			}
+			if !slices.Equal(names, tc.want) {
+				t.Fatalf("model order = %v, want %v", names, tc.want)
+			}
+		})
+	}
+}
 
 // grok-imagine-edit 是唯一仍被过滤的陷阱模型：图片编辑端点实测 404。
 //

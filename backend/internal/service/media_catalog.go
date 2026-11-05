@@ -95,6 +95,8 @@ const (
 // 也不能让用户对着一个必然失败的选项反复试。这是刻意的「不 DRY」。
 type mediaModelSpec struct {
 	Capability string
+	// SortPriority 越大越靠前；同代变体保留名称顺序，不用名称或价格推断新旧。
+	SortPriority int
 	// SizeMode 仅图片模型有意义。
 	SizeMode MediaSizeMode
 	// ImagePriceUSD 各计费档的标准单价（USD/张）。nil 表示本站无权威价，
@@ -146,6 +148,7 @@ var mediaModels = map[string]mediaModelSpec{
 	},
 	"grok-imagine-video-1.5": {
 		Capability:    MediaCapVideo,
+		SortPriority:  150,
 		VideoPriceUSD: map[string]float64{"480p": 0.08, "720p": 0.14, "1080p": 0.25},
 		// 只在文生视频时降级：有参考图时 1.5 真正生效并按 1.5 的价计费。
 		DowngradesTo:   "grok-imagine-video",
@@ -154,13 +157,13 @@ var mediaModels = map[string]mediaModelSpec{
 	// OpenAI 格式图片：size 为真实 WxH，按最长边分档计费。
 	// 标准价由 sub2api 内嵌的 LiteLLM 表决定，本站查不到，故 ImagePriceUSD 为 nil：
 	// 只有分组配了 image_price_* 时才能给出预估。
-	"gpt-image-1":            {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
-	"gpt-image-1.5":          {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
-	"gpt-image-2":            {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
-	"gpt-image-2.5":          {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
-	"gpt-image-2.5-flare":    {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
-	"gpt-image-2.5-sunburst": {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
-	"gpt-image-2.6":          {Capability: MediaCapImage, SizeMode: SizeModePixelSize},
+	"gpt-image-1":            {Capability: MediaCapImage, SortPriority: 100, SizeMode: SizeModePixelSize},
+	"gpt-image-1.5":          {Capability: MediaCapImage, SortPriority: 150, SizeMode: SizeModePixelSize},
+	"gpt-image-2":            {Capability: MediaCapImage, SortPriority: 200, SizeMode: SizeModePixelSize},
+	"gpt-image-2.5":          {Capability: MediaCapImage, SortPriority: 250, SizeMode: SizeModePixelSize},
+	"gpt-image-2.5-flare":    {Capability: MediaCapImage, SortPriority: 250, SizeMode: SizeModePixelSize},
+	"gpt-image-2.5-sunburst": {Capability: MediaCapImage, SortPriority: 250, SizeMode: SizeModePixelSize},
+	"gpt-image-2.6":          {Capability: MediaCapImage, SortPriority: 260, SizeMode: SizeModePixelSize},
 	// Gemini 图片模型走 /v1beta 原生协议，与 /v1/images/generations 不兼容，
 	// 故不纳入——列在这里只会让用户选中后收到 404。
 }
@@ -229,7 +232,13 @@ func ClassifyModels(platform string, allowImage bool, models []string,
 		seen[name] = struct{}{}
 		out = append(out, buildModelOption(name, spec, pricing))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	sort.Slice(out, func(i, j int) bool {
+		pi, pj := mediaModels[out[i].Name].SortPriority, mediaModels[out[j].Name].SortPriority
+		if pi != pj {
+			return pi > pj
+		}
+		return out[i].Name < out[j].Name
+	})
 	return out
 }
 
