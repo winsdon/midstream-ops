@@ -310,8 +310,9 @@ function tpsOf(outputTokens: number, durationMsSum: number): number | null {
   return outputTokens / (durationMsSum / 1000)
 }
 
-function cacheOf(cacheRead: number, input: number): number | null {
-  const total = cacheRead + input
+/** 与后端 metrics.CacheHitRate、sub2api 同口径：read / (input + creation + read)。 */
+function cacheOf(cacheRead: number, cacheCreation: number, input: number): number | null {
+  const total = cacheRead + cacheCreation + input
   if (!Number.isFinite(total) || total <= 0) return null
   return (cacheRead / total) * 100
 }
@@ -338,7 +339,7 @@ export function cellTip(
     durationP50: bar.duration_p50,
     durationP90: bar.duration_p90,
     tps: tpsOf(bar.output_tokens, bar.duration_ms_sum),
-    cache: cacheOf(bar.cache_read_tokens, bar.input_tokens),
+    cache: cacheOf(bar.cache_read_tokens, bar.cache_creation_tokens, bar.input_tokens),
     rpm: rpm(bar.ok, opts.cellMinutes)
   }
 }

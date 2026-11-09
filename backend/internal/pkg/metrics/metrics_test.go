@@ -27,10 +27,11 @@ func TestSLAPercent(t *testing.T) {
 
 func TestCacheHitRate(t *testing.T) {
 	cases := []struct {
-		name      string
-		cacheRead int64
-		input     int64
-		want      *float64
+		name          string
+		cacheRead     int64
+		cacheCreation int64
+		input         int64
+		want          *float64
 	}{
 		{name: "命中一半", cacheRead: 50, input: 50, want: f(50)},
 		{name: "全命中", cacheRead: 100, input: 0, want: f(100)},
@@ -38,10 +39,14 @@ func TestCacheHitRate(t *testing.T) {
 		{name: "完全没命中", cacheRead: 0, input: 100, want: f(0)},
 		// 两边都 0 = 没走 token 的请求，不参与比例
 		{name: "无样本返回 nil 而不是 0", cacheRead: 0, input: 0, want: nil},
+		// 对齐 sub2api：分母含缓存写入。Claude 流量 input 只剩几十 token，
+		// 漏掉 creation 会把 887445/(440+887445) 算成 99.95%，实际 37.14%
+		{name: "缓存写入计入分母", cacheRead: 887445, cacheCreation: 1501425, input: 440, want: f(887445.0 / (440 + 1501425 + 887445) * 100)},
+		{name: "只有缓存写入", cacheRead: 0, cacheCreation: 100, input: 0, want: f(0)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			assertFloatPtr(t, CacheHitRate(c.cacheRead, c.input), c.want)
+			assertFloatPtr(t, CacheHitRate(c.cacheRead, c.cacheCreation, c.input), c.want)
 		})
 	}
 }

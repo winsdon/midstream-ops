@@ -321,7 +321,7 @@ func TestBuildStatusBoardFiltersAndKeepsOrder(t *testing.T) {
 func TestBuildStatusBoardWindowTotals(t *testing.T) {
 	now, window := boardNow(), boardWindow()
 	points := []repository.GroupStatusTimelinePoint{
-		{GroupID: 1, Bucket: bucketAt(now, window, 0), Ok: 90, Err: 10, InputTokens: 300, CacheReadTokens: 100},
+		{GroupID: 1, Bucket: bucketAt(now, window, 0), Ok: 90, Err: 10, InputTokens: 200, CacheCreationTokens: 100, CacheReadTokens: 100},
 		{GroupID: 1, Bucket: bucketAt(now, window, 3), Ok: 100, InputTokens: 0, CacheReadTokens: 100},
 	}
 	board := buildStatusBoard([]repository.PGGroup{group(1, "g")}, points, nil, now, window)
@@ -329,7 +329,7 @@ func TestBuildStatusBoardWindowTotals(t *testing.T) {
 	if card.SuccessText != "95.0%" {
 		t.Errorf("success = %q, want 95.0%%（190/200）", card.SuccessText)
 	}
-	// 缓存率 = 200 / (300 + 200) = 40%
+	// 缓存率 = 200 / (200 + 100 + 200) = 40%（缓存写入计入分母，对齐 sub2api）
 	if card.CacheText != "40.0%" {
 		t.Errorf("cache = %q, want 40.0%%", card.CacheText)
 	}

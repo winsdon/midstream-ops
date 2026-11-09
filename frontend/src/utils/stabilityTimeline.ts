@@ -44,6 +44,7 @@ export interface TimelineBar {
   duration_ms_sum: number
   input_tokens: number
   cache_read_tokens: number
+  cache_creation_tokens: number
 }
 
 /** 窗口 → 显示格数。必须整除 60。 */
@@ -140,7 +141,8 @@ export function barFromPoint(p: TimelinePoint): Omit<TimelineBar, 't'> {
     output_tokens: p.output_tokens ?? 0,
     duration_ms_sum: p.duration_ms_sum ?? 0,
     input_tokens: p.input_tokens ?? 0,
-    cache_read_tokens: p.cache_read_tokens ?? 0
+    cache_read_tokens: p.cache_read_tokens ?? 0,
+    cache_creation_tokens: p.cache_creation_tokens ?? 0
   }
 }
 
@@ -169,7 +171,8 @@ function mergeBars(a: Omit<TimelineBar, 't'>, b: Omit<TimelineBar, 't'>): Omit<T
     output_tokens: sumField(a.output_tokens, b.output_tokens),
     duration_ms_sum: sumField(a.duration_ms_sum, b.duration_ms_sum),
     input_tokens: sumField(a.input_tokens, b.input_tokens),
-    cache_read_tokens: sumField(a.cache_read_tokens, b.cache_read_tokens)
+    cache_read_tokens: sumField(a.cache_read_tokens, b.cache_read_tokens),
+    cache_creation_tokens: sumField(a.cache_creation_tokens, b.cache_creation_tokens)
   }
 }
 
@@ -248,7 +251,8 @@ export function mergeTimelines(list: readonly (readonly TimelinePoint[])[]): Tim
         output_tokens: merged.output_tokens,
         duration_ms_sum: merged.duration_ms_sum,
         input_tokens: merged.input_tokens,
-        cache_read_tokens: merged.cache_read_tokens
+        cache_read_tokens: merged.cache_read_tokens,
+        cache_creation_tokens: merged.cache_creation_tokens
       })
     }
   }

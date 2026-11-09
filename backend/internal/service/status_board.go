@@ -45,10 +45,11 @@ type blockStat struct {
 
 // groupStat 单分组整窗累计（底部两个数用）。
 type groupStat struct {
-	ok    int64
-	err   int64
-	input int64
-	cache int64
+	ok       int64
+	err      int64
+	input    int64
+	cache    int64
+	creation int64
 }
 
 // buildStatusBoard 把分组与时间线点组装成一张看板的视图模型（纯函数）。
@@ -128,6 +129,7 @@ func buildStatusBoard(
 		totals[slot].err += p.Err
 		totals[slot].input += p.InputTokens
 		totals[slot].cache += p.CacheReadTokens
+		totals[slot].creation += p.CacheCreationTokens
 	}
 
 	board := statusimg.Board{
@@ -139,7 +141,7 @@ func buildStatusBoard(
 	for i, g := range visible {
 		stat := totals[i]
 		sla := metrics.SLAPercent(stat.ok, stat.err)
-		cache := metrics.CacheHitRate(stat.cache, stat.input)
+		cache := metrics.CacheHitRate(stat.cache, stat.creation, stat.input)
 
 		card := statusimg.Card{
 			Name:        g.Name,

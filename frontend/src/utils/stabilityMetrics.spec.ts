@@ -384,7 +384,8 @@ describe('cardFromRow / cardFromSection', () => {
           output_tokens: 10300,
           duration_ms_sum: 1000,
           input_tokens: 37,
-          cache_read_tokens: 963
+          cache_read_tokens: 963,
+          cache_creation_tokens: 1000
         }
       ],
       60,
@@ -397,7 +398,8 @@ describe('cardFromRow / cardFromSection', () => {
     expect(tip.errorRate).toBe(0)
     expect(tip.firstTokenP50).toBe(8000)
     expect(tip.tps).toBe(10300)
-    expect(tip.cache).toBeCloseTo(96.3, 0)
+    // 缓存写入计入分母（对齐 sub2api）：963 / (37 + 1000 + 963)
+    expect(tip.cache).toBeCloseTo(48.15, 1)
     expect(tip.rpm).toBe(2)
   })
 

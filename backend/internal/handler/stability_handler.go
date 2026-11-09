@@ -162,7 +162,7 @@ func (h *StabilityHandler) Passive(c *gin.Context) {
 			"first_token_p50":   r.FirstTokP50,
 			"first_token_p90":   r.FirstTokP90,
 			"tokens_per_second": metrics.TokensPerSecond(r.OutputTokens, r.DurationMsSum),
-			"cache_rate":        metrics.CacheHitRate(r.CacheReadTokens, r.InputTokens),
+			"cache_rate":        metrics.CacheHitRate(r.CacheReadTokens, r.CacheCreationTokens, r.InputTokens),
 		}
 		attachProvider(item, r.AccountID, linkMap, nameByID)
 		attachGroups(item, r.AccountID, groups)
@@ -456,19 +456,20 @@ func probeDTO(pr *repository.ProbeResult) gin.H {
 const timelineBarCount = 60
 
 type timelineDTO struct {
-	T               string   `json:"t"`
-	Ok              int64    `json:"ok"`
-	Err             int64    `json:"err"`
-	DurationAvg     *float64 `json:"duration_avg"`
-	DurationP50     *float64 `json:"duration_p50"`
-	DurationP90     *float64 `json:"duration_p90"`
-	FirstTokenAvg   *float64 `json:"first_token_avg"`
-	FirstTokenP50   *float64 `json:"first_token_p50"`
-	FirstTokenP90   *float64 `json:"first_token_p90"`
-	OutputTokens    int64    `json:"output_tokens"`
-	DurationMsSum   float64  `json:"duration_ms_sum"`
-	InputTokens     int64    `json:"input_tokens"`
-	CacheReadTokens int64    `json:"cache_read_tokens"`
+	T                   string   `json:"t"`
+	Ok                  int64    `json:"ok"`
+	Err                 int64    `json:"err"`
+	DurationAvg         *float64 `json:"duration_avg"`
+	DurationP50         *float64 `json:"duration_p50"`
+	DurationP90         *float64 `json:"duration_p90"`
+	FirstTokenAvg       *float64 `json:"first_token_avg"`
+	FirstTokenP50       *float64 `json:"first_token_p50"`
+	FirstTokenP90       *float64 `json:"first_token_p90"`
+	OutputTokens        int64    `json:"output_tokens"`
+	DurationMsSum       float64  `json:"duration_ms_sum"`
+	InputTokens         int64    `json:"input_tokens"`
+	CacheReadTokens     int64    `json:"cache_read_tokens"`
+	CacheCreationTokens int64    `json:"cache_creation_tokens"`
 }
 
 // timelineBucket 窗口均分成 60 桶：5m→5s，1h→1min，24h→24min。
@@ -483,19 +484,20 @@ func groupTimeline(points []repository.PassiveTimelinePoint) map[int64][]timelin
 	out := make(map[int64][]timelineDTO)
 	for _, p := range points {
 		out[p.AccountID] = append(out[p.AccountID], timelineDTO{
-			T:               p.Bucket.UTC().Format(time.RFC3339),
-			Ok:              p.Ok,
-			Err:             p.Err,
-			DurationAvg:     p.DurationAvg,
-			DurationP50:     p.DurationP50,
-			DurationP90:     p.DurationP90,
-			FirstTokenAvg:   p.FirstTokAvg,
-			FirstTokenP50:   p.FirstTokP50,
-			FirstTokenP90:   p.FirstTokP90,
-			OutputTokens:    p.OutputTokens,
-			DurationMsSum:   p.DurationMsSum,
-			InputTokens:     p.InputTokens,
-			CacheReadTokens: p.CacheReadTokens,
+			T:                   p.Bucket.UTC().Format(time.RFC3339),
+			Ok:                  p.Ok,
+			Err:                 p.Err,
+			DurationAvg:         p.DurationAvg,
+			DurationP50:         p.DurationP50,
+			DurationP90:         p.DurationP90,
+			FirstTokenAvg:       p.FirstTokAvg,
+			FirstTokenP50:       p.FirstTokP50,
+			FirstTokenP90:       p.FirstTokP90,
+			OutputTokens:        p.OutputTokens,
+			DurationMsSum:       p.DurationMsSum,
+			InputTokens:         p.InputTokens,
+			CacheReadTokens:     p.CacheReadTokens,
+			CacheCreationTokens: p.CacheCreationTokens,
 		})
 	}
 	return out

@@ -206,7 +206,7 @@ func TestGroupTimelineByAccountKeepsTimeOrder(t *testing.T) {
 func TestGroupTimelineCopiesLatencyFields(t *testing.T) {
 	p50 := 8000.0
 	grouped := groupTimeline([]repository.PassiveTimelinePoint{
-		{AccountID: 1, Bucket: time.Unix(0, 0).UTC(), Ok: 3, Err: 0, FirstTokP50: &p50, OutputTokens: 90, DurationMsSum: 3000, CacheReadTokens: 10, InputTokens: 40},
+		{AccountID: 1, Bucket: time.Unix(0, 0).UTC(), Ok: 3, Err: 0, FirstTokP50: &p50, OutputTokens: 90, DurationMsSum: 3000, CacheReadTokens: 10, CacheCreationTokens: 20, InputTokens: 40},
 	})
 	got := grouped[1][0]
 	if got.FirstTokenP50 == nil || *got.FirstTokenP50 != 8000 {
@@ -215,8 +215,8 @@ func TestGroupTimelineCopiesLatencyFields(t *testing.T) {
 	if got.OutputTokens != 90 || got.DurationMsSum != 3000 {
 		t.Errorf("output/duration = %d/%v", got.OutputTokens, got.DurationMsSum)
 	}
-	if got.CacheReadTokens != 10 || got.InputTokens != 40 {
-		t.Errorf("cache/input = %d/%d", got.CacheReadTokens, got.InputTokens)
+	if got.CacheReadTokens != 10 || got.CacheCreationTokens != 20 || got.InputTokens != 40 {
+		t.Errorf("read/creation/input = %d/%d/%d", got.CacheReadTokens, got.CacheCreationTokens, got.InputTokens)
 	}
 }
 
@@ -268,7 +268,7 @@ func TestTokensPerSecondMovedToMetrics(t *testing.T) {
 }
 
 func TestCacheHitRateMovedToMetrics(t *testing.T) {
-	got := metrics.CacheHitRate(912, 88)
+	got := metrics.CacheHitRate(912, 0, 88)
 	if got == nil || *got < 91.19 || *got > 91.21 {
 		t.Errorf("912/(912+88) = %v, want 91.2", got)
 	}

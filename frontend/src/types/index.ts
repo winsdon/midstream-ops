@@ -512,6 +512,7 @@ export interface TimelinePoint {
   duration_ms_sum?: number
   input_tokens?: number
   cache_read_tokens?: number
+  cache_creation_tokens?: number
 }
 
 export interface ProbeResult {

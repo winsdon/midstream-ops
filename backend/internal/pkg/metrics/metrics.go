@@ -23,10 +23,13 @@ func SLAPercent(success, errCount int64) *float64 {
 	return &v
 }
 
-// CacheHitRate 缓存命中率（0–100）：cache_read / (input + cache_read)。
-// 两边都 0 返回 nil（没走 token 的请求，不是命中率 0）。
-func CacheHitRate(cacheRead, input int64) *float64 {
-	total := cacheRead + input
+// CacheHitRate 缓存命中率（0–100）：cache_read / (input + cache_creation + cache_read)。
+//
+// 与 sub2api 使用记录趋势图、渠道监控同一口径。usage_logs.input_tokens 已扣掉
+// 缓存部分，Claude 流量往往只剩几十 token；分母漏掉 cache_creation 会把命中率
+// 抬到 99.9%（页面显示 100%）。全 0 返回 nil（没走 token 的请求，不是命中率 0）。
+func CacheHitRate(cacheRead, cacheCreation, input int64) *float64 {
+	total := cacheRead + cacheCreation + input
 	if total <= 0 {
 		return nil
 	}

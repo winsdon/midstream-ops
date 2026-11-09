@@ -323,7 +323,7 @@ export MONITOR_CREDENTIALS_KEY="<上面生成的 base64>"
 ### 底部两个数：整窗口径
 
 - **成功率（SLA）** = 成功 ÷（成功 + SLA 口径失败），整窗累计。
-- **缓存率** = cache_read ÷ (input + cache_read)，整窗累计。
+- **缓存率** = cache_read ÷ (input + cache_creation + cache_read)，整窗累计。与 sub2api 使用记录趋势图、渠道监控同口径：sub2api 落库的 input_tokens 已扣掉缓存部分，Claude 流量往往只剩几十 token，分母若漏掉 cache_creation 会把命中率抬到 99.9%（页面显示 100%）。
 - 两者都由 `internal/pkg/metrics` 计算（`SLAPercent` / `CacheHitRate`），返回 `*float64`：**无样本时是「-」而不是「0%」** —— 0% 缓存率表示「完全没命中」，与「这批请求根本没走 token」是两件事。稳定性页的被动表也用同一份实现，两处数字不会漂移。
 
 ### SLA 失败口径（与稳定性页一致）

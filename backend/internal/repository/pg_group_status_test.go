@@ -14,14 +14,14 @@ func TestGroupStatusTimeline(t *testing.T) {
 	ctx, pg, pool := pelicanTestPool(t)
 	origin := time.Date(2026, 4, 8, 11, 0, 0, 0, time.UTC)
 	if _, err := pool.Exec(ctx, `
- CREATE TEMP TABLE usage_logs(id bigint, group_id bigint, account_id bigint, created_at timestamptz, first_token_ms double precision, input_tokens bigint, cache_read_tokens bigint);
+ CREATE TEMP TABLE usage_logs(id bigint, group_id bigint, account_id bigint, created_at timestamptz, first_token_ms double precision, input_tokens bigint, cache_read_tokens bigint, cache_creation_tokens bigint);
  CREATE TEMP TABLE ops_error_logs(id bigint, group_id bigint, account_id bigint, created_at timestamptz, status_code int, is_business_limited boolean);
  INSERT INTO usage_logs VALUES
-   (1,10,1,'2026-04-08 11:01:00+00',1000,100,50),
-   (2,10,1,'2026-04-08 11:02:00+00',3000,100,50),
-   (3,10,2,'2026-04-08 11:03:00+00',5000,200,100),
-   (4,20,1,'2026-04-08 11:01:00+00',NULL,10,0),
-   (5,NULL,1,'2026-04-08 11:01:00+00',1000,999,999);
+   (1,10,1,'2026-04-08 11:01:00+00',1000,100,50,10),
+   (2,10,1,'2026-04-08 11:02:00+00',3000,100,50,20),
+   (3,10,2,'2026-04-08 11:03:00+00',5000,200,100,30),
+   (4,20,1,'2026-04-08 11:01:00+00',NULL,10,0,0),
+   (5,NULL,1,'2026-04-08 11:01:00+00',1000,999,999,999);
  INSERT INTO ops_error_logs VALUES
    (1,10,1,'2026-04-08 11:04:00+00',500,false),
    (2,10,1,'2026-04-08 11:05:00+00',429,false),
@@ -63,8 +63,9 @@ func TestGroupStatusTimeline(t *testing.T) {
 	if g10.FirstTokP50 == nil || *g10.FirstTokP50 != 3000 {
 		t.Errorf("group 10 first_tok_p50 = %v, want 3000", g10.FirstTokP50)
 	}
-	if g10.InputTokens != 400 || g10.CacheReadTokens != 200 {
-		t.Errorf("group 10 input/cache = %d/%d, want 400/200", g10.InputTokens, g10.CacheReadTokens)
+	if g10.InputTokens != 400 || g10.CacheReadTokens != 200 || g10.CacheCreationTokens != 60 {
+		t.Errorf("group 10 input/read/creation = %d/%d/%d, want 400/200/60",
+			g10.InputTokens, g10.CacheReadTokens, g10.CacheCreationTokens)
 	}
 
 	// group 20 窗口内只有失败：必须出现（FULL OUTER JOIN 的意义），且不能凭空造样本。
@@ -91,13 +92,13 @@ func TestGroupStatusTimelineSplitsBuckets(t *testing.T) {
 	ctx, pg, pool := pelicanTestPool(t)
 	origin := time.Date(2026, 4, 8, 11, 0, 0, 0, time.UTC)
 	if _, err := pool.Exec(ctx, `
- CREATE TEMP TABLE usage_logs(id bigint, group_id bigint, account_id bigint, created_at timestamptz, first_token_ms double precision, input_tokens bigint, cache_read_tokens bigint);
+ CREATE TEMP TABLE usage_logs(id bigint, group_id bigint, account_id bigint, created_at timestamptz, first_token_ms double precision, input_tokens bigint, cache_read_tokens bigint, cache_creation_tokens bigint);
  CREATE TEMP TABLE ops_error_logs(id bigint, group_id bigint, account_id bigint, created_at timestamptz, status_code int, is_business_limited boolean);
  INSERT INTO usage_logs VALUES
-   (1,10,1,'2026-04-08 11:01:00+00',1000,1,0),
-   (2,10,1,'2026-04-08 11:04:00+00',1000,1,0),
-   (3,10,1,'2026-04-08 11:05:00+00',1000,1,0),
-   (4,10,1,'2026-04-08 10:59:00+00',1000,1,0);
+   (1,10,1,'2026-04-08 11:01:00+00',1000,1,0,0),
+   (2,10,1,'2026-04-08 11:04:00+00',1000,1,0,0),
+   (3,10,1,'2026-04-08 11:05:00+00',1000,1,0,0),
+   (4,10,1,'2026-04-08 10:59:00+00',1000,1,0,0);
  INSERT INTO ops_error_logs VALUES (1,10,1,'2026-04-08 11:04:30+00',500,false);
  `); err != nil {
 		t.Fatal(err)
@@ -137,7 +138,7 @@ func TestGroupStatusTimelineNilIgnoredKeepsErrors(t *testing.T) {
 	ctx, pg, pool := pelicanTestPool(t)
 	origin := time.Date(2026, 4, 8, 11, 0, 0, 0, time.UTC)
 	if _, err := pool.Exec(ctx, `
- CREATE TEMP TABLE usage_logs(id bigint, group_id bigint, account_id bigint, created_at timestamptz, first_token_ms double precision, input_tokens bigint, cache_read_tokens bigint);
+ CREATE TEMP TABLE usage_logs(id bigint, group_id bigint, account_id bigint, created_at timestamptz, first_token_ms double precision, input_tokens bigint, cache_read_tokens bigint, cache_creation_tokens bigint);
  CREATE TEMP TABLE ops_error_logs(id bigint, group_id bigint, account_id bigint, created_at timestamptz, status_code int, is_business_limited boolean);
  INSERT INTO ops_error_logs VALUES
    (1,10,1,'2026-04-08 11:01:00+00',400,false),

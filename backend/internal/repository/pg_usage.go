@@ -272,21 +272,22 @@ func (p *PG) CountUsersCreated(ctx context.Context, start, end time.Time) (int64
 
 // PassiveStabilityRow 被动稳定性行（真实流量分位数 + SLA 口径失败数）。
 type PassiveStabilityRow struct {
-	AccountID       int64
-	AccountName     string
-	Platform        string
-	Requests        int64 // 成功请求数（usage_logs 只记成功）
-	ErrorCount      int64 // SLA 口径失败（ops_error_logs，已排除业务限制）
-	DurationAvg     *float64
-	DurationP50     *float64
-	DurationP90     *float64
-	FirstTokAvg     *float64
-	FirstTokP50     *float64
-	FirstTokP90     *float64
-	OutputTokens    int64
-	DurationMsSum   float64 // 仅用于算 TPS，不进 DTO
-	InputTokens     int64
-	CacheReadTokens int64
+	AccountID           int64
+	AccountName         string
+	Platform            string
+	Requests            int64 // 成功请求数（usage_logs 只记成功）
+	ErrorCount          int64 // SLA 口径失败（ops_error_logs，已排除业务限制）
+	DurationAvg         *float64
+	DurationP50         *float64
+	DurationP90         *float64
+	FirstTokAvg         *float64
+	FirstTokP50         *float64
+	FirstTokP90         *float64
+	OutputTokens        int64
+	DurationMsSum       float64 // 仅用于算 TPS，不进 DTO
+	InputTokens         int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
 }
 
 // normalizeIgnoredStatusCodes 保证传给 PG 的是非 nil 切片。
@@ -323,7 +324,8 @@ func (p *PG) PassiveStability(ctx context.Context, since time.Time, ignoredStatu
 		           COALESCE(SUM(ul.output_tokens) FILTER (WHERE ul.duration_ms > 0), 0) AS output_tokens,
 		           COALESCE(SUM(ul.duration_ms) FILTER (WHERE ul.duration_ms > 0), 0)::float8 AS duration_ms_sum,
 		           COALESCE(SUM(ul.input_tokens), 0) AS input_tokens,
-		           COALESCE(SUM(ul.cache_read_tokens), 0) AS cache_read_tokens
+		           COALESCE(SUM(ul.cache_read_tokens), 0) AS cache_read_tokens,
+		           COALESCE(SUM(ul.cache_creation_tokens), 0) AS cache_creation_tokens
 		    FROM usage_logs ul
 		    WHERE ul.created_at >= $1
 		    GROUP BY 1
@@ -352,7 +354,8 @@ func (p *PG) PassiveStability(ctx context.Context, since time.Time, ignoredStatu
 		       COALESCE(u.output_tokens, 0),
 		       COALESCE(u.duration_ms_sum, 0),
 		       COALESCE(u.input_tokens, 0),
-		       COALESCE(u.cache_read_tokens, 0)
+		       COALESCE(u.cache_read_tokens, 0),
+		       COALESCE(u.cache_creation_tokens, 0)
 		FROM usage_agg u
 		FULL OUTER JOIN error_agg e ON e.account_id = u.account_id
 		LEFT JOIN accounts a ON a.id = COALESCE(u.account_id, e.account_id)`, since, normalizeIgnoredStatusCodes(ignoredStatusCodes))
@@ -366,7 +369,7 @@ func (p *PG) PassiveStability(ctx context.Context, since time.Time, ignoredStatu
 		if err := rows.Scan(&r.AccountID, &r.AccountName, &r.Platform, &r.Requests, &r.ErrorCount,
 			&r.DurationAvg, &r.DurationP50, &r.DurationP90,
 			&r.FirstTokAvg, &r.FirstTokP50, &r.FirstTokP90,
-			&r.OutputTokens, &r.DurationMsSum, &r.InputTokens, &r.CacheReadTokens); err != nil {
+			&r.OutputTokens, &r.DurationMsSum, &r.InputTokens, &r.CacheReadTokens, &r.CacheCreationTokens); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -376,20 +379,21 @@ func (p *PG) PassiveStability(ctx context.Context, since time.Time, ignoredStatu
 
 // PassiveTimelinePoint 单账号单时间桶的成败 + 延迟/吞吐（空桶不返回）。
 type PassiveTimelinePoint struct {
-	AccountID       int64
-	Bucket          time.Time
-	Ok              int64
-	Err             int64
-	DurationAvg     *float64
-	DurationP50     *float64
-	DurationP90     *float64
-	FirstTokAvg     *float64
-	FirstTokP50     *float64
-	FirstTokP90     *float64
-	OutputTokens    int64
-	DurationMsSum   float64
-	InputTokens     int64
-	CacheReadTokens int64
+	AccountID           int64
+	Bucket              time.Time
+	Ok                  int64
+	Err                 int64
+	DurationAvg         *float64
+	DurationP50         *float64
+	DurationP90         *float64
+	FirstTokAvg         *float64
+	FirstTokP50         *float64
+	FirstTokP90         *float64
+	OutputTokens        int64
+	DurationMsSum       float64
+	InputTokens         int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
 }
 
 // PassiveStabilityTimeline 按账号 + date_bin 分桶。
@@ -415,7 +419,8 @@ func (p *PG) PassiveStabilityTimeline(ctx context.Context, since time.Time, buck
 		           COALESCE(SUM(output_tokens) FILTER (WHERE duration_ms > 0), 0) AS output_tokens,
 		           COALESCE(SUM(duration_ms) FILTER (WHERE duration_ms > 0), 0)::float8 AS duration_ms_sum,
 		           COALESCE(SUM(input_tokens), 0) AS input_tokens,
-		           COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens
+		           COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+		           COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens
 		    FROM usage_logs
 		    WHERE created_at >= $1
 		    GROUP BY 1, 2
@@ -445,7 +450,8 @@ func (p *PG) PassiveStabilityTimeline(ctx context.Context, since time.Time, buck
 		       COALESCE(u.output_tokens, 0),
 		       COALESCE(u.duration_ms_sum, 0),
 		       COALESCE(u.input_tokens, 0),
-		       COALESCE(u.cache_read_tokens, 0)
+		       COALESCE(u.cache_read_tokens, 0),
+		       COALESCE(u.cache_creation_tokens, 0)
 		FROM usage_b u
 		FULL OUTER JOIN error_b e
 		  ON e.account_id = u.account_id AND e.bucket = u.bucket
@@ -461,7 +467,7 @@ func (p *PG) PassiveStabilityTimeline(ctx context.Context, since time.Time, buck
 			&r.AccountID, &r.Bucket, &r.Ok, &r.Err,
 			&r.DurationAvg, &r.DurationP50, &r.DurationP90,
 			&r.FirstTokAvg, &r.FirstTokP50, &r.FirstTokP90,
-			&r.OutputTokens, &r.DurationMsSum, &r.InputTokens, &r.CacheReadTokens,
+			&r.OutputTokens, &r.DurationMsSum, &r.InputTokens, &r.CacheReadTokens, &r.CacheCreationTokens,
 		); err != nil {
 			return nil, err
 		}
@@ -473,15 +479,16 @@ func (p *PG) PassiveStabilityTimeline(ctx context.Context, since time.Time, buck
 // GroupStatusTimelinePoint 单分组单时间桶的成败 + 首字/缓存量（空桶不返回）。
 //
 // 只保留渠道状态图需要的字段：色块分数只看 SLA 与首字 P50，底部两个数看
-// SLA 与缓存率，所以不取耗时分位数、TPS 那些用不上的列。
+// SLA 与缓存率（分母含缓存写入，见 metrics.CacheHitRate），所以不取耗时分位数、TPS 那些用不上的列。
 type GroupStatusTimelinePoint struct {
-	GroupID         int64
-	Bucket          time.Time
-	Ok              int64
-	Err             int64
-	FirstTokP50     *float64
-	InputTokens     int64
-	CacheReadTokens int64
+	GroupID             int64
+	Bucket              time.Time
+	Ok                  int64
+	Err                 int64
+	FirstTokP50         *float64
+	InputTokens         int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
 }
 
 // GroupStatusTimeline 按分组 + date_bin 分桶。
@@ -507,7 +514,8 @@ func (p *PG) GroupStatusTimeline(ctx context.Context, since time.Time, bucket ti
 		           percentile_cont(0.5) WITHIN GROUP (ORDER BY first_token_ms)
 		               FILTER (WHERE first_token_ms IS NOT NULL) AS first_tok_p50,
 		           COALESCE(SUM(input_tokens), 0) AS input_tokens,
-		           COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens
+		           COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+		           COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens
 		    FROM usage_logs
 		    WHERE created_at >= $1 AND group_id IS NOT NULL
 		    GROUP BY 1, 2
@@ -530,7 +538,8 @@ func (p *PG) GroupStatusTimeline(ctx context.Context, since time.Time, bucket ti
 		       COALESCE(e.err, 0),
 		       u.first_tok_p50,
 		       COALESCE(u.input_tokens, 0),
-		       COALESCE(u.cache_read_tokens, 0)
+		       COALESCE(u.cache_read_tokens, 0),
+		       COALESCE(u.cache_creation_tokens, 0)
 		FROM usage_b u
 		FULL OUTER JOIN error_b e
 		  ON e.group_id = u.group_id AND e.bucket = u.bucket
@@ -544,7 +553,7 @@ func (p *PG) GroupStatusTimeline(ctx context.Context, since time.Time, bucket ti
 		var r GroupStatusTimelinePoint
 		if err := rows.Scan(
 			&r.GroupID, &r.Bucket, &r.Ok, &r.Err,
-			&r.FirstTokP50, &r.InputTokens, &r.CacheReadTokens,
+			&r.FirstTokP50, &r.InputTokens, &r.CacheReadTokens, &r.CacheCreationTokens,
 		); err != nil {
 			return nil, err
 		}
