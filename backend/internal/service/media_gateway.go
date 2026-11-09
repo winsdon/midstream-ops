@@ -130,6 +130,9 @@ func applyImageSizeParams(fields map[string]any, p MediaGenerateParams) {
 
 // GenerateImage 文生图（同步）。
 func (g *MediaGateway) GenerateImage(ctx context.Context, apiKey string, p MediaGenerateParams) ([]ImageResult, error) {
+	if MediaSizeModeOf(p.Model) == SizeModeImageSize {
+		return g.generateGeminiImage(ctx, apiKey, p, false)
+	}
 	payload := map[string]any{
 		"model":  p.Model,
 		"prompt": p.Prompt,
@@ -167,13 +170,16 @@ func (g *MediaGateway) GenerateImage(ctx context.Context, apiKey string, p Media
 // xAI 会回 400 Invalid base64-encoded image。
 //
 // Grok 用 JSON image.url；GPT 下载参考图后用 multipart image 文件上传，
-// 兼容只支持 multipart 的 OpenAI 上游。
+// 兼容只支持 multipart 的 OpenAI 上游；Gemini 下载后以 inlineData 内联。
 func (g *MediaGateway) EditImage(ctx context.Context, apiKey string, p MediaGenerateParams) ([]ImageResult, error) {
 	if len(allImageURLs(p)) == 0 {
 		return nil, fmt.Errorf("缺少参考图")
 	}
-	if MediaSizeModeOf(p.Model) == SizeModePixelSize {
+	switch MediaSizeModeOf(p.Model) {
+	case SizeModePixelSize:
 		return g.editImageMultipart(ctx, apiKey, p)
+	case SizeModeImageSize:
+		return g.generateGeminiImage(ctx, apiKey, p, true)
 	}
 
 	payload := map[string]any{

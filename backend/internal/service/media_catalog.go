@@ -58,6 +58,10 @@ const (
 	SizeModeAspectRatio MediaSizeMode = "aspect_ratio"
 	// SizeModePixelSize OpenAI 格式图片：size 为真实 "宽x高"。
 	SizeModePixelSize MediaSizeMode = "size"
+	// SizeModeImageSize Gemini 图片：走 /v1beta 原生 generateContent，
+	// imageConfig.aspectRatio + imageConfig.imageSize（1K/2K/4K）。
+	// sub2api 的 /v1/images/* 对 Gemini 系分组直接 404，只能走这条路径。
+	SizeModeImageSize MediaSizeMode = "image_size"
 )
 
 // grokAspectRatios xAI 支持的宽高比档位。
@@ -70,6 +74,17 @@ var grokAspectRatios = []string{
 
 // grokImageResolutions Grok 图片的分辨率档位（同时决定计费档）。
 var grokImageResolutions = []string{"1k", "2k"}
+
+// geminiAspectRatios Gemini 图片 imageConfig.aspectRatio 的取值。
+var geminiAspectRatios = []string{
+	"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9",
+}
+
+// geminiImageSizes Gemini 图片 imageConfig.imageSize 的取值，同时就是计费档。
+//
+// K 必须大写，上游不认小写。1K 放首位：前端以首项为默认值，
+// 而不填 imageSize 时上游出 1K 图却按 2K 计费——默认显式传 1K 才不吃亏。
+var geminiImageSizes = []string{ImageTier1K, ImageTier2K, ImageTier4K}
 
 // videoResolutions 视频分辨率档位。
 //
@@ -164,8 +179,14 @@ var mediaModels = map[string]mediaModelSpec{
 	"gpt-image-2.5-flare":    {Capability: MediaCapImage, SortPriority: 250, SizeMode: SizeModePixelSize},
 	"gpt-image-2.5-sunburst": {Capability: MediaCapImage, SortPriority: 250, SizeMode: SizeModePixelSize},
 	"gpt-image-2.6":          {Capability: MediaCapImage, SortPriority: 260, SizeMode: SizeModePixelSize},
-	// Gemini 图片模型走 /v1beta 原生协议，与 /v1/images/generations 不兼容，
-	// 故不纳入——列在这里只会让用户选中后收到 404。
+	// Gemini 图片（Nano Banana 系列）：走 /v1beta 原生 generateContent，
+	// 与 /v1/images/* 不兼容。标准价同样在 sub2api 的 LiteLLM 表里，本站查不到，
+	// 只有分组配了 image_price_* 时才能预估。
+	"gemini-nano-banana-2.1":         {Capability: MediaCapImage, SortPriority: 330, SizeMode: SizeModeImageSize},
+	"gemini-3.1-flash-image":         {Capability: MediaCapImage, SortPriority: 320, SizeMode: SizeModeImageSize},
+	"gemini-3.1-flash-image-preview": {Capability: MediaCapImage, SortPriority: 315, SizeMode: SizeModeImageSize},
+	"gemini-3-pro-image":             {Capability: MediaCapImage, SortPriority: 310, SizeMode: SizeModeImageSize},
+	"gemini-3-pro-image-preview":     {Capability: MediaCapImage, SortPriority: 305, SizeMode: SizeModeImageSize},
 }
 
 // MediaModelOption 提供给前端的一个模型选项。
@@ -212,6 +233,9 @@ func ClassifyModels(platform string, allowImage bool, models []string,
 		models = DefaultModelsForPlatform(platform)
 	}
 	videoAllowed := platform == "grok" || platform == "composite"
+	// Gemini 生图只能走 /v1beta，sub2api 只对 Gemini 系分组（composite 按模型
+	// 解析目标平台）放行；其他平台列出来，用户选中后只会收到报错。
+	geminiAllowed := platform == "gemini" || platform == "antigravity" || platform == "composite"
 
 	out := make([]MediaModelOption, 0, len(models))
 	seen := make(map[string]struct{}, len(models))
@@ -227,6 +251,9 @@ func ClassifyModels(platform string, allowImage bool, models []string,
 			continue
 		}
 		if spec.Capability == MediaCapVideo && !videoAllowed {
+			continue
+		}
+		if spec.SizeMode == SizeModeImageSize && !geminiAllowed {
 			continue
 		}
 		seen[name] = struct{}{}
@@ -255,9 +282,13 @@ func buildModelOption(name string, spec mediaModelSpec, pricing *repository.Medi
 
 	switch spec.Capability {
 	case MediaCapImage:
-		if spec.SizeMode == SizeModeAspectRatio {
+		switch spec.SizeMode {
+		case SizeModeAspectRatio:
 			opt.AspectRatios = append([]string(nil), grokAspectRatios...)
 			opt.Resolutions = append([]string(nil), grokImageResolutions...)
+		case SizeModeImageSize:
+			opt.AspectRatios = append([]string(nil), geminiAspectRatios...)
+			opt.Resolutions = append([]string(nil), geminiImageSizes...)
 		}
 		for _, tier := range []string{ImageTier1K, ImageTier2K, ImageTier4K} {
 			opt.PriceByTier[tier] = imageUnitPriceTicks(name, tier, pricing)
@@ -384,7 +415,8 @@ type MediaGenerateParams struct {
 	// AspectRatio 宽高比，仅 SizeModeAspectRatio 的模型有效（图片）；
 	// 视频模型对所有实现都接受该字段。
 	AspectRatio string
-	// ImageResolution Grok 图片的分辨率档（1k / 2k），仅 SizeModeAspectRatio 有效。
+	// ImageResolution 图片清晰度档：Grok（aspect_ratio 模式）为 1k / 2k，
+	// Gemini（image_size 模式）为 1K / 2K / 4K。pixel size 模式不接受。
 	//
 	// 与视频的 Resolution 分成两个字段而不是复用一个：两者取值域完全不同
 	// （1k/2k vs 480p/720p/1080p），复用会让「视频分辨率填了 1k」这类错误
@@ -492,6 +524,16 @@ func validateImageSizeParams(spec mediaModelSpec, p MediaGenerateParams) error {
 				return err
 			}
 		}
+	case SizeModeImageSize:
+		if p.Size != "" {
+			return fmt.Errorf("模型 %s 用宽高比与清晰度档控制画面，不接受像素尺寸参数", p.Model)
+		}
+		if p.AspectRatio != "" && !containsString(geminiAspectRatios, p.AspectRatio) {
+			return fmt.Errorf("宽高比 %s 不在支持列表内", p.AspectRatio)
+		}
+		if p.ImageResolution != "" && !containsString(geminiImageSizes, p.ImageResolution) {
+			return fmt.Errorf("清晰度仅支持 %s", strings.Join(geminiImageSizes, " / "))
+		}
 	}
 	return nil
 }
@@ -544,13 +586,20 @@ func EstimateCostTicks(p MediaGenerateParams, pricing *repository.MediaPricing) 
 // 本预估略高（image-quality 差 $0.02/张）。列表里展示的 cost_usd 取的是上游
 // 实扣，二者不一致时以实扣为准。
 func billingTierOf(spec mediaModelSpec, p MediaGenerateParams) string {
-	if spec.SizeMode == SizeModeAspectRatio {
+	switch spec.SizeMode {
+	case SizeModeAspectRatio:
 		switch strings.ToLower(strings.TrimSpace(p.ImageResolution)) {
 		case "2k":
 			return ImageTier2K
 		default:
 			return ImageTier1K
 		}
+	case SizeModeImageSize:
+		// imageSize 就是计费档；不填时上游按 2K 计费。
+		if containsString(geminiImageSizes, p.ImageResolution) {
+			return p.ImageResolution
+		}
+		return ImageTier2K
 	}
 	if p.Size == "" {
 		return ImageTier2K // 与 sub2api NormalizeImageBillingTierOrDefault 的兜底一致

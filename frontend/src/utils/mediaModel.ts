@@ -244,10 +244,23 @@ export function selectedModelOf(form: MediaFormState, key: MediaKey | null): Med
   return modelsForKind(key, form.kind).find((m) => m.name === form.model) ?? null
 }
 
+/**
+ * 该模型是否用「宽高比 + 清晰度档」控制画面（Grok 的 aspect_ratio 模式、
+ * Gemini 的 image_size 模式），而不是真实像素尺寸（gpt-image 的 size 模式）。
+ */
+export function usesAspectRatio(model: MediaModelOption | null | undefined): boolean {
+  return !!model && model.size_mode !== 'size'
+}
+
 /** 本次请求会落在哪个图片计费档，与后端 billingTierOf 同口径。 */
 export function billingTierOf(form: MediaFormState, model: MediaModelOption): ImageSizeTier {
   if (model.size_mode === 'aspect_ratio') {
     return form.imageResolution.toLowerCase() === '2k' ? '2K' : '1K'
+  }
+  if (model.size_mode === 'image_size') {
+    // imageSize 就是计费档；不填时上游按 2K 计费
+    const tier = form.imageResolution as ImageSizeTier
+    return tier === '1K' || tier === '2K' || tier === '4K' ? tier : '2K'
   }
   // 未指定尺寸时后端按 2K 兜底（对齐 sub2api NormalizeImageBillingTierOrDefault）
   return (imageSizeTier(form.size) || '2K') as ImageSizeTier
@@ -304,7 +317,7 @@ export function validateMediaForm(form: MediaFormState, key: MediaKey | null): s
   }
 
   if (form.n < 1 || form.n > IMAGE_MAX_N) return 'media.errors.badCount'
-  if (model.size_mode === 'aspect_ratio') {
+  if (usesAspectRatio(model)) {
     if (form.aspectRatio && !model.aspect_ratios?.includes(form.aspectRatio)) {
       return 'media.errors.badAspectRatio'
     }
@@ -384,6 +397,16 @@ export function mediaModelHintKey(name: string): string {
       return 'media.modelHints.grokImagineVideo'
     case 'grok-imagine-video-1.5':
       return 'media.modelHints.grokImagineVideo15'
+    case 'gemini-nano-banana-2.1':
+      return 'media.modelHints.geminiNanoBanana21'
+    case 'gemini-3.1-flash-image':
+      return 'media.modelHints.gemini31FlashImage'
+    case 'gemini-3.1-flash-image-preview':
+      return 'media.modelHints.gemini31FlashImagePreview'
+    case 'gemini-3-pro-image':
+      return 'media.modelHints.gemini3ProImage'
+    case 'gemini-3-pro-image-preview':
+      return 'media.modelHints.gemini3ProImagePreview'
     default:
       return ''
   }

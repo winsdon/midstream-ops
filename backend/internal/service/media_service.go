@@ -273,6 +273,11 @@ func (s *MediaService) submitImage(ctx context.Context, apiKey string,
 		s.discardSyncTask(ctx, task.ID, err)
 		return nil, err
 	}
+	if len(results) == 0 {
+		err := fmt.Errorf("上游未返回图片")
+		s.discardSyncTask(ctx, task.ID, err)
+		return nil, err
+	}
 
 	resultURL := ""
 	for _, result := range results {

@@ -133,46 +133,33 @@ func (g *MediaGateway) editImageMultipart(ctx context.Context, apiKey string, p 
 }
 
 func (g *MediaGateway) writeEditReference(ctx context.Context, w *multipart.Writer, rawURL string, index int) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("参考图地址无效")
-	}
-	if err := validateMediaRefURL(u); err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return fmt.Errorf("参考图地址无效")
-	}
-	// Reference hosts must never receive the gateway API key.
-	req.Header.Set("User-Agent", browserUA)
-	resp, err := g.refClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("下载失败")
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("下载失败（HTTP %d）", resp.StatusCode)
-	}
-	if resp.ContentLength > maxRefImageBytes {
-		return fmt.Errorf("参考图超过 20MB")
-	}
-	reader, sniffed, err := sniffRefImage(resp.Body)
+	ref, err := g.openRefImage(ctx, rawURL)
 	if err != nil {
 		return err
 	}
-	ct, ok := normalizeImageType(sniffed)
-	if !ok {
-		return ErrMediaBadImageType
-	}
+	defer ref.Close()
 	h := make(textproto.MIMEHeader)
-	h.Set("Content-Disposition", fmt.Sprintf("form-data; name=\"image\"; filename=\"ref-%d%s\"", index, allowedRefImageTypes[ct]))
-	h.Set("Content-Type", ct)
+	h.Set("Content-Disposition", fmt.Sprintf("form-data; name=\"image\"; filename=\"ref-%d%s\"", index, allowedRefImageTypes[ref.ContentType]))
+	h.Set("Content-Type", ref.ContentType)
 	part, err := w.CreatePart(h)
 	if err != nil {
 		return err
 	}
-	n, err := io.Copy(part, io.LimitReader(reader, maxRefImageBytes+1))
+	return ref.CopyTo(part)
+}
+
+// refImage 一张已通过校验、正在下载中的参考图。
+type refImage struct {
+	ContentType string
+	reader      io.Reader
+	body        io.Closer
+}
+
+func (r *refImage) Close() error { return r.body.Close() }
+
+// CopyTo 把图片内容写入 dst，超过 maxRefImageBytes 即报错。
+func (r *refImage) CopyTo(dst io.Writer) error {
+	n, err := io.Copy(dst, io.LimitReader(r.reader, maxRefImageBytes+1))
 	if err != nil {
 		return fmt.Errorf("读取参考图失败")
 	}
@@ -180,4 +167,45 @@ func (g *MediaGateway) writeEditReference(ctx context.Context, w *multipart.Writ
 		return fmt.Errorf("参考图超过 20MB")
 	}
 	return nil
+}
+
+// openRefImage 校验地址、经公网限定的 refClient 下载参考图并嗅探类型。
+// GPT multipart 与 Gemini inlineData 两条路径共用，公网与大小限制只维护一份。
+func (g *MediaGateway) openRefImage(ctx context.Context, rawURL string) (*refImage, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("参考图地址无效")
+	}
+	if err := validateMediaRefURL(u); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("参考图地址无效")
+	}
+	// Reference hosts must never receive the gateway API key.
+	req.Header.Set("User-Agent", browserUA)
+	resp, err := g.refClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("下载失败")
+	}
+	fail := func(err error) (*refImage, error) {
+		resp.Body.Close()
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fail(fmt.Errorf("下载失败（HTTP %d）", resp.StatusCode))
+	}
+	if resp.ContentLength > maxRefImageBytes {
+		return fail(fmt.Errorf("参考图超过 20MB"))
+	}
+	reader, sniffed, err := sniffRefImage(resp.Body)
+	if err != nil {
+		return fail(err)
+	}
+	ct, ok := normalizeImageType(sniffed)
+	if !ok {
+		return fail(ErrMediaBadImageType)
+	}
+	return &refImage{ContentType: ct, reader: reader, body: resp.Body}, nil
 }

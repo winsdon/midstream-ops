@@ -14,8 +14,10 @@ const client = createEmbedClient('/api/v1/embed/media')
  * - `aspect_ratio`：Grok 图片模型。用 aspect_ratio（14 档）+ resolution（1k/2k）。
  *   传 size 无效——sub2api 网关在转发前会主动删掉它。
  * - `size`：OpenAI 格式图片模型。用 size = "宽x高"，不认 aspect_ratio。
+ * - `image_size`：Gemini 图片模型（Nano Banana）。走 /v1beta 原生协议，
+ *   用 aspect_ratio + resolution（1K/2K/4K，即 imageSize），不认 size。
  */
-export type MediaSizeMode = 'aspect_ratio' | 'size'
+export type MediaSizeMode = 'aspect_ratio' | 'size' | 'image_size'
 
 /** 一个可选模型。 */
 export interface MediaModelOption {

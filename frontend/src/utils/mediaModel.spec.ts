@@ -15,6 +15,7 @@ import {
   isVideoKind,
   isGptImage25Model,
   mediaModelHintKey,
+  usesAspectRatio,
   mediaModelSelectOptions,
   needsUpload,
   needsImageURL,
@@ -525,5 +526,82 @@ describe('mediaModelSelectOptions', () => {
       { value: 'gpt-image-2.5-sunburst', label: 'gpt-image-2.5-sunburst', description: '更准、更慢，精修/成品' },
       { value: 'gpt-image-2.6', label: 'gpt-image-2.6', description: '最新一代 GPT 生图' }
     ])
+  })
+})
+
+/** Gemini（Nano Banana）key：image_size 模式，1K/2K/4K 档。 */
+function geminiKey(): MediaKey {
+  return {
+    id: 3,
+    name: 'banana',
+    masked_key: 'sk-...ef56',
+    group_name: 'gemini-group',
+    platform: 'gemini',
+    image_models: [
+      {
+        name: 'gemini-3.1-flash-image',
+        capability: 'image',
+        size_mode: 'image_size',
+        aspect_ratios: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'],
+        resolutions: ['1K', '2K', '4K'],
+        unit_price_ticks: 1_000_000_000,
+        price_by_tier: { '1K': 1_000_000_000, '2K': 1_500_000_000, '4K': 2_000_000_000 }
+      }
+    ],
+    video_models: [],
+    pricing_known: true
+  }
+}
+
+function geminiForm(overrides: Partial<ReturnType<typeof emptyMediaForm>> = {}) {
+  return {
+    ...emptyMediaForm(),
+    keyId: 3,
+    model: 'gemini-3.1-flash-image',
+    prompt: '蓝色机器人',
+    size: '',
+    aspectRatio: '16:9',
+    imageResolution: '1K',
+    ...overrides
+  }
+}
+
+describe('Gemini image_size 模式', () => {
+  it('宽高比控件对 aspect_ratio 与 image_size 模式都生效，size 模式不用', () => {
+    const [banana] = geminiKey().image_models
+    const [grok] = grokKey().image_models
+    const [gpt] = openaiKey().image_models
+    expect(usesAspectRatio(banana)).toBe(true)
+    expect(usesAspectRatio(grok)).toBe(true)
+    expect(usesAspectRatio(gpt)).toBe(false)
+    expect(usesAspectRatio(null)).toBe(false)
+  })
+
+  it('计费档取 imageSize，未填按 2K（与上游缺省计费一致）', () => {
+    const [model] = geminiKey().image_models
+    expect(billingTierOf(geminiForm({ imageResolution: '1K' }), model)).toBe('1K')
+    expect(billingTierOf(geminiForm({ imageResolution: '2K' }), model)).toBe('2K')
+    expect(billingTierOf(geminiForm({ imageResolution: '4K' }), model)).toBe('4K')
+    expect(billingTierOf(geminiForm({ imageResolution: '' }), model)).toBe('2K')
+  })
+
+  it('报价 = 档位单价 × 张数', () => {
+    const key = geminiKey()
+    expect(estimateTicks(geminiForm({ imageResolution: '4K', n: 2 }), key)).toBe(4_000_000_000)
+  })
+
+  it('档位与宽高比对着下发清单校验', () => {
+    const key = geminiKey()
+    expect(validateMediaForm(geminiForm(), key)).toBe('')
+    expect(validateMediaForm(geminiForm({ imageResolution: '1k' }), key)).toBe('media.errors.badResolution')
+    expect(validateMediaForm(geminiForm({ aspectRatio: '19.5:9' }), key)).toBe('media.errors.badAspectRatio')
+  })
+
+  it('每个模型都有带 Banana 别名的定位文案 key', () => {
+    expect(mediaModelHintKey('gemini-nano-banana-2.1')).toBe('media.modelHints.geminiNanoBanana21')
+    expect(mediaModelHintKey('gemini-3.1-flash-image')).toBe('media.modelHints.gemini31FlashImage')
+    expect(mediaModelHintKey('gemini-3.1-flash-image-preview')).toBe('media.modelHints.gemini31FlashImagePreview')
+    expect(mediaModelHintKey('gemini-3-pro-image')).toBe('media.modelHints.gemini3ProImage')
+    expect(mediaModelHintKey('gemini-3-pro-image-preview')).toBe('media.modelHints.gemini3ProImagePreview')
   })
 })

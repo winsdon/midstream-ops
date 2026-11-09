@@ -1108,7 +1108,12 @@ export default {
       grokImagineImageQuality: '更高质量生图',
       grokImagine: '高质量生图（按 image-quality 计费）',
       grokImagineVideo: '标准生视频',
-      grokImagineVideo15: '更高质量生视频'
+      grokImagineVideo15: '更高质量生视频',
+      geminiNanoBanana21: 'Nano Banana 2.1',
+      gemini31FlashImage: 'Nano Banana 2，速度快',
+      gemini31FlashImagePreview: 'Nano Banana 2 预览版',
+      gemini3ProImage: 'Nano Banana Pro，擅长复杂排版与文字渲染',
+      gemini3ProImagePreview: 'Nano Banana Pro 预览版'
     },
     errors: {
       notConfigured: '生图功能未启用',

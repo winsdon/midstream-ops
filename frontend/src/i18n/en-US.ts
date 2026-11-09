@@ -1112,7 +1112,12 @@ export default {
       grokImagineImageQuality: 'Higher-quality images',
       grokImagine: 'High-quality images (billed as image-quality)',
       grokImagineVideo: 'Standard video generation',
-      grokImagineVideo15: 'Higher-quality video'
+      grokImagineVideo15: 'Higher-quality video',
+      geminiNanoBanana21: 'Nano Banana 2.1',
+      gemini31FlashImage: 'Nano Banana 2 — fast',
+      gemini31FlashImagePreview: 'Nano Banana 2 (preview)',
+      gemini3ProImage: 'Nano Banana Pro — complex layouts and text rendering',
+      gemini3ProImagePreview: 'Nano Banana Pro (preview)'
     },
     errors: {
       notConfigured: 'Generation is not enabled',

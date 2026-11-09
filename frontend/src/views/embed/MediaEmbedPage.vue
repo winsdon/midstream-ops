@@ -269,14 +269,14 @@
               <!-- 图片参数 -->
               <template v-if="!isVideoKind(form.kind)">
                 <div class="media-design-controls">
-                  <!-- aspect_ratio 模式（Grok）：宽高比 + 分辨率档。
-                       传 size 对这类模型无效——sub2api 网关会在转发前删掉它。 -->
-                  <template v-if="selectedModel?.size_mode === 'aspect_ratio'">
+                  <!-- 宽高比模式（Grok aspect_ratio / Gemini image_size）：宽高比 + 清晰度档。
+                       传 size 对这类模型无效——Grok 的 size 会被网关删掉，Gemini 原生协议不认。 -->
+                  <template v-if="usesAspectRatio(selectedModel)">
                     <div class="space-y-2">
                       <label class="media-label">{{ t('media.form.aspectRatio') }}</label>
                       <div class="media-ratio-grid">
                         <button
-                          v-for="ratio in selectedModel.aspect_ratios ?? []"
+                          v-for="ratio in selectedModel?.aspect_ratios ?? []"
                           :key="ratio"
                           type="button"
                           class="media-ratio"
@@ -605,6 +605,7 @@ import {
   estimateTicks,
   isVideoKind,
   mediaModelHintKey,
+  usesAspectRatio,
   mediaModelSelectOptions,
   mediaStatusClass,
   modelsForKind,
@@ -839,11 +840,12 @@ function syncModelDefaults() {
     return
   }
 
-  if (model.size_mode === 'aspect_ratio') {
-    form.value.size = '' // 传了也会被网关删掉，留着只会触发后端的互斥校验
+  if (usesAspectRatio(model)) {
+    form.value.size = '' // Grok 传了会被网关删掉、Gemini 不认，留着只会触发后端的互斥校验
     if (!ratios.includes(form.value.aspectRatio)) {
       form.value.aspectRatio = ratios.includes('1:1') ? '1:1' : (ratios[0] ?? '')
     }
+    // 首项即默认档：Grok 为 1k，Gemini 为 1K（不填会按 2K 计费）
     if (!resolutions.includes(form.value.imageResolution)) {
       form.value.imageResolution = resolutions[0] ?? '1k'
     }
@@ -1056,9 +1058,9 @@ async function doSubmit() {
   busy.value = true
   formError.value = ''
   const clientRequestID = newClientRequestID()
-  // 两套尺寸参数互斥：aspect_ratio 模式的模型传 size 会被网关删掉、
+  // 两套尺寸参数互斥：宽高比模式（Grok / Gemini）的模型不认 size、
   // size 模式的模型不认 aspect_ratio。只按模式发一套。
-  const byRatio = selectedModel.value?.size_mode === 'aspect_ratio'
+  const byRatio = usesAspectRatio(selectedModel.value)
   try {
     const imageURLs =
       usingURLRefs.value
