@@ -384,6 +384,100 @@ func MediaSizeModeOf(model string) MediaSizeMode {
 	return mediaModels[model].SizeMode
 }
 
+// 图片质量档位。前四档全系通用，后两档仅 gpt-image 2.5 及更高版本支持。
+var (
+	imageQualitiesBase   = []string{"low", "medium", "high", "auto"}
+	imageQualities25Plus = []string{"xhigh", "max"}
+	imageOutputFormats   = []string{"png", "jpeg", "webp"}
+)
+
+// gptImageVersion 解析 gpt-image 版本号，如 gpt-image-2.5-flare → (2, 5)。
+//
+// 后缀（-flare / -sunburst）不影响版本。非 gpt-image 模型返回 false。
+func gptImageVersion(model string) (major, minor int, ok bool) {
+	rest, found := strings.CutPrefix(model, "gpt-image-")
+	if !found {
+		return 0, 0, false
+	}
+	parts := strings.SplitN(rest, "-", 2)
+	verParts := strings.SplitN(parts[0], ".", 2)
+	major, err := strconv.Atoi(verParts[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	if len(verParts) == 2 {
+		if minor, err = strconv.Atoi(verParts[1]); err != nil {
+			return 0, 0, false
+		}
+	}
+	return major, minor, true
+}
+
+// isGptImage25Plus 是否为 gpt-image-2.5 或更新的版本。
+//
+// 【按版本比，不比对字面量】硬编码清单在 gpt-image-2.6 上线时漏掉了它，
+// xhigh / max 两档白白不可用。新版本应当自动继承。
+func isGptImage25Plus(model string) bool {
+	major, minor, ok := gptImageVersion(model)
+	if !ok {
+		return false
+	}
+	return major > 2 || (major == 2 && minor >= 5)
+}
+
+// 上游对像素尺寸的硬约束（越界一律 400 Invalid image size）。
+const (
+	imageSizeMinPixels = 655360
+	imageSizeMaxPixels = 8294400
+	imageSizeMaxEdge   = 3840
+)
+
+// checkImageSizeBounds 校验尺寸是否在上游接受范围内。
+//
+// 【本地拦的理由】这些约束文档写得很清楚，但用户手上拿到的是一个下拉框，
+// 选了就该能用。旧的前端预设表里有 12 档越界（683/1365/3240 不是 16 的倍数、
+// 1024x576 像素不足、4096 超出最长边），一路走到上游只会收到英文 400。
+func checkImageSizeBounds(w, h int) error {
+	if w%16 != 0 || h%16 != 0 {
+		return fmt.Errorf("宽高须为 16 的倍数")
+	}
+	if max(w, h) > imageSizeMaxEdge {
+		return fmt.Errorf("最长边不能超过 %d", imageSizeMaxEdge)
+	}
+	if pixels := w * h; pixels < imageSizeMinPixels || pixels > imageSizeMaxPixels {
+		return fmt.Errorf("总像素须在 %d ~ %d 之间", imageSizeMinPixels, imageSizeMaxPixels)
+	}
+	return nil
+}
+
+// validateImageOptions 校验 quality / output_format / output_compression。
+//
+// 上游对未知档位返回 400 且不扣费，本地先拦是为了给出中文原因。
+// png 是无损编码，带压缩档位没有意义，一并拒掉而不是静默丢弃。
+func validateImageOptions(p MediaGenerateParams) error {
+	if p.Quality != "" {
+		allowed := imageQualitiesBase
+		if isGptImage25Plus(p.Model) {
+			allowed = append(append([]string{}, allowed...), imageQualities25Plus...)
+		}
+		if !containsString(allowed, p.Quality) {
+			return fmt.Errorf("质量档位仅支持 %s", strings.Join(allowed, " / "))
+		}
+	}
+	if p.OutputFormat != "" && !containsString(imageOutputFormats, p.OutputFormat) {
+		return fmt.Errorf("输出格式仅支持 %s", strings.Join(imageOutputFormats, " / "))
+	}
+	if p.OutputCompression != 0 {
+		if p.OutputCompression < 0 || p.OutputCompression > 100 {
+			return fmt.Errorf("压缩质量须在 0-100 之间")
+		}
+		if p.OutputFormat == "" || p.OutputFormat == "png" {
+			return fmt.Errorf("压缩质量仅对 jpeg / webp 生效")
+		}
+	}
+	return nil
+}
+
 // effectiveModel 返回上游实际会使用的模型名（考虑静默降级）。
 //
 // 这是费用预估的关键：用户选了 grok-imagine-video-1.5 做文生视频，
@@ -422,12 +516,16 @@ type MediaGenerateParams struct {
 	// （1k/2k vs 480p/720p/1080p），复用会让「视频分辨率填了 1k」这类错误
 	// 直到打上游才暴露。
 	ImageResolution string
-	Quality         string   // low | medium | high，仅 OpenAI 格式
-	Resolution      string   // 480p | 720p | 1080p，仅视频
-	Duration        int      // 1..15 秒
-	ImageURL        string   // 第一张参考图，须公网可达（图生图 / 图生视频）
-	ImageURLs       []string // 全部参考图（含第一张）；图生视频最多 mediaMaxRefImages 张
-	Stream          bool     // 是否请求流式预览（由上游支持时透传）
+	Quality         string // low | medium | high | auto（2.5+ 另有 xhigh | max），仅 OpenAI 格式
+	// OutputFormat 输出编码格式 png | jpeg | webp，仅 OpenAI 格式。
+	OutputFormat string
+	// OutputCompression 压缩质量 0-100，仅 jpeg / webp 有意义；png 是无损编码。
+	OutputCompression int
+	Resolution        string   // 480p | 720p | 1080p，仅视频
+	Duration          int      // 1..15 秒
+	ImageURL          string   // 第一张参考图，须公网可达（图生图 / 图生视频）
+	ImageURLs         []string // 全部参考图（含第一张）；图生视频最多 mediaMaxRefImages 张
+	Stream            bool     // 是否请求流式预览（由上游支持时透传）
 }
 
 // 参数边界。均来自上游的硬性约束，越界上游会 400/422。
@@ -469,6 +567,9 @@ func ValidateGenerateParams(p MediaGenerateParams) error {
 			if err := validateRefImages(p); err != nil {
 				return err
 			}
+		}
+		if err := validateImageOptions(p); err != nil {
+			return err
 		}
 		return validateImageSizeParams(spec, p)
 	case MediaKindText2Video, MediaKindImage2Video:
@@ -520,7 +621,11 @@ func validateImageSizeParams(spec mediaModelSpec, p MediaGenerateParams) error {
 			return fmt.Errorf("模型 %s 不接受分辨率档位参数", p.Model)
 		}
 		if p.Size != "" {
-			if _, _, err := parseImageSize(p.Size); err != nil {
+			w, h, err := parseImageSize(p.Size)
+			if err != nil {
+				return err
+			}
+			if err := checkImageSizeBounds(w, h); err != nil {
 				return err
 			}
 		}

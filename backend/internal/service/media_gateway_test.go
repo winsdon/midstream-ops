@@ -572,3 +572,54 @@ func asGatewayError(err error, target **MediaGatewayError) bool {
 	}
 	return ok
 }
+
+// 输出格式与压缩档位只发给 OpenAI 格式端点，且 png 不带压缩。
+func TestGenerateImageCarriesOutputFormat(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody = nil
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_, _ = io.WriteString(w, `{"data":[{"b64_json":"SU1H"}]}`)
+	}))
+	defer srv.Close()
+
+	g := NewMediaGateway(srv.URL)
+
+	if _, err := g.GenerateImage(context.Background(), testAPIKey, MediaGenerateParams{
+		Model: "gpt-image-2.6", Prompt: "x", N: 1, Size: "1024x1024",
+		Quality: "xhigh", OutputFormat: "webp", OutputCompression: 80,
+	}); err != nil {
+		t.Fatalf("生成失败: %v", err)
+	}
+	if gotBody["output_format"] != "webp" || gotBody["output_compression"] != float64(80) {
+		t.Fatalf("输出格式与压缩档位未透传: %v", gotBody)
+	}
+	if gotBody["quality"] != "xhigh" {
+		t.Fatalf("2.5+ 的高阶档位未透传: %v", gotBody)
+	}
+
+	// png 是无损编码，压缩档位不该发出去
+	if _, err := g.GenerateImage(context.Background(), testAPIKey, MediaGenerateParams{
+		Model: "gpt-image-2.6", Prompt: "x", N: 1, Size: "1024x1024",
+		OutputFormat: "png", OutputCompression: 80,
+	}); err != nil {
+		t.Fatalf("生成失败: %v", err)
+	}
+	if _, ok := gotBody["output_compression"]; ok {
+		t.Fatalf("png 不应携带 output_compression: %v", gotBody)
+	}
+
+	// Grok 走 aspect_ratio，输出格式不适用
+	if _, err := g.GenerateImage(context.Background(), testAPIKey, MediaGenerateParams{
+		Model: "grok-imagine-image", Prompt: "x", N: 1,
+		AspectRatio: "1:1", ImageResolution: "1k",
+		OutputFormat: "webp", OutputCompression: 80,
+	}); err != nil {
+		t.Fatalf("生成失败: %v", err)
+	}
+	for _, field := range []string{"output_format", "output_compression"} {
+		if _, ok := gotBody[field]; ok {
+			t.Fatalf("Grok 请求不应带 %s: %v", field, gotBody)
+		}
+	}
+}

@@ -96,7 +96,7 @@ type imagesResponse struct {
 	} `json:"usage"`
 }
 
-// applyImageSizeParams 把尺寸相关参数按模型的尺寸模式写进 fields。
+// applyImageParams 把尺寸与输出相关参数按模型的尺寸模式写进 fields。
 //
 // 【两套参数必须互斥】sub2api 网关的 sanitizeGrokMediaForwardBody 在转发 Grok
 // 图片请求前会主动删掉 size 字段——这正是「Grok 传 size 没用、恒出 1024×1024」
@@ -106,10 +106,13 @@ type imagesResponse struct {
 // 因此：aspect_ratio 模式绝不能带 size（会触发网关的删除分支，行为不确定），
 // size 模式绝不能带 aspect_ratio（OpenAI 格式端点不认这个字段）。
 //
+// quality / output_format / output_compression 同属 OpenAI 格式专属参数，
+// 一起收在这个 switch 的 size 分支里，避免又出现「只在某一条路径生效」。
+//
 // fields 用 map[string]any 而非直接写两处，是为了让 JSON 与 multipart 两条
 // 提交路径共用同一份参数装配逻辑——它们过去各写一遍，正是 size 只在其中一条
 // 路径被处理的温床。
-func applyImageSizeParams(fields map[string]any, p MediaGenerateParams) {
+func applyImageParams(fields map[string]any, p MediaGenerateParams) {
 	switch MediaSizeModeOf(p.Model) {
 	case SizeModeAspectRatio:
 		if p.AspectRatio != "" {
@@ -124,6 +127,14 @@ func applyImageSizeParams(fields map[string]any, p MediaGenerateParams) {
 		}
 		if p.Quality != "" {
 			fields["quality"] = p.Quality
+		}
+		// 输出格式只对 OpenAI 格式端点有意义；png 是上游默认值，不必显式发。
+		if p.OutputFormat != "" {
+			fields["output_format"] = p.OutputFormat
+			// 压缩档位只对 jpeg / webp 生效，png 带上游会 400。
+			if p.OutputCompression > 0 && p.OutputFormat != "png" {
+				fields["output_compression"] = p.OutputCompression
+			}
 		}
 	}
 }
@@ -144,7 +155,7 @@ func (g *MediaGateway) GenerateImage(ctx context.Context, apiKey string, p Media
 		// 见 kaola-doc/docs/guide/grok-media.md 的「国内网络建议使用 b64_json」。
 		"response_format": "b64_json",
 	}
-	applyImageSizeParams(payload, p)
+	applyImageParams(payload, p)
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -191,7 +202,7 @@ func (g *MediaGateway) EditImage(ctx context.Context, apiKey string, p MediaGene
 	if p.N > 0 {
 		payload["n"] = p.N
 	}
-	applyImageSizeParams(payload, p)
+	applyImageParams(payload, p)
 	applyEditImages(payload, p)
 
 	body, err := json.Marshal(payload)

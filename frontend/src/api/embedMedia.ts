@@ -126,6 +126,10 @@ export interface MediaGenerateInput {
   /** Grok 图片的分辨率档（1k / 2k），同时决定计费档。 */
   image_resolution?: string
   quality?: string
+  /** 输出编码格式（png / jpeg / webp），仅 size 模式的图片模型。 */
+  output_format?: string
+  /** 压缩质量 0-100，仅 output_format 为 jpeg / webp 时有意义。 */
+  output_compression?: number
   /** 视频分辨率（480p / 720p / 1080p）。 */
   resolution?: string
   duration?: number

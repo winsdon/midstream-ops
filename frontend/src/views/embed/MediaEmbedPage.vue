@@ -315,6 +315,31 @@
                       />
                       <p class="input-hint">{{ t('media.form.sizeTierHint') }}</p>
                     </div>
+                    <div class="grid grid-cols-2 gap-3">
+                      <div class="space-y-2">
+                        <label class="media-label">{{ t('media.form.quality') }}</label>
+                        <Select v-model="form.quality" :options="qualityOptions" :searchable="false" />
+                      </div>
+                      <div class="space-y-2">
+                        <label class="media-label">{{ t('media.form.outputFormat') }}</label>
+                        <Select v-model="form.outputFormat" :options="outputFormatOptions" :searchable="false" />
+                      </div>
+                    </div>
+                    <div v-if="supportsOutputCompression(form.outputFormat)" class="space-y-2">
+                      <div class="flex items-center justify-between">
+                        <label class="media-label mb-0">{{ t('media.form.outputCompression') }}</label>
+                        <span class="media-value">{{ form.outputCompression }}</span>
+                      </div>
+                      <input
+                        v-model.number="form.outputCompression"
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="5"
+                        class="media-range"
+                      />
+                    </div>
+                    <p v-if="qualityHint" class="input-hint">{{ qualityHint }}</p>
                   </template>
 
                   <div class="space-y-2">
@@ -619,7 +644,11 @@ import {
   ticksToUSD,
   formatElapsed,
   validateMediaForm,
+  imageQualityOptions,
+  isValidImageSize,
+  supportsOutputCompression,
   IMAGE_MAX_N,
+  IMAGE_OUTPUT_FORMATS,
   IMAGE_SIZE_PRESETS,
   PROMPT_MAX_LEN,
   REF_IMAGE_MAX,
@@ -745,6 +774,17 @@ const imageSizeOptions = computed(() =>
     label: `${preset.value.replace('x', ' × ')} · ${preset.ratio} · ${preset.tier}`
   }))
 )
+/** 质量档位随模型版本变化：2.5 起才有 xhigh / max。 */
+const qualityOptions = computed(() =>
+  imageQualityOptions(form.value.model).map((q) => ({ value: q, label: q }))
+)
+const outputFormatOptions = computed(() =>
+  IMAGE_OUTPUT_FORMATS.map((f) => ({ value: f, label: f.toUpperCase() }))
+)
+/** 仅当当前模型支持高阶档位时才提示，避免所有模型都挂一行噪声。 */
+const qualityHint = computed(() =>
+  imageQualityOptions(form.value.model).includes('xhigh') ? t('media.form.qualityHint') : ''
+)
 /** 可选档位随模型下发，不在前端硬编码——后端的登记表是唯一来源。 */
 const imageResolutionOptions = computed(() =>
   (selectedModel.value?.resolutions ?? []).map((r) => ({ value: r, label: r.toUpperCase() }))
@@ -856,6 +896,12 @@ function syncModelDefaults() {
   form.value.aspectRatio = ''
   form.value.imageResolution = ''
   if (!form.value.size) form.value.size = '1024x1024'
+  // 历史任务或切模型可能留下越界尺寸（旧预设表里有 12 档），收敛到合法值
+  if (!isValidImageSize(form.value.size)) form.value.size = '1024x1024'
+  // xhigh / max 只有 2.5 及更高版本支持，切到低版本时必须降回 high
+  if (!imageQualityOptions(form.value.model).includes(form.value.quality)) {
+    form.value.quality = 'high'
+  }
 }
 
 function revokeFilePreviews() {
@@ -961,7 +1007,14 @@ async function ensureContent(task: MediaTask) {
 function reuseTask(task: MediaTask) {
   try {
     const raw = JSON.parse(task.params) as Record<string, unknown>
-    const get = <T>(name: string, fallback: T): T => (raw[name] as T | undefined) ?? (raw[name[0].toUpperCase() + name.slice(1)] as T | undefined) ?? fallback
+    // 后端落库的 params 是 Go 结构体的 JSON（键为 `OutputFormat` / `ImageResolution`
+    // 这类无分隔的大驼峰），旧记录也可能是前端 camelCase 键。按大小写无关匹配，
+    // 两种形状都能取到——否则复用任务时这些字段会静默回落到默认值。
+    const entries = Object.entries(raw)
+    const get = <T>(name: string, fallback: T): T => {
+      const hit = entries.find(([k]) => k.toLowerCase() === name.toLowerCase())
+      return hit ? (hit[1] as T) : fallback
+    }
     const keyId = keys.value.some((key) => key.id === task.key_id) ? task.key_id : form.value.keyId
     form.value = {
       ...emptyMediaForm(),
@@ -974,6 +1027,8 @@ function reuseTask(task: MediaTask) {
       aspectRatio: get('aspectRatio', get('aspect_ratio', '')),
       imageResolution: get('imageResolution', get('image_resolution', '')),
       quality: get('quality', 'high'),
+      outputFormat: get('outputFormat', get('output_format', 'png')),
+      outputCompression: get('outputCompression', get('output_compression', 100)),
       resolution: get('resolution', '480p'),
       duration: get('duration', 8),
       imageURL: get('imageURL', ''),
@@ -1077,6 +1132,11 @@ async function doSubmit() {
       n: form.value.n,
       size: !video && !byRatio ? form.value.size || undefined : undefined,
       quality: !video && !byRatio ? form.value.quality : undefined,
+      output_format: !video && !byRatio ? form.value.outputFormat : undefined,
+      output_compression:
+        !video && !byRatio && supportsOutputCompression(form.value.outputFormat)
+          ? form.value.outputCompression
+          : undefined,
       aspect_ratio: video || byRatio ? form.value.aspectRatio || undefined : undefined,
       image_resolution: !video && byRatio ? form.value.imageResolution || undefined : undefined,
       resolution: form.value.resolution,

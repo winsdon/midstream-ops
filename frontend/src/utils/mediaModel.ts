@@ -34,31 +34,63 @@ export const PROMPT_MAX_LEN = 2000
 export type ImageSizeTier = '1K' | '2K' | '4K'
 
 /**
+ * 上游对像素尺寸的硬约束（越界一律 400 Invalid image size）。
+ *
+ * 来自网关文档：宽高均为 16 的倍数、最长边 ≤3840、总像素 655360~8294400。
+ * 宽高比约束（1:3 ~ 3:1）本表的比例全部满足，故不单独校验。
+ */
+export const IMAGE_SIZE_MIN_PIXELS = 655_360
+export const IMAGE_SIZE_MAX_PIXELS = 8_294_400
+export const IMAGE_SIZE_MAX_EDGE = 3840
+
+/**
  * size 模式（gpt-image-*）的常用尺寸预设。
  *
  * 仅这类模型需要——它们的画面比例由真实像素尺寸决定。Grok 模型走 aspect_ratio，
  * 与本表无关。
+ *
+ * 【每一档都必须满足上面的硬约束】旧表里有 12 档越界（683/1365/3240 不是 16
+ * 的倍数、1024x576 像素不足、4096 超出最长边），用户选中就直接收到上游 400。
+ *
+ * 【为什么某些比例没有 1K】计费档按最长边判定，1K 要求最长边 ≤1024，此时像素
+ * 上限只有 1024×1024÷比例。16:9 / 2:1 这类宽比例在 1K 下最多 589824 像素，
+ * 低于下限，数学上不存在合法取值——所以直接不给，而不是给一个必报错的档。
  */
-export const IMAGE_SIZE_BY_RATIO: Record<string, Record<ImageSizeTier, string>> = {
+export const IMAGE_SIZE_BY_RATIO: Record<string, Partial<Record<ImageSizeTier, string>>> = {
   '1:1': { '1K': '1024x1024', '2K': '2048x2048', '4K': '2160x2160' },
-  '16:9': { '1K': '1024x576', '2K': '2048x1152', '4K': '3840x2160' },
-  '9:16': { '1K': '576x1024', '2K': '1152x2048', '4K': '2160x3840' },
+  '16:9': { '2K': '2048x1152', '4K': '3840x2160' },
+  '9:16': { '2K': '1152x2048', '4K': '2160x3840' },
   '4:3': { '1K': '1024x768', '2K': '2048x1536', '4K': '2880x2160' },
   '3:4': { '1K': '768x1024', '2K': '1536x2048', '4K': '2160x2880' },
-  '3:2': { '1K': '1024x683', '2K': '2048x1365', '4K': '3240x2160' },
-  '2:3': { '1K': '683x1024', '2K': '1365x2048', '4K': '2160x3240' },
-  '2:1': { '1K': '1024x512', '2K': '2048x1024', '4K': '4096x2048' },
-  '1:2': { '1K': '512x1024', '2K': '1024x2048', '4K': '2048x4096' }
+  '3:2': { '1K': '1008x672', '2K': '2016x1344', '4K': '3072x2048' },
+  '2:3': { '1K': '672x1008', '2K': '1344x2016', '4K': '2048x3072' },
+  '2:1': { '2K': '2048x1024', '4K': '3840x1920' },
+  '1:2': { '2K': '1024x2048', '4K': '1920x3840' }
 }
 
 export const IMAGE_SIZE_PRESETS = Object.keys(IMAGE_SIZE_BY_RATIO).flatMap((ratio) =>
-  (['1K', '2K', '4K'] as const).map((tier) => ({
-    label: `${ratio} · ${tier}`,
-    value: IMAGE_SIZE_BY_RATIO[ratio][tier],
-    ratio,
-    tier
-  }))
+  (['1K', '2K', '4K'] as const).flatMap((tier) => {
+    const value = IMAGE_SIZE_BY_RATIO[ratio][tier]
+    return value ? [{ label: `${ratio} · ${tier}`, value, ratio, tier }] : []
+  })
 )
+
+
+/**
+ * 尺寸是否满足上游硬约束。格式不合法时同样返回 false。
+ *
+ * 与 `imageSizeTier` 分工不同：那个只管计费档，这个只管「上游收不收」。
+ */
+export function isValidImageSize(size: string): boolean {
+  const m = /^(\d+)x(\d+)$/i.exec(size.trim())
+  if (!m) return false
+  const w = Number(m[1])
+  const h = Number(m[2])
+  if (w % 16 !== 0 || h % 16 !== 0) return false
+  if (Math.max(w, h) > IMAGE_SIZE_MAX_EDGE) return false
+  const pixels = w * h
+  return pixels >= IMAGE_SIZE_MIN_PIXELS && pixels <= IMAGE_SIZE_MAX_PIXELS
+}
 
 /** ticks 转美元字符串（4 位小数，与后端 FormatTicksUSD 一致）。 */
 export function ticksToUSD(ticks: number): string {
@@ -98,7 +130,9 @@ export function imageSizeForAspectRatio(ratio: string, tier: ImageSizeTier = '1K
 
 export function imageAspectRatioFromSize(size: string): string {
   for (const ratio of Object.keys(IMAGE_SIZE_BY_RATIO)) {
-    if (Object.values(IMAGE_SIZE_BY_RATIO[ratio]).includes(size)) return ratio
+    // 表是稀疏的（某些比例没有 1K），缺档返回 undefined，只在有值的档里找
+    const sizes = Object.values(IMAGE_SIZE_BY_RATIO[ratio]).filter((v): v is string => !!v)
+    if (sizes.includes(size)) return ratio
   }
   return ''
 }
@@ -117,6 +151,10 @@ export interface MediaFormState {
   /** Grok 图片的分辨率档（1k / 2k），同时决定计费档。 */
   imageResolution: string
   quality: string
+  /** 输出编码格式（png / jpeg / webp），仅 size 模式。 */
+  outputFormat: string
+  /** 压缩质量 0-100，仅 jpeg / webp 生效。 */
+  outputCompression: number
   /** 视频分辨率。 */
   resolution: string
   duration: number
@@ -134,10 +172,12 @@ export function emptyMediaForm(): MediaFormState {
     model: '',
     prompt: '',
     n: 1,
-    size: '1024x576',
+    size: '1024x1024',
     aspectRatio: '1:1',
     imageResolution: '1k',
     quality: 'high',
+    outputFormat: 'png',
+    outputCompression: 100,
     resolution: '480p',
     duration: 8,
     imageURL: '',
@@ -324,8 +364,16 @@ export function validateMediaForm(form: MediaFormState, key: MediaKey | null): s
     if (form.imageResolution && !model.resolutions?.includes(form.imageResolution)) {
       return 'media.errors.badResolution'
     }
-  } else if (form.size && !imageSizeTier(form.size)) {
-    return 'media.errors.badSize'
+  } else {
+    // size 模式：先确认是「尺寸」而不是乱填的字符串，再拦住上游必拒的越界值。
+    if (form.size && !imageSizeTier(form.size)) return 'media.errors.badSize'
+    if (form.size && !isValidImageSize(form.size)) return 'media.errors.badSizeRange'
+    if (form.quality && !imageQualityOptions(form.model).includes(form.quality)) {
+      return 'media.errors.badQuality'
+    }
+    if (form.outputFormat && !isImageOutputFormat(form.outputFormat)) {
+      return 'media.errors.badOutputFormat'
+    }
   }
   return ''
 }
@@ -358,11 +406,52 @@ export function mediaStatusClass(status: string): string {
   }
 }
 
-/** ChatGPT Images 2.5 系列可选模型。 */
-export const GPT_IMAGE_25_MODELS = ['gpt-image-2.5', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'] as const
+/** 质量档位。前四档全系通用，后两档仅 2.5 及更高版本支持。 */
+export const IMAGE_QUALITY_BASE = ['low', 'medium', 'high', 'auto'] as const
+export const IMAGE_QUALITY_25_PLUS = ['xhigh', 'max'] as const
 
-export function isGptImage25Model(name: string): boolean {
-  return name === 'gpt-image-2.5' || name === 'gpt-image-2.5-flare' || name === 'gpt-image-2.5-sunburst'
+/** 输出编码格式。 */
+export const IMAGE_OUTPUT_FORMATS = ['png', 'jpeg', 'webp'] as const
+
+/** 是否为受支持的输出格式。 */
+export function isImageOutputFormat(format: string): boolean {
+  return (IMAGE_OUTPUT_FORMATS as readonly string[]).includes(format)
+}
+
+/** 需要压缩档位的格式（png 是无损编码，上游不认 output_compression）。 */
+export function supportsOutputCompression(format: string): boolean {
+  return format === 'jpeg' || format === 'webp'
+}
+
+/**
+ * 解析 gpt-image 版本号，返回形如 [2, 5] 的数组；非 gpt-image 模型返回 null。
+ *
+ * 后缀（-flare / -sunburst）不影响版本，2.5-flare 就是 2.5。
+ */
+export function gptImageVersion(name: string): [number, number] | null {
+  const m = /^gpt-image-(\d+)(?:\.(\d+))?/.exec(name)
+  if (!m) return null
+  return [Number(m[1]), Number(m[2] ?? 0)]
+}
+
+/**
+ * 是否为 gpt-image-2.5 或更新的版本。
+ *
+ * 【为什么按版本比而不是比对字面量】早先这里是三个模型的硬编码清单，
+ * gpt-image-2.6 一上线就被漏掉，xhigh / max 两档白白不可用。
+ * 新版本应当自动继承，不该每次发布都回来改这张表。
+ */
+export function isGptImage25Plus(name: string): boolean {
+  const v = gptImageVersion(name)
+  if (!v) return false
+  return v[0] > 2 || (v[0] === 2 && v[1] >= 5)
+}
+
+/** 该模型可用的质量档位。 */
+export function imageQualityOptions(name: string): string[] {
+  return isGptImage25Plus(name)
+    ? [...IMAGE_QUALITY_BASE, ...IMAGE_QUALITY_25_PLUS]
+    : [...IMAGE_QUALITY_BASE]
 }
 
 /**

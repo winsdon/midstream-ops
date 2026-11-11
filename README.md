@@ -262,7 +262,8 @@ midstream-ops/
 │   └── migrate-sqlite/     SQLite → PG 一次性数据迁移脚本
 │
 └── docs/
-    └── DESIGN_NOTES.md     口径与设计说明
+    ├── DESIGN_NOTES.md     口径与设计说明
+    └── RELAY_PURITY_DETECTION.md  中转纯度检测方法（0 注入 / 签名真伪）
 ```
 
 ## 界面预览
@@ -432,6 +433,10 @@ R2 上的对象不随任务删除同步清理——建议在桶上配一条生�
 
 两个尺寸参数**互斥**，取决于模型：Grok 图片模型用 `aspect_ratio`（14 档）+ `resolution`（1k/2k），传 `size` 会被 sub2api 网关删掉；`gpt-image-*` 用 `size`（真实 `宽x高`），不认 `aspect_ratio`。前端按后端下发的 `size_mode` 自动切换控件，新模型上线需在 `service/media_catalog.go` 手工登记。
 
+`size` 必须满足上游硬约束：宽高均为 16 的倍数、最长边 ≤3840、总像素 655360~8294400。前端只提供合法预设（`utils/mediaModel.ts` 的 `IMAGE_SIZE_BY_RATIO`），后端 `checkImageSizeBounds` 再拦一道。注意 **16:9 / 2:1 这类宽比例没有 1K 档**——1K 要求最长边 ≤1024，此时像素上限不足下限，数学上不存在合法取值。
+
+`gpt-image-*` 另外支持 `quality`（`low` / `medium` / `high` / `auto`，**2.5 及更高版本**再加 `xhigh` / `max`）与 `output_format`（`png` / `jpeg` / `webp`）。版本判定按模型名解析而非硬编码清单，`gpt-image-2.6` 及后续版本自动继承高阶档位。选 `jpeg` / `webp` 时才露出 `output_compression`（0-100），`png` 是无损编码，带上游会 400。
+
 部分模型会被上游静默替换（`grok-imagine` → `grok-imagine-image-quality`；无参考图的 `grok-imagine-video-1.5` → `grok-imagine-video`）。本站在登记表里记下这层关系，**按替换后的模型报价**并在 UI 上明确提示，避免用户以为自己在用另一个模型。
 
 明文 key 的流向：后端从只读 PG 按会话用户查出该用户的 key，仅用于「后端 ↔ 网关」这一段请求，**不下发浏览器、不进任务表、不进日志**。前端只见掩码（`sk-...ab12`）。R2 凭据同理，建议只走环境变量注入。
@@ -508,6 +513,7 @@ status_push:
 | 文档                                                   | 内容                                         |
 | ---------------------------------------------------- | ------------------------------------------ |
 | [docs/DESIGN\_NOTES.md](docs/DESIGN_NOTES.md)        | 口径与设计说明 —— 收益成本利润口径、稳定性可视化取舍、渠道状态图口径、授信台账约束、渠道检测判据 |
+| [docs/RELAY\_PURITY\_DETECTION.md](docs/RELAY_PURITY_DETECTION.md) | 中转纯度检测方法 —— 0 注入与签名真伪的探针、判据、实测报文与已知陷阱 |
 | [deploy/DOCKER.md](deploy/DOCKER.md)                 | Docker 部署详解（网络、两套库账号、密钥、备份）                |
 | [deploy/UPGRADE\_TO\_PG.md](deploy/UPGRADE_TO_PG.md) | 从 0.1.x SQLite 版升级到 PostgreSQL             |
 | [PLAN.md](PLAN.md)                                   | 实施计划与架构决策记录                                |

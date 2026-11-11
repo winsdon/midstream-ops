@@ -13,7 +13,10 @@ import {
   modelsForKind,
   selectedModelOf,
   isVideoKind,
-  isGptImage25Model,
+  isGptImage25Plus,
+  imageQualityOptions,
+  isValidImageSize,
+  IMAGE_SIZE_BY_RATIO,
   mediaModelHintKey,
   usesAspectRatio,
   mediaModelSelectOptions,
@@ -150,10 +153,30 @@ describe('imageSizeTier', () => {
 
 describe('图片尺寸与宽高比联动（仅 size 模式的模型用得上）', () => {
   it('切换比例时保留当前清晰度档位', () => {
-    expect(imageSizeForAspectRatio('16:9', '1K')).toBe('1024x576')
     expect(imageSizeForAspectRatio('16:9', '2K')).toBe('2048x1152')
     expect(imageSizeForAspectRatio('16:9', '4K')).toBe('3840x2160')
-    expect(imageSizeForAspectRatio('2:1', '4K')).toBe('4096x2048')
+    expect(imageSizeForAspectRatio('2:1', '4K')).toBe('3840x1920')
+  })
+
+  it('16:9 / 2:1 没有合法 1K —— 像素下限挡住，宁可不给也不给必报错的档', () => {
+    expect(imageSizeForAspectRatio('16:9', '1K')).toBe('')
+    expect(imageSizeForAspectRatio('2:1', '1K')).toBe('')
+    expect(imageSizeForAspectRatio('1:1', '1K')).toBe('1024x1024')
+  })
+
+  it('每一档预设都满足上游硬约束', () => {
+    for (const [ratio, tiers] of Object.entries(IMAGE_SIZE_BY_RATIO)) {
+      for (const [tier, size] of Object.entries(tiers)) {
+        expect(isValidImageSize(size!), `${ratio} ${tier} ${size}`).toBe(true)
+      }
+    }
+  })
+
+  it('旧表里的越界值现在会被拦下', () => {
+    expect(isValidImageSize('1024x576')).toBe(false) // 像素不足
+    expect(isValidImageSize('1024x683')).toBe(false) // 非 16 倍数
+    expect(isValidImageSize('4096x2048')).toBe(false) // 最长边超限
+    expect(isValidImageSize('1024x1024')).toBe(true)
   })
 
   it('切换尺寸时反推出对应宽高比', () => {
@@ -488,12 +511,22 @@ describe('mediaModelSelectOptions', () => {
   }
   const translate = (key: string) => copy[key] ?? key
 
-  it('识别 2.5 系列模型', () => {
-    expect(isGptImage25Model('gpt-image-2.5')).toBe(true)
-    expect(isGptImage25Model('gpt-image-2.5-flare')).toBe(true)
-    expect(isGptImage25Model('gpt-image-2.5-sunburst')).toBe(true)
-    expect(isGptImage25Model('gpt-image-2')).toBe(false)
-    expect(isGptImage25Model('gpt-image-2.6')).toBe(false)
+  it('按版本识别 2.5 及更高版本，2.6 自动继承', () => {
+    expect(isGptImage25Plus('gpt-image-2.5')).toBe(true)
+    expect(isGptImage25Plus('gpt-image-2.5-flare')).toBe(true)
+    expect(isGptImage25Plus('gpt-image-2.5-sunburst')).toBe(true)
+    expect(isGptImage25Plus('gpt-image-2.6')).toBe(true)
+    expect(isGptImage25Plus('gpt-image-3')).toBe(true)
+    expect(isGptImage25Plus('gpt-image-2')).toBe(false)
+    expect(isGptImage25Plus('gpt-image-2.4')).toBe(false)
+    expect(isGptImage25Plus('gpt-image-1.5')).toBe(false)
+    expect(isGptImage25Plus('grok-imagine-image')).toBe(false)
+  })
+
+  it('质量档位随版本增减，xhigh / max 仅 2.5+ 有', () => {
+    expect(imageQualityOptions('gpt-image-2')).toEqual(['low', 'medium', 'high', 'auto'])
+    expect(imageQualityOptions('gpt-image-2.6')).toContain('xhigh')
+    expect(imageQualityOptions('gpt-image-2.6')).toContain('max')
   })
 
   it('已知模型有定位文案 key，未知模型没有', () => {

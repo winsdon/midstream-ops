@@ -93,7 +93,7 @@ func (g *MediaGateway) editImageMultipart(ctx context.Context, apiKey string, p 
 	if p.N > 0 {
 		fields["n"] = p.N
 	}
-	applyImageSizeParams(fields, p)
+	applyImageParams(fields, p)
 	for name, value := range fields {
 		if err := w.WriteField(name, fmt.Sprint(value)); err != nil {
 			return nil, err

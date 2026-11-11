@@ -192,21 +192,23 @@ func (h *EmbedMediaHandler) Keys(c *gin.Context) {
 // Grok 图片用后者（前者会被 sub2api 网关删掉），OpenAI 格式图片用前者。
 // 校验在 service 层统一做，handler 只负责如实搬运。
 type mediaGenerateRequest struct {
-	KeyID           int64    `json:"key_id"`
-	Kind            string   `json:"kind"`
-	Model           string   `json:"model"`
-	Prompt          string   `json:"prompt"`
-	N               int      `json:"n"`
-	Size            string   `json:"size"`
-	AspectRatio     string   `json:"aspect_ratio"`
-	ImageResolution string   `json:"image_resolution"`
-	Quality         string   `json:"quality"`
-	Resolution      string   `json:"resolution"`
-	Duration        int      `json:"duration"`
-	ImageURL        string   `json:"image_url"`
-	ImageURLs       []string `json:"image_urls"`
-	Stream          bool     `json:"stream"`
-	ClientRequestID string   `json:"client_request_id"`
+	KeyID             int64    `json:"key_id"`
+	Kind              string   `json:"kind"`
+	Model             string   `json:"model"`
+	Prompt            string   `json:"prompt"`
+	N                 int      `json:"n"`
+	Size              string   `json:"size"`
+	AspectRatio       string   `json:"aspect_ratio"`
+	ImageResolution   string   `json:"image_resolution"`
+	Quality           string   `json:"quality"`
+	OutputFormat      string   `json:"output_format"`
+	OutputCompression int      `json:"output_compression"`
+	Resolution        string   `json:"resolution"`
+	Duration          int      `json:"duration"`
+	ImageURL          string   `json:"image_url"`
+	ImageURLs         []string `json:"image_urls"`
+	Stream            bool     `json:"stream"`
+	ClientRequestID   string   `json:"client_request_id"`
 }
 
 func (r mediaGenerateRequest) toParams() service.MediaGenerateParams {
@@ -215,19 +217,21 @@ func (r mediaGenerateRequest) toParams() service.MediaGenerateParams {
 		imageURL = r.ImageURLs[0]
 	}
 	return service.MediaGenerateParams{
-		Kind:            r.Kind,
-		Model:           r.Model,
-		Prompt:          r.Prompt,
-		N:               r.N,
-		Size:            r.Size,
-		AspectRatio:     r.AspectRatio,
-		ImageResolution: r.ImageResolution,
-		Quality:         r.Quality,
-		Resolution:      r.Resolution,
-		Duration:        r.Duration,
-		ImageURL:        imageURL,
-		ImageURLs:       r.ImageURLs,
-		Stream:          r.Stream,
+		Kind:              r.Kind,
+		Model:             r.Model,
+		Prompt:            r.Prompt,
+		N:                 r.N,
+		Size:              r.Size,
+		AspectRatio:       r.AspectRatio,
+		ImageResolution:   r.ImageResolution,
+		Quality:           r.Quality,
+		OutputFormat:      r.OutputFormat,
+		OutputCompression: r.OutputCompression,
+		Resolution:        r.Resolution,
+		Duration:          r.Duration,
+		ImageURL:          imageURL,
+		ImageURLs:         r.ImageURLs,
+		Stream:            r.Stream,
 	}
 }
 
@@ -360,20 +364,23 @@ func (h *EmbedMediaHandler) Edit(c *gin.Context) {
 		return
 	}
 
+	compression, _ := strconv.Atoi(c.PostForm("output_compression"))
 	h.submit(c, service.MediaSubmitRequest{
 		KeyID: keyID,
 		Params: service.MediaGenerateParams{
-			Kind:            kind,
-			Model:           c.PostForm("model"),
-			Prompt:          c.PostForm("prompt"),
-			N:               n,
-			Size:            c.PostForm("size"),
-			AspectRatio:     c.PostForm("aspect_ratio"),
-			ImageResolution: c.PostForm("image_resolution"),
-			Quality:         c.PostForm("quality"),
-			Resolution:      c.PostForm("resolution"),
-			Duration:        duration,
-			Stream:          parseFormBool(c.PostForm("stream")),
+			Kind:              kind,
+			Model:             c.PostForm("model"),
+			Prompt:            c.PostForm("prompt"),
+			N:                 n,
+			Size:              c.PostForm("size"),
+			AspectRatio:       c.PostForm("aspect_ratio"),
+			ImageResolution:   c.PostForm("image_resolution"),
+			Quality:           c.PostForm("quality"),
+			OutputFormat:      c.PostForm("output_format"),
+			OutputCompression: compression,
+			Resolution:        c.PostForm("resolution"),
+			Duration:          duration,
+			Stream:            parseFormBool(c.PostForm("stream")),
 		},
 		ClientRequestID: c.PostForm("client_request_id"),
 		Files:           files,

@@ -741,3 +741,103 @@ func TestValidateImageCount(t *testing.T) {
 		t.Fatalf("张数 1 不应被拒: %v", err)
 	}
 }
+
+// size 模式的尺寸必须过上游硬约束：16 的倍数、最长边 ≤3840、像素落在区间内。
+//
+// 旧的前端预设表里有 12 档越界，用户选中后只能收到上游的英文 400。
+func TestValidateImageSizeBounds(t *testing.T) {
+	base := MediaGenerateParams{Kind: MediaKindText2Image, Model: "gpt-image-2", Prompt: "test", N: 1}
+
+	for _, size := range []string{"1024x1024", "1536x2048", "2048x1152", "3840x2160", "1008x672"} {
+		p := base
+		p.Size = size
+		if err := ValidateGenerateParams(p); err != nil {
+			t.Fatalf("合法尺寸 %s 不应被拒: %v", size, err)
+		}
+	}
+
+	cases := map[string]string{
+		"1024x576":  "像素低于下限",
+		"1024x512":  "像素低于下限",
+		"1024x683":  "不是 16 的倍数",
+		"2048x1365": "不是 16 的倍数",
+		"3240x2160": "不是 16 的倍数",
+		"4096x2048": "最长边超限",
+		"8192x1024": "最长边超限",
+	}
+	for size, why := range cases {
+		p := base
+		p.Size = size
+		if err := ValidateGenerateParams(p); err == nil {
+			t.Fatalf("%s（%s）应被拒绝", size, why)
+		}
+	}
+}
+
+// 质量档位按版本区分：xhigh / max 仅 2.5 及更高版本。
+func TestValidateImageQualityByVersion(t *testing.T) {
+	base := MediaGenerateParams{Kind: MediaKindText2Image, Prompt: "test", N: 1, Size: "1024x1024"}
+
+	for _, q := range imageQualitiesBase {
+		p := base
+		p.Model, p.Quality = "gpt-image-2", q
+		if err := ValidateGenerateParams(p); err != nil {
+			t.Fatalf("gpt-image-2 的 %s 档不应被拒: %v", q, err)
+		}
+	}
+	for _, q := range imageQualities25Plus {
+		p := base
+		p.Model, p.Quality = "gpt-image-2", q
+		if err := ValidateGenerateParams(p); err == nil {
+			t.Fatalf("gpt-image-2 不支持 %s，应被拒", q)
+		}
+	}
+	for _, model := range []string{"gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.6"} {
+		for _, q := range imageQualities25Plus {
+			p := base
+			p.Model, p.Quality = model, q
+			if err := ValidateGenerateParams(p); err != nil {
+				t.Fatalf("%s 的 %s 档不应被拒: %v", model, q, err)
+			}
+		}
+	}
+}
+
+// 输出格式与压缩档位：png 无损，带压缩档位没有意义，本地直接拒。
+func TestValidateImageOutputFormat(t *testing.T) {
+	base := MediaGenerateParams{
+		Kind: MediaKindText2Image, Model: "gpt-image-2", Prompt: "test", N: 1, Size: "1024x1024",
+	}
+
+	for _, format := range imageOutputFormats {
+		p := base
+		p.OutputFormat = format
+		if err := ValidateGenerateParams(p); err != nil {
+			t.Fatalf("输出格式 %s 不应被拒: %v", format, err)
+		}
+	}
+
+	p := base
+	p.OutputFormat = "gif"
+	if err := ValidateGenerateParams(p); err == nil {
+		t.Fatal("gif 不在支持列表内，应被拒")
+	}
+
+	p = base
+	p.OutputFormat, p.OutputCompression = "png", 80
+	if err := ValidateGenerateParams(p); err == nil {
+		t.Fatal("png 带压缩档位应被拒")
+	}
+
+	p = base
+	p.OutputFormat, p.OutputCompression = "webp", 80
+	if err := ValidateGenerateParams(p); err != nil {
+		t.Fatalf("webp + 压缩不应被拒: %v", err)
+	}
+
+	p = base
+	p.OutputFormat, p.OutputCompression = "jpeg", 101
+	if err := ValidateGenerateParams(p); err == nil {
+		t.Fatal("压缩质量超出 0-100 应被拒")
+	}
+}
